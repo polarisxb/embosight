@@ -34,10 +34,13 @@ pillow>=10.3.0
 qwen-vl-utils
 
 # Simulation
-mujoco>=3.0.0
+mujoco==3.3.1            # robocasa 1.0 强制锁定 3.3.1
 robosuite>=1.5.0
-# robocasa: 从 github 安装
-# pip install git+https://github.com/robocasa/robocasa.git
+numba>=0.60.0            # robocasa 编译加速依赖
+# robocasa: 从源码安装, 需跳过 lerobot 等训练依赖 (老 glibc 不兼容)
+#   git clone https://github.com/robocasa/robocasa.git
+#   cd robocasa && pip install -e . --no-deps
+#   pip install pygame pynput hidapi lxml gymnasium  # 补 robocasa 真实运行依赖
 
 # LLM API client（兼容 OpenAI 接口标准）
 openai>=1.30.0
