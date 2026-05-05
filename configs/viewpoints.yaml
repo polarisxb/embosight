@@ -1,0 +1,68 @@
+# ============================================================
+# 12 个标准视角离散视角库
+# ============================================================
+# 坐标系: 桌面中心为原点
+# 单位: position 厘米 (cm), orientation 度
+# 角度顺序: (roll, pitch, yaw)
+# ============================================================
+
+viewpoints:
+  - name: top_view
+    position: [0, 0, 80]
+    orientation: [0, -90, 0]
+    purpose: "全景俯视，用于场景概览"
+
+  - name: left_close
+    position: [-30, 0, 30]
+    orientation: [0, -45, 0]
+    purpose: "左侧近距，用于左半区精细观察"
+
+  - name: right_close
+    position: [30, 0, 30]
+    orientation: [0, -45, 0]
+    purpose: "右侧近距，用于右半区精细观察"
+
+  - name: front_close
+    position: [0, -30, 30]
+    orientation: [0, -30, 0]
+    purpose: "正面平视，用于近距离物体识别"
+
+  - name: back_close
+    position: [0, 30, 30]
+    orientation: [0, -30, 180]
+    purpose: "远端平视，用于远端区域观察"
+
+  - name: oblique_45
+    position: [20, -20, 50]
+    orientation: [0, -45, 45]
+    purpose: "斜视 45°，用于遮挡区域观察"
+
+  - name: zoom_in_target
+    position: [0, 0, 20]
+    orientation: [0, -90, 0]
+    purpose: "目标特写，用于物体精细识别"
+
+  - name: safety_check
+    position: [0, 0, 100]
+    orientation: [0, -75, 0]
+    purpose: "安全检查全景，识别危险源"
+
+  - name: corner_left_front
+    position: [-30, -30, 40]
+    orientation: [0, -45, -45]
+    purpose: "左前角观察"
+
+  - name: corner_right_front
+    position: [30, -30, 40]
+    orientation: [0, -45, 45]
+    purpose: "右前角观察"
+
+  - name: corner_left_back
+    position: [-30, 30, 40]
+    orientation: [0, -45, -135]
+    purpose: "左后角观察"
+
+  - name: corner_right_back
+    position: [30, 30, 40]
+    orientation: [0, -45, 135]
+    purpose: "右后角观察"

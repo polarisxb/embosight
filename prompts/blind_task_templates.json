@@ -1,0 +1,49 @@
+[
+  {
+    "category": "find_object",
+    "query": "我的药瓶在哪里？",
+    "subtasks": [
+      {"type": "identify", "target": "药瓶", "priority": 1, "blind_dimension": "position", "output_format": "确认药瓶是否存在于视野中"},
+      {"type": "locate", "target": "药瓶", "priority": 2, "blind_dimension": "distance", "output_format": "方位 + 厘米级距离"},
+      {"type": "describe", "target": "药瓶周围环境", "priority": 3, "blind_dimension": "position", "output_format": "周围 30cm 内有无遮挡"},
+      {"type": "guide", "target": "药瓶", "priority": 4, "blind_dimension": "action", "output_format": "如何安全伸手取物"}
+    ]
+  },
+  {
+    "category": "describe_scene",
+    "query": "桌上有什么？",
+    "subtasks": [
+      {"type": "describe", "target": "桌面整体", "priority": 1, "blind_dimension": "position", "output_format": "列出所有显著物体"},
+      {"type": "alert", "target": "桌面危险物", "priority": 1, "blind_dimension": "safety", "output_format": "热源/锐器/易碎"},
+      {"type": "describe", "target": "桌面物体形状", "priority": 3, "blind_dimension": "tactile", "output_format": "形状/材质特征"}
+    ]
+  },
+  {
+    "category": "fetch_object",
+    "query": "帮我拿水杯",
+    "subtasks": [
+      {"type": "identify", "target": "水杯", "priority": 1, "blind_dimension": "position", "output_format": "确认水杯是否存在"},
+      {"type": "alert", "target": "水杯温度", "priority": 1, "blind_dimension": "safety", "output_format": "是否温热"},
+      {"type": "locate", "target": "水杯", "priority": 2, "blind_dimension": "distance", "output_format": "精确位置"},
+      {"type": "guide", "target": "水杯", "priority": 3, "blind_dimension": "action", "output_format": "递送路径"}
+    ]
+  },
+  {
+    "category": "alert_safety",
+    "query": "周围有危险吗？",
+    "subtasks": [
+      {"type": "alert", "target": "环境潜在危险", "priority": 1, "blind_dimension": "safety", "output_format": "热源/锐器/不稳定/化学品"},
+      {"type": "describe", "target": "危险物精确位置", "priority": 2, "blind_dimension": "distance", "output_format": "方位 + 距离"},
+      {"type": "guide", "target": "避险路径", "priority": 2, "blind_dimension": "action", "output_format": "如何避开"}
+    ]
+  },
+  {
+    "category": "navigate",
+    "query": "怎么去厨房？",
+    "subtasks": [
+      {"type": "describe", "target": "当前所在位置", "priority": 1, "blind_dimension": "position", "output_format": "当前位置 + 厨房方向"},
+      {"type": "alert", "target": "路径上的障碍", "priority": 1, "blind_dimension": "safety", "output_format": "障碍物列表"},
+      {"type": "guide", "target": "前往厨房路径", "priority": 2, "blind_dimension": "action", "output_format": "步数 + 方向 + 注意事项"}
+    ]
+  }
+]
