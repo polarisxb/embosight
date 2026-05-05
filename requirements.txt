@@ -1,18 +1,27 @@
 # ============================================================
 # EmboSight 依赖列表
 # ============================================================
-# 安装方式:
-#   pip install -r requirements.txt
+# 安装顺序:
+#   Step 1: 必须先单独安装 PyTorch + torchvision (CUDA 版本)
+#       pip install torch==2.3.0 torchvision==0.18.0 \
+#         --index-url https://download.pytorch.org/whl/cu121
+#       或国内 SJTU 镜像:
+#         wget https://mirror.sjtu.edu.cn/pytorch-wheels/cu121/...whl
+#         pip install <whl 文件>
+#
+#   Step 2: 安装本文件的其他依赖
+#       pip install --upgrade-strategy only-if-needed -r requirements.txt
 #
 # 注意:
-# 1. 建议使用 Python 3.10
-# 2. 建议在 CUDA 12.1+ 环境下安装 PyTorch
-# 3. RoboCasa 需要从 GitHub 安装（见 README）
+# 1. 必须使用 Python 3.10
+# 2. 必须在 CUDA 12.1+ 环境下安装 PyTorch +cu121 wheel
+# 3. RoboCasa 需要从 GitHub 单独安装（见 README）
+# 4. torch/torchvision 不在本列表中（因必须 +cu121 特殊版本）
 # ============================================================
 
-# Core ML Framework
-torch>=2.3.0,<2.6.0
-torchvision>=0.18.0
+# Core ML Framework (注: torch/torchvision 单独装, 见上方说明)
+# torch>=2.3.0,<2.6.0      ← 单独装 torch==2.3.0+cu121
+# torchvision>=0.18.0      ← 单独装 torchvision==0.18.0+cu121
 transformers>=4.45.0
 accelerate>=0.30.0
 huggingface-hub>=0.23.0
