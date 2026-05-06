@@ -108,16 +108,16 @@ class BlindTaskTemplate:
     """
 
     CATEGORIES: list[str] = [
-        "find_object",          # 找物
-        "describe_scene",       # 描述
-        "fetch_object",         # 取物
-        "navigate",             # 导引
-        "alert_safety",         # 警示
-        "read_text",            # 阅读
-        "cooking_assist",       # 烹饪辅助
-        "clothing_assist",      # 着装辅助
-        "medication",           # 用药
-        "social",               # 社交
+        "find_object",          # 找物 (3 templates)
+        "describe_scene",       # 描述 (3 templates)
+        "fetch_object",         # 取物 (4 templates)
+        "navigate",             # 导引 (2 templates)
+        "alert_safety",         # 警示 (2 templates)
+        "medication",           # 用药 (2 templates)
+        "cooking_assist",       # 烹饪辅助 (2 templates)
+        "clothing_assist",      # 着装辅助 (2 templates)
+        "social",               # 社交 (2 templates)
+        "read_text",            # 阅读 (TODO)
     ]
 
     def __init__(
@@ -205,51 +205,114 @@ class BlindTaskTemplate:
             },
         ]
 
-    def retrieve_similar(self, query: str, k: int = 3) -> list[dict[str, Any]]:
+    # 同义词扩展表: 覆盖视障者常用动词/名词表达差异
+    SYNONYMS: dict[str, list[str]] = {
+        "拿": ["取", "递", "给我", "帮我拿", "拿来", "抓"],
+        "取": ["拿", "递", "给我"],
+        "找": ["在哪", "哪里", "搜", "寻找", "找到"],
+        "在哪": ["哪里", "找", "位置", "放哪"],
+        "看": ["看看", "描述", "告诉我"],
+        "危险": ["安全", "小心", "注意", "烫", "伤"],
+        "药": ["药瓶", "药片", "药盒", "感冒药"],
+        "杯": ["水杯", "杯子", "茶杯", "马克杯"],
+        "刀": ["刀具", "菜刀", "水果刀", "剪刀"],
+        "锅": ["炒锅", "汤锅", "平底锅", "锅具"],
+        "瓶": ["瓶子", "药瓶", "水瓶", "奶瓶"],
+    }
+
+    # 背景 IDF: 常见中文高频词的惩罚权重 (越常见 IDF 越低)
+    BACKGROUND_IDF: dict[str, float] = {
+        "的": 0.3, "了": 0.4, "吗": 0.5, "是": 0.4, "在": 0.6,
+        "有": 0.6, "我": 0.5, "帮": 0.8, "个": 0.5, "那": 0.6,
+        "这": 0.6, "什么": 0.7, "上": 0.6, "里": 0.7, "面": 0.7,
+        "给": 0.8, "把": 0.7, "去": 0.8, "怎么": 0.8, "不": 0.5,
+    }
+
+    def retrieve_similar(
+        self,
+        query: str,
+        k: int = 3,
+        use_idf: bool = True,
+        use_synonyms: bool = True,
+    ) -> list[dict[str, Any]]:
         """检索 K 个最相似模板示例（Few-shot 检索）
 
-        使用分词 + IDF 加权的 Jaccard 相似度：
+        创新点①核心: IDF加权模板检索
             1. 对 query 和每个模板的 query 分词
-            2. 词频交集加权（稀有词权重高）
-            3. 类别优先级额外加分
+            2. 同义词扩展增强召回
+            3. IDF 加权 Jaccard 相似度 (稀有词权重高)
+            4. 类别优先级额外加分
 
         Args:
             query: 视障者查询
             k: 检索数量
+            use_idf: 是否使用 IDF 加权 (消融开关)
+            use_synonyms: 是否使用同义词扩展 (消融开关)
 
         Returns:
-            K 个最相似模板示例
+            K 个最相似模板示例 (含检索分数)
         """
         query_tokens = self._tokenize(query)
+        if use_synonyms:
+            query_tokens = self._expand_synonyms(query_tokens)
         if not query_tokens:
             return self._templates[:k]
 
-        idf = self._compute_idf()
+        idf = self._compute_idf() if use_idf else {}
 
         scored: list[tuple[float, dict[str, Any]]] = []
         for tpl in self._templates:
             tpl_tokens = self._tokenize(tpl.get("query", ""))
+            if use_synonyms:
+                tpl_tokens = self._expand_synonyms(tpl_tokens)
             if not tpl_tokens:
                 scored.append((0.0, tpl))
                 continue
 
             intersection = query_tokens & tpl_tokens
             union = query_tokens | tpl_tokens
-            weighted_inter = sum(idf.get(w, 1.0) for w in intersection)
-            weighted_union = sum(idf.get(w, 1.0) for w in union)
-            sim = weighted_inter / weighted_union if weighted_union > 0 else 0.0
 
+            if use_idf:
+                weighted_inter = sum(idf.get(w, self.BACKGROUND_IDF.get(w, 1.5)) for w in intersection)
+                weighted_union = sum(idf.get(w, self.BACKGROUND_IDF.get(w, 1.5)) for w in union)
+            else:
+                weighted_inter = len(intersection)
+                weighted_union = len(union)
+
+            sim = weighted_inter / weighted_union if weighted_union > 0 else 0.0
             category_bonus = self._category_bonus(query, tpl.get("category", ""))
             sim += category_bonus
 
             scored.append((sim, tpl))
 
         scored.sort(key=lambda x: -x[0])
-        return [t for _, t in scored[:k]]
+
+        # 检索日志: 记录 top-K 分数供消融分析
+        top_k = scored[:k]
+        for rank, (score, tpl) in enumerate(top_k, 1):
+            logger.info(
+                f"[retrieve] rank={rank} score={score:.3f} "
+                f"category={tpl.get('category')} query='{tpl.get('query')}'"
+            )
+        if top_k:
+            logger.info(
+                f"[retrieve] config: use_idf={use_idf}, use_synonyms={use_synonyms}, "
+                f"top1_score={top_k[0][0]:.3f}, corpus_size={len(self._templates)}"
+            )
+
+        return [t for _, t in top_k]
+
+    def _expand_synonyms(self, tokens: set[str]) -> set[str]:
+        """同义词扩展: 将 token 集合扩展为包含同义词的更大集合"""
+        expanded = set(tokens)
+        for token in tokens:
+            if token in self.SYNONYMS:
+                expanded.update(self.SYNONYMS[token])
+        return expanded
 
     @staticmethod
     def _tokenize(text: str) -> set[str]:
-        """中文分词（优先 jieba，回退到 bigram）"""
+        """中文分词（优先 jieba，回退到 bigram + unigram）"""
         try:
             import jieba
             return set(w for w in jieba.lcut(text) if len(w.strip()) > 0)
@@ -263,25 +326,44 @@ class BlindTaskTemplate:
             return tokens
 
     def _compute_idf(self) -> dict[str, float]:
-        """计算 IDF 权重（逆文档频率）"""
+        """计算 IDF 权重: 模板语料 IDF + 背景 IDF 融合"""
         import math
+
+        if hasattr(self, "_idf_cache"):
+            return self._idf_cache
+
         doc_count: dict[str, int] = {}
         n = len(self._templates)
         for tpl in self._templates:
             tokens = self._tokenize(tpl.get("query", ""))
             for w in tokens:
                 doc_count[w] = doc_count.get(w, 0) + 1
-        return {w: math.log((n + 1) / (cnt + 1)) + 1 for w, cnt in doc_count.items()}
+
+        corpus_idf = {w: math.log((n + 1) / (cnt + 1)) + 1 for w, cnt in doc_count.items()}
+
+        # 融合背景 IDF: 高频通用词惩罚
+        for w, bg_idf in self.BACKGROUND_IDF.items():
+            if w in corpus_idf:
+                corpus_idf[w] = min(corpus_idf[w], bg_idf)
+            else:
+                corpus_idf[w] = bg_idf
+
+        self._idf_cache = corpus_idf
+        return corpus_idf
 
     @staticmethod
     def _category_bonus(query: str, category: str) -> float:
         """基于关键词给类别加分"""
         CATEGORY_KEYWORDS = {
-            "find_object": ["在哪", "找", "哪里", "搜", "位置"],
-            "describe_scene": ["有什么", "描述", "什么东西", "看看"],
-            "fetch_object": ["拿", "取", "递", "帮我", "给我"],
-            "alert_safety": ["危险", "安全", "小心", "注意", "烫"],
-            "navigate": ["去", "走", "怎么", "路", "方向"],
+            "find_object": ["在哪", "找", "哪里", "搜", "位置", "放哪"],
+            "describe_scene": ["有什么", "描述", "什么东西", "看看", "里面"],
+            "fetch_object": ["拿", "取", "递", "帮我", "给我", "抓"],
+            "alert_safety": ["危险", "安全", "小心", "注意", "烫", "伤"],
+            "navigate": ["去", "走", "怎么", "路", "方向", "哪个方向"],
+            "medication": ["药", "吃药", "服药", "感冒", "药瓶", "药片"],
+            "cooking_assist": ["锅", "灶", "炒", "煮", "熟", "开了", "火"],
+            "clothing_assist": ["衣服", "颜色", "穿", "袜子", "裤子", "鞋"],
+            "social": ["谁", "人", "做什么", "说什么", "他", "她"],
         }
         keywords = CATEGORY_KEYWORDS.get(category, [])
         hits = sum(1 for kw in keywords if kw in query)

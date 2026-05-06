@@ -22,6 +22,17 @@
     ]
   },
   {
+    "category": "find_object",
+    "query": "钥匙在哪？",
+    "subtasks": [
+      {"type": "alert", "target": "钥匙周围环境", "priority": 1, "blind_dimension": "safety", "output_format": "钥匙是否在桌沿/高处有掉落风险"},
+      {"type": "identify", "target": "钥匙", "priority": 1, "blind_dimension": "position", "output_format": "确认钥匙存在 + 方位"},
+      {"type": "locate", "target": "钥匙", "priority": 2, "blind_dimension": "distance", "output_format": "距离(cm) + 是否可及"},
+      {"type": "describe", "target": "钥匙触觉特征", "priority": 3, "blind_dimension": "tactile", "output_format": "金属/塑料 + 大小 + 钥匙圈形状"},
+      {"type": "guide", "target": "取钥匙", "priority": 4, "blind_dimension": "action", "output_format": "伸手方向 + 注意不要碰落周围物品"}
+    ]
+  },
+  {
     "category": "describe_scene",
     "query": "桌上有什么？",
     "subtasks": [
@@ -41,6 +52,17 @@
       {"type": "locate", "target": "灶台物体距离", "priority": 2, "blind_dimension": "distance", "output_format": "各物体距身体距离(cm)"},
       {"type": "describe", "target": "灶台物体触觉", "priority": 3, "blind_dimension": "tactile", "output_format": "材质/温度/重量"},
       {"type": "guide", "target": "灶台安全操作", "priority": 4, "blind_dimension": "action", "output_format": "哪些可触碰 + 触碰前先试温的物品"}
+    ]
+  },
+  {
+    "category": "describe_scene",
+    "query": "冰箱里面有什么？",
+    "subtasks": [
+      {"type": "alert", "target": "冰箱门和周围", "priority": 1, "blind_dimension": "safety", "output_format": "冰箱门是否稳定/有无掉落物品"},
+      {"type": "describe", "target": "冰箱内全部物品", "priority": 1, "blind_dimension": "position", "output_format": "各层物品列表 + 方位"},
+      {"type": "locate", "target": "各物品位置", "priority": 2, "blind_dimension": "distance", "output_format": "每层高度 + 物品距离门口深度"},
+      {"type": "describe", "target": "物品触觉特征", "priority": 3, "blind_dimension": "tactile", "output_format": "温度(冷冻/冷藏) + 包装形式(瓶/盒/袋)"},
+      {"type": "guide", "target": "取冰箱物品", "priority": 4, "blind_dimension": "action", "output_format": "建议先取哪层 + 注意冷冻物品粘手"}
     ]
   },
   {
@@ -66,6 +88,28 @@
     ]
   },
   {
+    "category": "fetch_object",
+    "query": "把那个碗给我",
+    "subtasks": [
+      {"type": "alert", "target": "碗的温度和内容", "priority": 1, "blind_dimension": "safety", "output_format": "碗内是否有热汤/是否容易洒出"},
+      {"type": "identify", "target": "碗", "priority": 1, "blind_dimension": "position", "output_format": "确认碗存在 + 方位"},
+      {"type": "locate", "target": "碗", "priority": 2, "blind_dimension": "distance", "output_format": "距离(cm) + 是否可及"},
+      {"type": "describe", "target": "碗的触觉特征", "priority": 3, "blind_dimension": "tactile", "output_format": "陶瓷/塑料/金属 + 大小 + 有无盖子"},
+      {"type": "guide", "target": "安全端碗", "priority": 4, "blind_dimension": "action", "output_format": "双手托底 + 倾斜角度控制 + 路径障碍"}
+    ]
+  },
+  {
+    "category": "fetch_object",
+    "query": "帮我拿药瓶",
+    "subtasks": [
+      {"type": "alert", "target": "药瓶周围潜在危险", "priority": 1, "blind_dimension": "safety", "output_format": "周围有无热源/锐器/易碎物"},
+      {"type": "identify", "target": "药瓶", "priority": 1, "blind_dimension": "position", "output_format": "确认药瓶存在 + 方位"},
+      {"type": "locate", "target": "药瓶", "priority": 2, "blind_dimension": "distance", "output_format": "距离(cm) + 是否在手臂范围内"},
+      {"type": "describe", "target": "药瓶外观触觉特征", "priority": 3, "blind_dimension": "tactile", "output_format": "圆柱/方形 + 塑料/玻璃 + 瓶盖类型(旋转/按压)"},
+      {"type": "guide", "target": "安全取药瓶", "priority": 4, "blind_dimension": "action", "output_format": "伸手方向 + 捏瓶身中部 + 路径无障碍确认"}
+    ]
+  },
+  {
     "category": "alert_safety",
     "query": "周围有危险吗？",
     "subtasks": [
@@ -78,6 +122,17 @@
     ]
   },
   {
+    "category": "alert_safety",
+    "query": "这个东西烫不烫？",
+    "subtasks": [
+      {"type": "alert", "target": "物体温度状态", "priority": 1, "blind_dimension": "safety", "output_format": "是否温热/蒸汽/刚离火"},
+      {"type": "identify", "target": "目标物体", "priority": 1, "blind_dimension": "position", "output_format": "确认用户指向的物体"},
+      {"type": "describe", "target": "物体材质和导热性", "priority": 2, "blind_dimension": "tactile", "output_format": "金属(导热快)/陶瓷(慢)/塑料(不导热)"},
+      {"type": "locate", "target": "物体距离", "priority": 2, "blind_dimension": "distance", "output_format": "距离(cm) + 可否用手背试温"},
+      {"type": "guide", "target": "安全接触方式", "priority": 3, "blind_dimension": "action", "output_format": "先手背试温 + 不要直接握"}
+    ]
+  },
+  {
     "category": "navigate",
     "query": "怎么去厨房？",
     "subtasks": [
@@ -86,6 +141,105 @@
       {"type": "locate", "target": "路径距离", "priority": 2, "blind_dimension": "distance", "output_format": "到厨房大致步数 + 中间障碍距离"},
       {"type": "describe", "target": "路径触觉参照物", "priority": 3, "blind_dimension": "tactile", "output_format": "墙壁/门框/家具等可触摸参照物"},
       {"type": "guide", "target": "前往厨房路径", "priority": 3, "blind_dimension": "action", "output_format": "步数 + 转弯方向 + 可扶靠的参照物"}
+    ]
+  },
+  {
+    "category": "navigate",
+    "query": "洗手间在哪个方向？",
+    "subtasks": [
+      {"type": "alert", "target": "路径障碍", "priority": 1, "blind_dimension": "safety", "output_format": "地面湿滑/门槛/物品"},
+      {"type": "describe", "target": "洗手间方位", "priority": 1, "blind_dimension": "position", "output_format": "相对方位 + 门的位置"},
+      {"type": "locate", "target": "距离", "priority": 2, "blind_dimension": "distance", "output_format": "步数 + 中间有无转弯"},
+      {"type": "describe", "target": "路径触觉标识", "priority": 3, "blind_dimension": "tactile", "output_format": "门把手形状/墙面材质变化"},
+      {"type": "guide", "target": "到达洗手间", "priority": 3, "blind_dimension": "action", "output_format": "直走+右转 + 摸到瓷砖墙即到"}
+    ]
+  },
+  {
+    "category": "medication",
+    "query": "这是什么药？该怎么吃？",
+    "subtasks": [
+      {"type": "alert", "target": "用药安全", "priority": 1, "blind_dimension": "safety", "output_format": "是否过期/是否需空腹/与其他药冲突"},
+      {"type": "identify", "target": "药品", "priority": 1, "blind_dimension": "position", "output_format": "药品名称/品牌(瓶身标签)"},
+      {"type": "describe", "target": "药品外观", "priority": 2, "blind_dimension": "tactile", "output_format": "片剂/胶囊/液体 + 颜色 + 大小"},
+      {"type": "locate", "target": "药品位置", "priority": 2, "blind_dimension": "distance", "output_format": "距离(cm) + 瓶盖开启方向"},
+      {"type": "guide", "target": "安全服药", "priority": 3, "blind_dimension": "action", "output_format": "剂量(几片) + 服用方式(吞服/咀嚼) + 配水"}
+    ]
+  },
+  {
+    "category": "medication",
+    "query": "帮我找感冒药",
+    "subtasks": [
+      {"type": "alert", "target": "药品安全", "priority": 1, "blind_dimension": "safety", "output_format": "是否过期/与当前用药是否冲突"},
+      {"type": "identify", "target": "感冒药", "priority": 1, "blind_dimension": "position", "output_format": "识别含'感冒'字样的药盒/瓶"},
+      {"type": "locate", "target": "感冒药位置", "priority": 2, "blind_dimension": "distance", "output_format": "方位 + 距离 + 在第几层架子"},
+      {"type": "describe", "target": "感冒药包装", "priority": 3, "blind_dimension": "tactile", "output_format": "盒装/瓶装 + 大小 + 包装材质"},
+      {"type": "guide", "target": "取感冒药", "priority": 4, "blind_dimension": "action", "output_format": "伸手方向 + 取出方式"}
+    ]
+  },
+  {
+    "category": "cooking_assist",
+    "query": "锅里的水开了吗？",
+    "subtasks": [
+      {"type": "alert", "target": "锅和灶台温度", "priority": 1, "blind_dimension": "safety", "output_format": "锅盖蒸汽/灶台火力/溢出风险"},
+      {"type": "identify", "target": "锅内状态", "priority": 1, "blind_dimension": "position", "output_format": "是否有气泡/蒸汽量"},
+      {"type": "describe", "target": "沸腾程度", "priority": 2, "blind_dimension": "tactile", "output_format": "微沸/大沸/平静 + 蒸汽方向"},
+      {"type": "locate", "target": "锅的位置", "priority": 2, "blind_dimension": "distance", "output_format": "灶台上方位 + 距身体距离"},
+      {"type": "guide", "target": "安全操作", "priority": 3, "blind_dimension": "action", "output_format": "用手背感温 + 揭盖方向(远离身体) + 调火建议"}
+    ]
+  },
+  {
+    "category": "cooking_assist",
+    "query": "帮我看看菜熟了没",
+    "subtasks": [
+      {"type": "alert", "target": "烹饪安全", "priority": 1, "blind_dimension": "safety", "output_format": "油温/蒸汽/锅柄朝向"},
+      {"type": "identify", "target": "菜品状态", "priority": 1, "blind_dimension": "position", "output_format": "颜色变化/收缩程度/冒泡情况"},
+      {"type": "describe", "target": "菜品外观", "priority": 2, "blind_dimension": "tactile", "output_format": "软硬程度判断/汤汁浓度/焦糊迹象"},
+      {"type": "locate", "target": "锅的位置", "priority": 2, "blind_dimension": "distance", "output_format": "灶台方位 + 距离"},
+      {"type": "guide", "target": "下一步操作", "priority": 3, "blind_dimension": "action", "output_format": "继续/翻炒/关火 + 盛出方式"}
+    ]
+  },
+  {
+    "category": "clothing_assist",
+    "query": "这件衣服是什么颜色？",
+    "subtasks": [
+      {"type": "alert", "target": "衣物状态", "priority": 1, "blind_dimension": "safety", "output_format": "是否有针/别针/标签未剪"},
+      {"type": "identify", "target": "衣物颜色", "priority": 1, "blind_dimension": "position", "output_format": "主色调 + 是否有图案/条纹"},
+      {"type": "describe", "target": "衣物触觉特征", "priority": 2, "blind_dimension": "tactile", "output_format": "棉/涤纶/丝绸 + 厚薄 + 有无纽扣拉链"},
+      {"type": "locate", "target": "衣物位置", "priority": 3, "blind_dimension": "distance", "output_format": "在手中/挂钩上/叠放位置"},
+      {"type": "guide", "target": "穿着建议", "priority": 3, "blind_dimension": "action", "output_format": "正反面判断(标签在后) + 扣子/拉链位置"}
+    ]
+  },
+  {
+    "category": "clothing_assist",
+    "query": "帮我找一双袜子",
+    "subtasks": [
+      {"type": "alert", "target": "抽屉/柜子安全", "priority": 1, "blind_dimension": "safety", "output_format": "抽屉是否会夹手/上方有无掉落物"},
+      {"type": "identify", "target": "袜子", "priority": 1, "blind_dimension": "position", "output_format": "确认袜子位置 + 颜色配对"},
+      {"type": "locate", "target": "袜子位置", "priority": 2, "blind_dimension": "distance", "output_format": "哪个抽屉/哪层 + 距离"},
+      {"type": "describe", "target": "袜子触觉", "priority": 3, "blind_dimension": "tactile", "output_format": "薄厚/长短/材质 + 左右配对确认"},
+      {"type": "guide", "target": "取袜子", "priority": 4, "blind_dimension": "action", "output_format": "打开抽屉方式 + 触摸确认配对"}
+    ]
+  },
+  {
+    "category": "social",
+    "query": "面前这个人是谁？",
+    "subtasks": [
+      {"type": "alert", "target": "社交安全", "priority": 1, "blind_dimension": "safety", "output_format": "对方距离是否安全/是否有威胁性姿态"},
+      {"type": "identify", "target": "人物身份", "priority": 1, "blind_dimension": "position", "output_format": "性别/年龄段/是否认识"},
+      {"type": "locate", "target": "人物位置", "priority": 2, "blind_dimension": "distance", "output_format": "方位 + 距离(m) + 朝向"},
+      {"type": "describe", "target": "人物外观", "priority": 3, "blind_dimension": "tactile", "output_format": "身高/体型/衣着颜色/发型"},
+      {"type": "guide", "target": "社交建议", "priority": 4, "blind_dimension": "action", "output_format": "是否应主动打招呼 + 对方是否在看你"}
+    ]
+  },
+  {
+    "category": "social",
+    "query": "他在做什么？",
+    "subtasks": [
+      {"type": "alert", "target": "环境安全", "priority": 1, "blind_dimension": "safety", "output_format": "对方动作是否有碰撞风险"},
+      {"type": "identify", "target": "人物动作", "priority": 1, "blind_dimension": "position", "output_format": "站/坐/走 + 手部动作"},
+      {"type": "describe", "target": "动作细节", "priority": 2, "blind_dimension": "tactile", "output_format": "手持物品描述 + 动作幅度"},
+      {"type": "locate", "target": "人物距离", "priority": 2, "blind_dimension": "distance", "output_format": "距离(m) + 移动方向"},
+      {"type": "guide", "target": "交互建议", "priority": 3, "blind_dimension": "action", "output_format": "是否需要避让 + 可否上前询问"}
     ]
   }
 ]
