@@ -41,9 +41,16 @@ prompts:
 # 仿真环境
 simulator:
   type: "robocasa"
-  scene: "kitchen_default"
-  image_width: 512
-  image_height: 512
+  env_name: "PickPlaceCounterToCabinet"
+  robots: "PandaMobile"
+  image_width: 256
+  image_height: 256
+  camera_names:
+    - agentview
+    - birdview
+    - sideview
+    - frontview
+    - robot0_eye_in_hand
 
 # 输出目录
 output:

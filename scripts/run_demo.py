@@ -40,11 +40,29 @@ def main() -> None:
     logger.info(f"Mode:     {'Baseline' if args.baseline else 'Ours'}")
     logger.info("=" * 60)
 
-    from src.env_wrapper import EnvWrapper
+    from src.env_wrapper import EnvWrapper, EnvConfig
     from src.pipeline import EmboSightPipeline
+    from src.utils import load_yaml
+
+    cfg = load_yaml(args.config)
+    sim_cfg = cfg.get("simulator", {})
+    out_cfg = cfg.get("output", {})
+
+    env_config = EnvConfig(
+        sim_type=sim_cfg.get("type", "robocasa"),
+        env_name=sim_cfg.get("env_name", "PickPlaceCounterToCabinet"),
+        robots=sim_cfg.get("robots", "PandaMobile"),
+        image_width=sim_cfg.get("image_width", 256),
+        image_height=sim_cfg.get("image_height", 256),
+        camera_names=tuple(sim_cfg.get("camera_names", [
+            "agentview", "birdview", "sideview",
+            "frontview", "robot0_eye_in_hand",
+        ])),
+        output_dir=out_cfg.get("observation_dir", "./results/observations"),
+    )
 
     pipeline = EmboSightPipeline(args.config)
-    env = EnvWrapper()
+    env = EnvWrapper(env_config)
 
     try:
         env.reset()
