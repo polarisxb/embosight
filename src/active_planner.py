@@ -191,6 +191,13 @@ class ActivePlanner:
     def plan(self, subtasks: list, env) -> list[Observation]:
         """主入口: 执行完整主动视角规划循环
 
+        核心创新 (LLM-NBV):
+            1. 初始全景视角观察
+            2. 更新子任务覆盖状态 (coverage_status)
+            3. 计算覆盖率，若 >= 阈值则早停
+            4. LLM 综合"未覆盖维度"选择信息增益最大的下一个视角
+            5. 重复直到覆盖率足够 或 LLM 输出 -1 或 达到上限
+
         Args:
             subtasks: 子任务列表（来自 TaskDecomposer）
             env: 仿真环境对象（来自 src/env_wrapper.py）
@@ -201,6 +208,7 @@ class ActivePlanner:
         observations: list[Observation] = []
         used_indices: set[int] = set()
 
+        # ---- 初始全景视角 ----
         init_idx = 0
         init_vp = self.vp_lib[init_idx]
         env.move_arm_to(init_vp.to_pose())
@@ -210,10 +218,20 @@ class ActivePlanner:
         logger.info(f"初始视角: {init_vp.name}")
 
         while len(observations) < self.max_vp:
-            if self._is_sufficient(subtasks, observations):
-                logger.info(f"早停: 已收集 {len(observations)} 个视角")
+            # ---- 更新覆盖率 ----
+            coverage = self._update_coverage(subtasks, observations)
+            logger.info(f"当前覆盖率: {coverage:.0%} (阈值 {self.coverage_threshold:.0%})")
+
+            if coverage >= self.coverage_threshold:
+                logger.info(f"覆盖率达标，早停 ({len(observations)} 个视角)")
                 break
 
+            # ---- LLM 充分性评估（双重早停保障）----
+            if self._is_sufficient(subtasks, observations):
+                logger.info(f"LLM 判断信息足够，早停 ({len(observations)} 个视角)")
+                break
+
+            # ---- LLM-NBV: 选择信息增益最大的下一个视角 ----
             next_idx = self.select_next_viewpoint(subtasks, observations, used_indices)
             if next_idx < 0 or next_idx >= len(self.vp_lib):
                 logger.info(f"LLM 输出 -1（早停信号）")
@@ -226,7 +244,54 @@ class ActivePlanner:
             used_indices.add(next_idx)
             logger.info(f"视角 {len(observations)}: {next_vp.name}")
 
+        # ---- 最终覆盖率统计 ----
+        final_coverage = self._update_coverage(subtasks, observations)
+        logger.info(f"规划完成: {len(observations)} 个视角, 最终覆盖率 {final_coverage:.0%}")
         return observations
+
+    # ==========================================================
+    # 覆盖率追踪（创新点）
+    # ==========================================================
+
+    def _update_coverage(self, subtasks: list, observations: list[Observation]) -> float:
+        """更新子任务覆盖状态并返回覆盖率
+
+        基于视角用途与子任务维度的匹配关系，判断哪些子任务已被覆盖：
+            - 全景视角 → 覆盖 position / safety
+            - 正面/侧面视角 → 覆盖 distance / tactile
+            - 末端视角 → 覆盖 tactile / action
+            - 多视角叠加提升覆盖置信度
+
+        Returns:
+            覆盖率 [0, 1]
+        """
+        if not subtasks:
+            return 1.0
+
+        VIEWPOINT_DIM_MAP: dict[str, set[str]] = {
+            "robot0_agentview_center": {"position", "safety"},
+            "robot0_agentview_left": {"position", "safety"},
+            "robot0_agentview_right": {"position", "safety"},
+            "robot0_frontview": {"distance", "tactile", "position"},
+            "robot0_robotview": {"distance", "action"},
+            "robot0_eye_in_hand": {"tactile", "action", "distance"},
+        }
+
+        observed_dims: set[str] = set()
+        for obs in observations:
+            cam_dims = VIEWPOINT_DIM_MAP.get(obs.viewpoint.name, set())
+            observed_dims |= cam_dims
+
+        covered = 0
+        for t in subtasks:
+            dim_val = t.blind_dimension.value if hasattr(t.blind_dimension, 'value') else str(t.blind_dimension)
+            if dim_val in observed_dims:
+                t.coverage_status = True
+                covered += 1
+            else:
+                t.coverage_status = False
+
+        return covered / len(subtasks)
 
     # ==========================================================
     # 视角选择
@@ -274,13 +339,25 @@ class ActivePlanner:
         observations: list[Observation],
         used_indices: set[int],
     ) -> str:
-        """构建 NBV 决策 Prompt"""
-        lines = ["## 未完成子任务"]
+        """构建 NBV 决策 Prompt（含信息增益推理）"""
+
+        # ---- 未覆盖维度汇总（帮助 LLM 做信息增益推理）----
+        uncovered_dims: set[str] = set()
+        lines = ["## 未完成子任务（按优先级排序）"]
         for i, t in enumerate(subtasks, 1):
+            status = "✓" if t.coverage_status else "✗"
+            dim_val = t.blind_dimension.value if hasattr(t.blind_dimension, 'value') else str(t.blind_dimension)
+            lines.append(
+                f"  {i}. [{status}] [{t.type.value}] {t.target} (priority={t.priority}, dim={dim_val})"
+            )
             if not t.coverage_status:
-                lines.append(
-                    f"  {i}. [{t.type.value}] {t.target} (priority={t.priority}, dim={t.blind_dimension.value})"
-                )
+                uncovered_dims.add(dim_val)
+
+        if uncovered_dims:
+            lines.append(f"\n## 未覆盖的视障维度: {sorted(uncovered_dims)}")
+            lines.append("你需要选择最能覆盖以上缺失维度的视角。")
+        else:
+            lines.append("\n## 所有维度已覆盖，建议早停 (viewpoint_idx = -1)")
 
         lines.append("\n## 当前已有观察")
         for i, obs in enumerate(observations, 1):
@@ -293,8 +370,9 @@ class ActivePlanner:
             lines.append(f"  {i}: {vp.name} - {vp.purpose}{mark}")
 
         lines.append(
-            "\n请选择下一个最有助于完成所有未完成子任务的视角索引。\n"
-            "若当前观察已经足够回答所有子任务，输出 viewpoint_idx = -1。"
+            "\n请选择信息增益最大的下一个视角索引。\n"
+            "决策要点：优先覆盖 safety > position > distance > tactile > action。\n"
+            "若所有维度已覆盖或当前观察已足够，输出 viewpoint_idx = -1。"
         )
 
         return "\n".join(lines)
@@ -308,9 +386,19 @@ class ActivePlanner:
         subtasks: list,
         observations: list[Observation],
     ) -> bool:
-        """LLM 自评估: 当前观察是否足以回答查询？"""
+        """结构化充分性评估
+
+        创新点：不仅问 LLM "够不够"，还传入每个子任务的覆盖状态，
+        让 LLM 基于结构化信息做判断，而非纯凭文本猜测。
+        """
         if not observations:
             return False
+
+        covered = sum(1 for t in subtasks if t.coverage_status)
+        total = len(subtasks)
+
+        if total > 0 and covered / total >= self.coverage_threshold:
+            return True
 
         prompt = self._build_sufficiency_prompt(subtasks, observations)
         try:
@@ -325,17 +413,28 @@ class ActivePlanner:
         subtasks: list,
         observations: list[Observation],
     ) -> str:
-        """构建早停判断 Prompt"""
-        sub_lines = "\n".join(
-            [f"  - [{t.type.value}] {t.target}" for t in subtasks]
-        )
-        obs_lines = "\n".join(
-            [f"  视角{i+1}: {o.description[:80]}..." for i, o in enumerate(observations)]
-        )
+        """构建结构化早停判断 Prompt"""
+        sub_lines = []
+        for t in subtasks:
+            status = "已覆盖" if t.coverage_status else "未覆盖"
+            dim_val = t.blind_dimension.value if hasattr(t.blind_dimension, 'value') else str(t.blind_dimension)
+            sub_lines.append(f"  - [{status}] [{t.type.value}] {t.target} (dim={dim_val})")
+        sub_text = "\n".join(sub_lines)
+
+        obs_lines = []
+        for i, o in enumerate(observations):
+            desc = o.description[:80] if o.description else "（暂无描述）"
+            obs_lines.append(f"  视角{i+1} [{o.viewpoint.name}]: {desc}")
+        obs_text = "\n".join(obs_lines)
+
+        covered = sum(1 for t in subtasks if t.coverage_status)
+        total = len(subtasks)
+
         return (
-            f"## 子任务\n{sub_lines}\n\n"
-            f"## 已有观察\n{obs_lines}\n\n"
-            f"基于以上观察，所有子任务的信息是否已经足够？请回答 'yes' 或 'no'。"
+            f"## 子任务覆盖状态 ({covered}/{total})\n{sub_text}\n\n"
+            f"## 已有观察 ({len(observations)} 个视角)\n{obs_text}\n\n"
+            f"基于以上覆盖状态和观察内容，所有子任务的信息是否已经足够？\n"
+            f"请回答 'yes' 或 'no'。"
         )
 
 

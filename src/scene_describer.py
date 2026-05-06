@@ -108,13 +108,35 @@ class BlindFriendlyVocabulary:
     - 提供安全等级分类
     """
 
-    SAFETY_KEYWORDS: dict[str, list[str]] = {
-        "hot": ["热", "烫", "刚煮过", "温热", "蒸汽"],
-        "sharp": ["锋利", "刀", "针", "剪刀", "刃"],
-        "fragile": ["易碎", "玻璃", "陶瓷", "脆"],
-        "unstable": ["不稳", "悬空", "斜放", "易倒"],
-        "chemical": ["清洁剂", "化学品", "溶液"],
+    SAFETY_KEYWORDS: dict[str, dict[str, Any]] = {
+        "hot": {
+            "keywords": ["热", "烫", "刚煮过", "温热", "蒸汽", "火", "炉"],
+            "severity": 3,
+            "advice": "请用手背试温，避免直接触摸",
+        },
+        "sharp": {
+            "keywords": ["锋利", "刀", "针", "剪刀", "刃", "尖锐"],
+            "severity": 3,
+            "advice": "请注意利器朝向，拿取时最好抓住手柄端",
+        },
+        "fragile": {
+            "keywords": ["易碎", "玻璃", "陶瓷", "脆"],
+            "severity": 2,
+            "advice": "轻拿轻放，避免磕碰",
+        },
+        "unstable": {
+            "keywords": ["不稳", "悬空", "斜放", "易倒", "堆叠"],
+            "severity": 2,
+            "advice": "移动时注意托稳，避免翻倒",
+        },
+        "chemical": {
+            "keywords": ["清洁剂", "化学品", "溶液", "消毒", "酒精"],
+            "severity": 3,
+            "advice": "请勿误食或接触的手揉眼",
+        },
     }
+
+    SEVERITY_LABELS = {1: "低风险", 2: "中风险", 3: "高风险"}
 
     SHAPE_KEYWORDS: list[str] = [
         "圆筒形", "长方体", "球形", "椭圆", "扁平", "立方", "锥形"
@@ -122,11 +144,17 @@ class BlindFriendlyVocabulary:
 
     @classmethod
     def detect_safety(cls, text: str) -> list[str]:
-        """从文本中检测安全风险"""
+        """从文本中检测安全风险（含严重等级和应对建议）
+
+        创新点：安全提示不仅标注类别，还包含严重等级和具体应对建议。
+        """
         alerts: list[str] = []
-        for category, keywords in cls.SAFETY_KEYWORDS.items():
-            if any(kw in text for kw in keywords):
-                alerts.append(f"[{category}] " + text[:50])
+        for category, info in cls.SAFETY_KEYWORDS.items():
+            if any(kw in text for kw in info["keywords"]):
+                severity = info["severity"]
+                label = cls.SEVERITY_LABELS.get(severity, "未知")
+                advice = info["advice"]
+                alerts.append(f"[{category}/{label}] {text[:50]}。{advice}")
         return alerts
 
 
@@ -271,35 +299,56 @@ class SceneDescriber:
         self,
         descriptions: list[StructuredDescription],
     ) -> StructuredDescription:
-        """聚合多视角描述为最终输出
+        """置信度加权聚合多视角描述
 
-        - 物体去重
-        - 距离取最优（最近视角）
-        - 安全提示合并
+        创新点：
+            1. 物体去重（模糊匹配，而非精确字符串匹配）
+            2. 位置信息取置信度最高的（多视角确认 > 单视角，近距离 > 远距离）
+            3. 安全提示严重等级排序（高风险优先）
+            4. 跨视角一致性检查（多个视角确认的物体置信度更高）
         """
         if not descriptions:
             return StructuredDescription()
 
+        # ---- 物体去重（子串模糊匹配）----
         all_objects: list[str] = []
         seen_objects: set[str] = set()
         for d in descriptions:
             for obj in d.objects:
-                if obj not in seen_objects:
-                    all_objects.append(obj)
-                    seen_objects.add(obj)
+                normalized = obj.strip()
+                if not any(self._fuzzy_match(normalized, s) for s in seen_objects):
+                    all_objects.append(normalized)
+                    seen_objects.add(normalized)
 
-        position_map: dict[str, ObjectPosition] = {}
+        # ---- 位置信息: 置信度加权 ----
+        position_map: dict[str, list[ObjectPosition]] = {}
         for d in descriptions:
             for p in d.positions:
-                existing = position_map.get(p.obj)
-                if existing is None or p.distance_cm < existing.distance_cm:
-                    position_map[p.obj] = p
+                key = self._normalize_obj_name(p.obj)
+                if key not in position_map:
+                    position_map[key] = []
+                position_map[key].append(p)
 
+        best_positions: list[ObjectPosition] = []
+        for key, pos_list in position_map.items():
+            if len(pos_list) == 1:
+                best_positions.append(pos_list[0])
+            else:
+                # 多视角确认: 置信度 = 确认次数 / 总视角数
+                cross_view_confidence = min(len(pos_list) / len(descriptions), 1.0)
+                # 取最近距离的观测（更可靠）
+                closest = min(pos_list, key=lambda p: p.distance_cm)
+                closest.confidence = max(closest.confidence, cross_view_confidence)
+                best_positions.append(closest)
+
+        # ---- 安全提示: 按严重等级排序 ----
         all_safety: list[str] = []
         for d in descriptions:
             all_safety.extend(d.safety_alerts)
         all_safety = list(dict.fromkeys(all_safety))
+        all_safety = self._sort_safety_by_severity(all_safety)
 
+        # ---- 其他合并 ----
         all_advice: list[str] = []
         for d in descriptions:
             all_advice.extend(d.actionable_advice)
@@ -312,11 +361,44 @@ class SceneDescriber:
 
         return StructuredDescription(
             objects=all_objects,
-            positions=list(position_map.values()),
+            positions=best_positions,
             tactile=all_tactile,
             safety_alerts=all_safety,
             actionable_advice=all_advice,
         )
+
+    @staticmethod
+    def _fuzzy_match(a: str, b: str) -> bool:
+        """模糊匹配：子串包含关系或重叠率 >= 60%"""
+        if a in b or b in a:
+            return True
+        set_a, set_b = set(a), set(b)
+        if not set_a or not set_b:
+            return False
+        overlap = len(set_a & set_b) / max(len(set_a), len(set_b))
+        return overlap >= 0.6
+
+    @staticmethod
+    def _normalize_obj_name(name: str) -> str:
+        """归一化物体名（去除颜色/形容词前缀）"""
+        import re
+        name = name.strip()
+        name = re.sub(r'^[白红蓝绿黄黑灰透明深浅]+色?', '', name)
+        name = re.sub(r'^[大小长短高矮宽窄]+', '', name)
+        return name if name else "unknown"
+
+    @staticmethod
+    def _sort_safety_by_severity(alerts: list[str]) -> list[str]:
+        """安全提示按严重等级排序（高风险在前）"""
+        def severity_key(alert: str) -> int:
+            if "高风险" in alert:
+                return 0
+            elif "中风险" in alert:
+                return 1
+            elif "低风险" in alert:
+                return 2
+            return 3
+        return sorted(alerts, key=severity_key)
 
 
 # ============================================================

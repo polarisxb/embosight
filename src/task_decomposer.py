@@ -208,26 +208,84 @@ class BlindTaskTemplate:
     def retrieve_similar(self, query: str, k: int = 3) -> list[dict[str, Any]]:
         """检索 K 个最相似模板示例（Few-shot 检索）
 
+        使用分词 + IDF 加权的 Jaccard 相似度：
+            1. 对 query 和每个模板的 query 分词
+            2. 词频交集加权（稀有词权重高）
+            3. 类别优先级额外加分
+
         Args:
             query: 视障者查询
             k: 检索数量
 
         Returns:
             K 个最相似模板示例
-
-        Note:
-            校赛阶段使用简单关键词匹配；省赛阶段升级为 sentence embedding。
         """
-        # TODO: 校赛阶段简化为关键词匹配；省赛升级为 sentence embedding
-        # 简化版: 用关键词重叠度排序
-        scored: list[tuple[int, dict[str, Any]]] = []
-        query_chars = set(query)
+        query_tokens = self._tokenize(query)
+        if not query_tokens:
+            return self._templates[:k]
+
+        idf = self._compute_idf()
+
+        scored: list[tuple[float, dict[str, Any]]] = []
         for tpl in self._templates:
-            tpl_query = tpl.get("query", "")
-            overlap = len(query_chars & set(tpl_query))
-            scored.append((overlap, tpl))
+            tpl_tokens = self._tokenize(tpl.get("query", ""))
+            if not tpl_tokens:
+                scored.append((0.0, tpl))
+                continue
+
+            intersection = query_tokens & tpl_tokens
+            union = query_tokens | tpl_tokens
+            weighted_inter = sum(idf.get(w, 1.0) for w in intersection)
+            weighted_union = sum(idf.get(w, 1.0) for w in union)
+            sim = weighted_inter / weighted_union if weighted_union > 0 else 0.0
+
+            category_bonus = self._category_bonus(query, tpl.get("category", ""))
+            sim += category_bonus
+
+            scored.append((sim, tpl))
+
         scored.sort(key=lambda x: -x[0])
         return [t for _, t in scored[:k]]
+
+    @staticmethod
+    def _tokenize(text: str) -> set[str]:
+        """中文分词（优先 jieba，回退到 bigram）"""
+        try:
+            import jieba
+            return set(w for w in jieba.lcut(text) if len(w.strip()) > 0)
+        except ImportError:
+            tokens: set[str] = set()
+            text = text.strip()
+            for i in range(len(text) - 1):
+                tokens.add(text[i:i+2])
+            if text:
+                tokens.update(set(text))
+            return tokens
+
+    def _compute_idf(self) -> dict[str, float]:
+        """计算 IDF 权重（逆文档频率）"""
+        import math
+        doc_count: dict[str, int] = {}
+        n = len(self._templates)
+        for tpl in self._templates:
+            tokens = self._tokenize(tpl.get("query", ""))
+            for w in tokens:
+                doc_count[w] = doc_count.get(w, 0) + 1
+        return {w: math.log((n + 1) / (cnt + 1)) + 1 for w, cnt in doc_count.items()}
+
+    @staticmethod
+    def _category_bonus(query: str, category: str) -> float:
+        """基于关键词给类别加分"""
+        CATEGORY_KEYWORDS = {
+            "find_object": ["在哪", "找", "哪里", "搜", "位置"],
+            "describe_scene": ["有什么", "描述", "什么东西", "看看"],
+            "fetch_object": ["拿", "取", "递", "帮我", "给我"],
+            "alert_safety": ["危险", "安全", "小心", "注意", "烫"],
+            "navigate": ["去", "走", "怎么", "路", "方向"],
+        }
+        keywords = CATEGORY_KEYWORDS.get(category, [])
+        hits = sum(1 for kw in keywords if kw in query)
+        return hits * 0.15
 
 
 # ============================================================
@@ -336,8 +394,67 @@ class TaskDecomposer:
             return []
 
     def _validate_and_sort(self, subtasks: list[Subtask]) -> list[Subtask]:
-        """验证有效性并按优先级排序"""
+        """验证有效性、五维度覆盖补全、优先级排序
+
+        核心创新：强制五维度覆盖
+            1. 检查 LLM 输出是否覆盖了所有 5 个 BlindDimension
+            2. 缺失维度自动补全（尤其 safety 永远不能漏）
+            3. 按优先级排序
+        """
         valid = [t for t in subtasks if t.target.strip()]
+
+        covered_dims = {t.blind_dimension for t in valid}
+        all_dims = set(BlindDimension)
+        missing_dims = all_dims - covered_dims
+
+        if missing_dims:
+            logger.info(f"五维度缺失检测: {[d.value for d in missing_dims]}，自动补全")
+
+        primary_target = valid[0].target if valid else "环境"
+
+        DIM_补全_RULES: dict[BlindDimension, Subtask] = {
+            BlindDimension.SAFETY: Subtask(
+                type=SubtaskType.ALERT,
+                target=f"{primary_target}周围潜在危险",
+                priority=1,
+                blind_dimension=BlindDimension.SAFETY,
+                output_format="热源/锐器/易碎/不稳定/化学品",
+            ),
+            BlindDimension.POSITION: Subtask(
+                type=SubtaskType.LOCATE,
+                target=primary_target,
+                priority=2,
+                blind_dimension=BlindDimension.POSITION,
+                output_format="方位（前/后/左/右）",
+            ),
+            BlindDimension.DISTANCE: Subtask(
+                type=SubtaskType.LOCATE,
+                target=primary_target,
+                priority=3,
+                blind_dimension=BlindDimension.DISTANCE,
+                output_format="厘米级距离",
+            ),
+            BlindDimension.TACTILE: Subtask(
+                type=SubtaskType.DESCRIBE,
+                target=f"{primary_target}触觉特征",
+                priority=4,
+                blind_dimension=BlindDimension.TACTILE,
+                output_format="形状/材质/温度",
+            ),
+            BlindDimension.ACTION: Subtask(
+                type=SubtaskType.GUIDE,
+                target=primary_target,
+                priority=5,
+                blind_dimension=BlindDimension.ACTION,
+                output_format="安全取物或避开建议",
+            ),
+        }
+
+        for dim in missing_dims:
+            if dim in DIM_补全_RULES:
+                valid.append(DIM_补全_RULES[dim])
+                logger.debug(f"  补全维度: {dim.value}")
+
         return sorted(valid, key=lambda t: t.priority)
 
 
