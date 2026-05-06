@@ -160,6 +160,7 @@ def test_render() -> bool:
     """
     try:
         import imageio.v2 as imageio
+        import robocasa  # noqa: F401 — 注册 RoboCasa 环境到 robosuite
         import robosuite as suite
 
         print("正在创建厨房环境（首次约 30-60 秒）...")
