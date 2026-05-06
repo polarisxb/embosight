@@ -115,6 +115,26 @@ class EnvWrapper:
             raise RuntimeError("robot0_eef_pos not in observation keys")
         return np.asarray(pos, dtype=np.float32)
 
+    def get_base_pose(self) -> tuple[np.ndarray, np.ndarray]:
+        """获取底盘在世界系的 (位置, 3x3旋转矩阵)
+
+        手臂 OSC 用 input_ref_frame='base', 底盘也是 base 系 JointVelocity,
+        因此所有 action 都是 base 系增量, 需要把世界系 delta 旋转回 base 系.
+        """
+        try:
+            robot = self._env.robots[0]
+            base_pos = np.asarray(robot.base_pos, dtype=np.float32)
+            base_ori = np.asarray(robot.base_ori, dtype=np.float32)  # 3x3
+            return base_pos, base_ori
+        except Exception as e:
+            logger.warning(f"[base_pose] fallback to identity: {e}")
+            return np.zeros(3, dtype=np.float32), np.eye(3, dtype=np.float32)
+
+    def world_to_base_vec(self, vec_world: np.ndarray) -> np.ndarray:
+        """世界系向量 → 底盘局部系 (R.T @ v)"""
+        _, base_ori = self.get_base_pose()
+        return base_ori.T @ np.asarray(vec_world, dtype=np.float32)
+
     def render(self) -> None:
         """如果 has_renderer 则刷新可视化窗口"""
         if self.config.has_renderer and self._env is not None:
@@ -123,7 +143,7 @@ class EnvWrapper:
             except Exception as e:
                 logger.warning(f"[render] {e}")
 
-    ARM_STEP_CAP = 0.15  # 臂端 OSC 步进上限
+    ARM_STEP_CAP = 0.15  # 手臂 OSC 单步增量上限 (base 系)
 
     def move_arm_to(
         self,
@@ -131,13 +151,16 @@ class EnvWrapper:
         max_steps: int = 800,
         threshold_m: float = 0.02,
     ) -> bool:
-        """统一控制: 手臂 OSC 导航 + 底盘同步辅助
+        """自适应控制: 世界系目标 → base 系增量 → 手臂+底盘协同
 
-        设计原则:
-            1. 手臂 OSC 始终在世界坐标系下给出方向 (action[0:3])
-            2. 底盘辅助沿手臂方向给力 — OSC 控制器内部会自动
-               补偿局部/世界坐标系差异, 无需手动变换
-            3. 步数按初始距离动态分配, 远距离自动增加预算
+        关键修正 (相比之前):
+            - 手臂 OSC `input_ref_frame='base'`: action[0:3] 是 base 系增量
+            - 底盘 JointVelocity: action[6:10] 也是 base 系速度
+            - 因此世界系 delta 必须先旋转到 base 系才能用作 action
+
+        策略:
+            每步重读 base_ori (因为底盘可能旋转), 把世界系 delta
+            旋转到当前 base 系, 同时驱动手臂和底盘. 步数按距离动态分配.
 
         Returns:
             True if converged within threshold
@@ -151,7 +174,6 @@ class EnvWrapper:
         action_dim = self._env.action_dim
         has_base = action_dim >= 10
 
-        # 动态步数: 按初始距离自适应
         init_dist = float(np.linalg.norm(target - self.get_eef_pos()))
         if init_dist < threshold_m:
             return True
@@ -164,14 +186,14 @@ class EnvWrapper:
 
         for step in range(max_steps):
             current = self.get_eef_pos()
-            delta = target - current
-            dist = float(np.linalg.norm(delta))
+            delta_world = target - current
+            dist = float(np.linalg.norm(delta_world))
 
             if dist < threshold_m:
-                logger.debug(f"[move_arm_to] converged step={step} dist={dist:.4f}m")
+                logger.debug(f"[move] converged step={step} dist={dist:.4f}m")
                 return True
 
-            # stall 检测: 每 80 步, 允许 5 次
+            # stall 检测
             if step > 0 and step % 80 == 0:
                 if dist >= prev_dist - 0.002:
                     stall += 1
@@ -182,28 +204,29 @@ class EnvWrapper:
                     stall = max(0, stall - 1)
                 prev_dist = dist
 
-            direction = delta / max(dist, 1e-6)
+            # 世界系 → base 系 (核心修正)
+            _, base_ori = self.get_base_pose()
+            delta_base = base_ori.T @ delta_world  # 3D vector in base frame
+
+            dir_base = delta_base / max(dist, 1e-6)
             step_size = min(self.ARM_STEP_CAP, dist)
 
             action = np.zeros(action_dim, dtype=np.float32)
-            # 手臂 OSC: 世界坐标系方向 (控制器内部处理坐标变换)
-            action[0:3] = direction * step_size
+            # 手臂: base 系增量
+            action[0:3] = dir_base * step_size
 
-            # 底盘辅助: 沿手臂同方向给力, 增益随距离自适应
-            #   近距 (<0.1m): 不用底盘
-            #   中距 (0.1-0.3m): 轻度底盘辅助
-            #   远距 (>0.3m): 强底盘辅助
+            # 底盘: base 系 XY 速度, 距离越远增益越大
             if has_base and dist > 0.10:
-                base_gain = min(0.25, dist * 0.4)
-                action[6] = direction[0] * base_gain
-                action[7] = direction[1] * base_gain
+                base_gain = min(0.3, dist * 0.5)
+                action[6] = float(dir_base[0]) * base_gain
+                action[7] = float(dir_base[1]) * base_gain
 
             try:
                 obs, _, _, _ = self._env.step(action)
                 self._latest_obs = obs
                 self.render()
             except Exception as e:
-                logger.warning(f"[move_arm_to] step failed at {step}: {e}")
+                logger.warning(f"[move_arm_to] step {step} failed: {e}")
                 return False
 
         logger.warning(f"[move_arm_to] max_steps reached, dist={dist:.4f}m")
