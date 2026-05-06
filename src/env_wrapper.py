@@ -159,15 +159,15 @@ class EnvWrapper:
                 logger.debug(f"[move_arm_to] converged step={step} dist={dist:.4f}m")
                 return True
 
-            # 发散/停滞检测: 每 50 步看一次
-            if step > 0 and step % 50 == 0:
-                if dist >= prev_dist - 0.005:
+            # 发散/停滞检测: 每 80 步看一次, 允许 5 次 stall
+            if step > 0 and step % 80 == 0:
+                if dist >= prev_dist - 0.003:
                     stall_count += 1
-                    if stall_count >= 3:
+                    if stall_count >= 5:
                         logger.warning(f"[move_arm_to] stalled, dist={dist:.4f}m")
                         return dist < threshold_m
                 else:
-                    stall_count = 0
+                    stall_count = max(0, stall_count - 1)
                 prev_dist = dist
 
             direction = delta / max(dist, 1e-6)
@@ -178,11 +178,13 @@ class EnvWrapper:
             action = np.zeros(action_dim, dtype=np.float32)
             action[0:3] = direction * step_size
 
-            # 长距 (>0.15m) 同时驱动底盘 XY 辅助
-            if dist > 0.15 and action_dim >= 10:
-                base_gain = min(0.1, dist * 0.3)
-                action[6] = direction[0] * base_gain   # base X
-                action[7] = direction[1] * base_gain   # base Y
+            # 底盘辅助: 距离越远底盘出力越大
+            if action_dim >= 10:
+                xy_dist = float(np.linalg.norm(delta[:2]))
+                if dist > 0.08:
+                    base_gain = min(0.3, dist * 0.5)
+                    action[6] = direction[0] * base_gain   # base X
+                    action[7] = direction[1] * base_gain   # base Y
 
             try:
                 obs, _, done, _ = self._env.step(action)
