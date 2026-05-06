@@ -398,30 +398,30 @@ class EnvWrapper:
         """完整抓取流程: 开爪 → 预抓取 → 下降 → 关爪 → 提升
 
         Returns:
-            True if all motion steps converged
+            True if all motion steps converged within tolerance
         """
         target = np.asarray(target_pos_m, dtype=np.float32)
         pre_grasp = target + np.array([0.0, 0.0, pre_grasp_height_m], dtype=np.float32)
+        grasp_tol = 0.05  # 5cm 容差，足以完成抓取
 
         logger.info("[grasp] open gripper")
         self._gripper_action(-1.0, n_steps=8)
 
         logger.info(f"[grasp] move to pre-grasp {pre_grasp}")
-        if not self.move_arm_to(pre_grasp):
-            return False
+        ok1 = self.move_arm_to(pre_grasp, threshold_m=grasp_tol)
 
         logger.info(f"[grasp] descend to target {target}")
-        if not self.move_arm_to(target):
-            return False
+        ok2 = self.move_arm_to(target, threshold_m=grasp_tol)
 
         logger.info("[grasp] close gripper")
         self._gripper_action(+1.0, n_steps=15)
 
         logger.info(f"[grasp] lift to {pre_grasp}")
-        if not self.move_arm_to(pre_grasp):
-            return False
+        ok3 = self.move_arm_to(pre_grasp, threshold_m=grasp_tol)
 
-        return True
+        all_ok = ok1 and ok2 and ok3
+        logger.info(f"[grasp] done: pre={ok1}, descend={ok2}, lift={ok3} → {all_ok}")
+        return all_ok
 
     def eye_in_hand_viewpoint(self):
         """快速获取 eye_in_hand viewpoint 对象"""
