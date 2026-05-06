@@ -148,14 +148,17 @@ def check_assets() -> bool:
 
 
 def test_render() -> bool:
-    """尝试创建 RoboCasa 厨房环境并渲染一张图"""
+    """尝试创建 RoboCasa 厨房环境并渲染一张图
+
+    注: robocasa 1.0+ 环境名从 'PnPCounterToCab' 改为 'PickPlaceCounterToCabinet'
+    """
     try:
         import imageio.v2 as imageio
         import robosuite as suite
 
         print("正在创建厨房环境（首次约 30-60 秒）...")
         env = suite.make(
-            env_name="PnPCounterToCab",
+            env_name="PickPlaceCounterToCabinet",
             robots="PandaMobile",
             has_renderer=False,
             has_offscreen_renderer=True,
@@ -193,16 +196,18 @@ def test_render() -> bool:
 
 
 def test_robocasa_kitchen() -> bool:
-    """尝试创建 RoboCasa 自带的 Kitchen 环境（如果可用）"""
+    """尝试创建 RoboCasa Kitchen 任务（指定 layout/style）
+
+    注: robocasa 1.0+ 环境名是 'PickPlaceCounterToCabinet'
+    """
     try:
         import robocasa
         import robosuite as suite
 
-        # RoboCasa 注册了一些 Kitchen 任务
-        print("正在尝试创建 RoboCasa Kitchen 任务...")
+        print("正在尝试创建 RoboCasa Kitchen 任务（指定布局）...")
         try:
             env = suite.make(
-                env_name="PnPCounterToCab",
+                env_name="PickPlaceCounterToCabinet",
                 robots="PandaMobile",
                 has_renderer=False,
                 has_offscreen_renderer=True,
@@ -215,7 +220,7 @@ def test_robocasa_kitchen() -> bool:
                 style_ids=0,
             )
             obs = env.reset()
-            print(f"  Kitchen 任务创建成功")
+            print(f"  Kitchen 任务创建成功 (layout=0, style=0)")
             env.close()
             print(f"{OK} RoboCasa Kitchen")
             return True
