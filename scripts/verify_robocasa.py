@@ -90,12 +90,18 @@ def check_robosuite() -> bool:
     try:
         import robosuite
 
-        print(f"robosuite: {robosuite.__version__}")
+        version = getattr(robosuite, "__version__", "未知 (可能是 GitHub master 分支)")
+        location = getattr(robosuite, "__file__", "未知")
+        print(f"robosuite: {version}")
+        print(f"位置:      {location}")
         print(f"{OK} robosuite")
         return True
     except ImportError as e:
         print(f"{ERR} robosuite 未安装: {e}")
-        print("  安装: pip install robosuite")
+        print("  从 GitHub master 分支安装:")
+        print("    cd ~/embodied")
+        print("    git clone https://github.com/ARISE-Initiative/robosuite.git")
+        print("    cd robosuite && pip install -e .")
         return False
 
 
