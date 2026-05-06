@@ -194,8 +194,45 @@ class EnvWrapper:
         except (KeyError, ValueError):
             return None
 
+    def _get_task_objects(self) -> list[str]:
+        """获取 RoboCasa 环境中的任务物体 body name 列表
+
+        RoboCasa 用 obj_main / distr_*_main 作为任务物体的 body name，
+        每次 reset 物体种类随机。
+        """
+        sim_body_names = list(self._env.sim.model.body_names)
+        task_objs = [
+            b for b in sim_body_names
+            if b.startswith("obj_") or b.startswith("distr_")
+        ]
+        if not task_objs:
+            # fallback: 排除 robot / wall / floor / cab / stack 等固定结构
+            skip_prefixes = (
+                "world", "robot0", "gripper", "mobilebase",
+                "manipulator", "wall", "floor", "counter",
+                "cab_", "stack_", "hood_", "shelves_", "stool",
+                "fridge", "dishwasher", "microwave", "sink",
+                "outlet", "light_switch", "window", "left_eef",
+                "right_eef", "bottom_", "top_", "box_",
+                "right_corner", "micro_housing", "utensil",
+                "coffee_machine", "knife_block", "plant",
+                "toaster", "paper_towel",
+            )
+            task_objs = [
+                b for b in sim_body_names
+                if not any(b.startswith(p) or b.startswith(p.lower()) for p in skip_prefixes)
+            ]
+        logger.debug(f"[grounding] task objects: {task_objs}")
+        return task_objs
+
     def ground_object(self, user_target: str) -> Optional[ObjectGrounding]:
         """将用户目标名 grounding 到仿真物体
+
+        搜索策略 (按优先级):
+        1. alias_map 精确匹配 body name
+        2. alias_map 精确匹配 task objects
+        3. body name 模糊匹配
+        4. 回退: 返回 obj_main (RoboCasa 主任务物体)
 
         Returns:
             ObjectGrounding with meter coordinates, or None
@@ -207,8 +244,9 @@ class EnvWrapper:
             self._aliases = self._load_aliases()
 
         sim_body_names = list(self._env.sim.model.body_names)
+        task_objs = self._get_task_objects()
 
-        # 1) 别名精确匹配
+        # 1) 别名精确匹配 (全 body)
         candidates = self._aliases.get(user_target, [])
         for canonical in candidates:
             for body in sim_body_names:
@@ -237,6 +275,23 @@ class EnvWrapper:
                         confidence=0.6,
                         source="fuzzy_match",
                     )
+
+        # 3) 回退: 返回 obj_main (RoboCasa 主任务物体)
+        #    RoboCasa PickPlace 任务中 obj_main 就是要抓的物体
+        if "obj_main" in sim_body_names:
+            pos = self._get_body_pos("obj_main")
+            if pos is not None:
+                logger.info(
+                    f"[ground_object] '{user_target}' → fallback to obj_main at {pos}"
+                )
+                return ObjectGrounding(
+                    user_target=user_target,
+                    canonical_name="obj_main",
+                    sim_body_name="obj_main",
+                    position_m=tuple(pos.tolist()),
+                    confidence=0.5,
+                    source="fallback_task_obj",
+                )
 
         logger.warning(f"[ground_object] failed to ground '{user_target}'")
         return None

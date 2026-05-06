@@ -15,7 +15,7 @@
 输出格式 (严格 JSON, 不加任何额外文字):
 {
   "action_type": "grasp" | "point" | "none",
-  "target_object": "目标物体的中文名 (none 时填空字符串)",
+  "target_object": "用户原话中的目标物体简称，如 药瓶/杯子/刀 (不要写 VLM 风格的长描述如 磨砂塑料圆柱药瓶，none 时填空字符串)",
   "reason": "为什么这样判断",
   "safety_constraints": ["从场景描述里提取的安全相关约束"],
   "require_confirmation": true
