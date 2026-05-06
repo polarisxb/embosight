@@ -115,12 +115,14 @@ class ViewpointLibrary:
         logger.info(f"加载视角库: {len(self.viewpoints)} 个视角")
 
     def _builtin_viewpoints(self) -> None:
-        """内置最小视角集（保证系统能跑）"""
+        """内置最小视角集（保证系统能跑，对应 RoboCasa 实际摄像头名）"""
         self.viewpoints = [
-            Viewpoint("top_view", (0, 0, 80), (0, -90, 0), "全景俯视"),
-            Viewpoint("left_close", (-30, 0, 30), (0, -45, 0), "左侧近距"),
-            Viewpoint("right_close", (30, 0, 30), (0, -45, 0), "右侧近距"),
-            Viewpoint("front_close", (0, -30, 30), (0, -30, 0), "正面平视"),
+            Viewpoint("robot0_agentview_center", (0, 0, 60), (0, -45, 0), "全景中央视角，用于场景概览"),
+            Viewpoint("robot0_agentview_left", (-60, 0, 60), (0, -45, 45), "左侧全景视角，用于左半区观察"),
+            Viewpoint("robot0_agentview_right", (60, 0, 60), (0, -45, -45), "右侧全景视角，用于右半区观察"),
+            Viewpoint("robot0_frontview", (0, -60, 30), (0, -30, 0), "正面视图，用于近距识别"),
+            Viewpoint("robot0_robotview", (0, 30, 60), (0, -45, 180), "机器人视角，用于操作区域观察"),
+            Viewpoint("robot0_eye_in_hand", (0, 0, 30), (0, -90, 0), "机械臂末端视角，用于物体特写"),
         ]
 
     def __len__(self) -> int:
