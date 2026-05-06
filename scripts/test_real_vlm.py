@@ -159,7 +159,7 @@ def test_scene_describer(vlm, device: str):
     print(f"  安全: {desc.safety_alerts}")
     print(f"  建议: {desc.actionable_advice[:2]}")
 
-    speech = describer.to_speech_text(desc)
+    speech = desc.to_speech()
     print(f"\n  语音文本 ({len(speech)} chars):")
     print(f"    {speech[:300]}")
 
