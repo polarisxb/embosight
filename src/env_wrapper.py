@@ -126,7 +126,7 @@ class EnvWrapper:
     def move_arm_to(
         self,
         target_pos_m,
-        max_steps: int = 200,
+        max_steps: int = 500,
         threshold_m: float = 0.02,
     ) -> bool:
         """OSC 增量控制移动末端到目标位置 (单位: m)
@@ -153,7 +153,8 @@ class EnvWrapper:
                 logger.debug(f"[move_arm_to] converged step={step} dist={dist:.4f}m")
                 return True
 
-            step_size = min(0.05, dist)
+            # OSC action 空间 [-1,1]，用较大 step_size 加速收敛
+            step_size = min(0.4, dist * 2.0)
             direction = delta / max(dist, 1e-6)
 
             action = np.zeros(action_dim, dtype=np.float32)

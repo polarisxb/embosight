@@ -94,7 +94,8 @@ class ActionExecutor:
             for obj in HAZARD_OBJECTS:
                 if obj in constraint:
                     g = env.ground_object(obj)
-                    if g is not None:
+                    # 只用高置信度 grounding，排除 fallback 到 obj_main 的情况
+                    if g is not None and g.confidence >= 0.6:
                         zones.append(NoGoZone(
                             name=obj,
                             center_m=g.position_m,
@@ -103,7 +104,9 @@ class ActionExecutor:
                             reason=constraint,
                         ))
                         logger.info(f"[no_go] {obj} at {g.position_m} ({risk_level})")
-                        break
+                    else:
+                        logger.debug(f"[no_go] skip '{obj}': low confidence grounding")
+                    break
         return zones
 
     # ------------------------------------------------------------------
@@ -272,11 +275,19 @@ class ActionExecutor:
             match = grasp_ok
             score = 1.0 if grasp_ok else 0.0
 
-        status = "已拿到" if match else "可能没拿到"
-        msg = f"{status}目标 '{plan.target_object}' (匹配度 {score:.2f})"
+        overall_ok = grasp_ok and match
+        if overall_ok:
+            status = "已拿到"
+        elif grasp_ok and not match:
+            status = "抓取完成但验证不匹配"
+        elif not grasp_ok:
+            status = "抓取未到位"
+        else:
+            status = "可能没拿到"
+        msg = f"{status}目标 '{plan.target_object}' (grasp={grasp_ok}, 匹配度 {score:.2f})"
 
         return ActionResult(
-            success=grasp_ok and match,
+            success=overall_ok,
             executed=True,
             grounding=grounding,
             verification_match=match,
