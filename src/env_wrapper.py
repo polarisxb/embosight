@@ -138,6 +138,9 @@ class EnvWrapper:
             self.reset()
 
         target = np.asarray(target_pos_m, dtype=np.float32)
+        if target.shape[0] > 3:
+            logger.debug(f"[move_arm_to] truncating {target.shape[0]}D → 3D (xyz only)")
+            target = target[:3]
         action_dim = self._env.action_dim
         dist = float("inf")
 
@@ -297,13 +300,30 @@ class EnvWrapper:
     # 抓取 (Phase 3)
     # ------------------------------------------------------------------
 
+    def _get_gripper_idx(self) -> int:
+        """动态获取 gripper 在 action vector 中的 index"""
+        if hasattr(self, "_gripper_idx_cache"):
+            return self._gripper_idx_cache
+        # composite controller: 累加 arm controller 输出维度
+        try:
+            robot = self._env.robots[0]
+            idx = 0
+            for part_name, controller in robot.composite_controller.part_controllers.items():
+                if "gripper" in part_name.lower():
+                    self._gripper_idx_cache = idx
+                    logger.info(f"[gripper] detected index={idx} (part={part_name})")
+                    return idx
+                idx += controller.control_dim
+        except Exception as e:
+            logger.warning(f"[gripper] auto-detect failed ({e}), fallback to idx=6")
+        self._gripper_idx_cache = 6
+        return 6
+
     def _gripper_action(self, gripper_value: float, n_steps: int = 10) -> None:
         """控制夹爪 (gripper_value: -1 开, +1 关)"""
         action = np.zeros(self._env.action_dim, dtype=np.float32)
-        # PandaMobile OSC_POSE: action layout 取决于 controller
-        # 一般 [0:3]=pos, [3:6]=rot, [6]=gripper, [7:]=base
-        # 首次运行请用 print(env._env.action_spec) 校验
-        gripper_idx = 6
+        # PandaOmron composite: [0:6]=arm(pos+rot), [6]=gripper, [7:]=base
+        gripper_idx = self._get_gripper_idx()
         action[gripper_idx] = gripper_value
         for _ in range(n_steps):
             try:

@@ -211,7 +211,7 @@ class ActivePlanner:
         # ---- 初始全景视角 ----
         init_idx = 0
         init_vp = self.vp_lib[init_idx]
-        env.move_arm_to(init_vp.to_pose())
+        # 视角是固定摄像头，不需要移动手臂
         init_obs = env.observe(init_vp)
         observations.append(init_obs)
         used_indices.add(init_idx)
@@ -238,7 +238,7 @@ class ActivePlanner:
                 break
 
             next_vp = self.vp_lib[next_idx]
-            env.move_arm_to(next_vp.to_pose())
+            # 视角是固定摄像头，不需要移动手臂
             new_obs = env.observe(next_vp)
             observations.append(new_obs)
             used_indices.add(next_idx)
