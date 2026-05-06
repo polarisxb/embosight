@@ -126,10 +126,14 @@ class EnvWrapper:
     def move_arm_to(
         self,
         target_pos_m,
-        max_steps: int = 500,
+        max_steps: int = 800,
         threshold_m: float = 0.02,
     ) -> bool:
         """OSC 增量控制移动末端到目标位置 (单位: m)
+
+        PandaOmron composite layout (action_dim=12):
+          [0:3]=arm_pos, [3:6]=arm_rot, [6:10]=base, [10:12]=gripper
+        长距移动同时驱动底盘 XY 辅助靠近。
 
         Returns:
             True if converged within threshold
@@ -143,6 +147,8 @@ class EnvWrapper:
             target = target[:3]
         action_dim = self._env.action_dim
         dist = float("inf")
+        prev_dist = float("inf")
+        stall_count = 0
 
         for step in range(max_steps):
             current = self.get_eef_pos()
@@ -153,12 +159,30 @@ class EnvWrapper:
                 logger.debug(f"[move_arm_to] converged step={step} dist={dist:.4f}m")
                 return True
 
-            # OSC action 空间 [-1,1]，用较大 step_size 加速收敛
-            step_size = min(0.4, dist * 2.0)
+            # 发散/停滞检测: 每 50 步看一次
+            if step > 0 and step % 50 == 0:
+                if dist >= prev_dist - 0.005:
+                    stall_count += 1
+                    if stall_count >= 3:
+                        logger.warning(f"[move_arm_to] stalled, dist={dist:.4f}m")
+                        return dist < threshold_m
+                else:
+                    stall_count = 0
+                prev_dist = dist
+
             direction = delta / max(dist, 1e-6)
+
+            # 稳定 step_size: cap=0.15 防止 OSC 饱和
+            step_size = min(0.15, dist)
 
             action = np.zeros(action_dim, dtype=np.float32)
             action[0:3] = direction * step_size
+
+            # 长距 (>0.15m) 同时驱动底盘 XY 辅助
+            if dist > 0.15 and action_dim >= 10:
+                base_gain = min(0.1, dist * 0.3)
+                action[6] = direction[0] * base_gain   # base X
+                action[7] = direction[1] * base_gain   # base Y
 
             try:
                 obs, _, done, _ = self._env.step(action)
