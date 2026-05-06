@@ -46,10 +46,11 @@ simulator:
   image_width: 256
   image_height: 256
   camera_names:
-    - agentview
-    - birdview
-    - sideview
-    - frontview
+    - robot0_agentview_center
+    - robot0_agentview_left
+    - robot0_agentview_right
+    - robot0_frontview
+    - robot0_robotview
     - robot0_eye_in_hand
 
 # 输出目录

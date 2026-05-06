@@ -55,8 +55,9 @@ def main() -> None:
         image_width=sim_cfg.get("image_width", 256),
         image_height=sim_cfg.get("image_height", 256),
         camera_names=tuple(sim_cfg.get("camera_names", [
-            "agentview", "birdview", "sideview",
-            "frontview", "robot0_eye_in_hand",
+            "robot0_agentview_center", "robot0_agentview_left",
+            "robot0_agentview_right", "robot0_frontview",
+            "robot0_robotview", "robot0_eye_in_hand",
         ])),
         output_dir=out_cfg.get("observation_dir", "./results/observations"),
     )

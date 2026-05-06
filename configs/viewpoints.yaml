@@ -1,5 +1,5 @@
 # ============================================================
-# 离散视角库（5 个 robosuite 内置摄像头）
+# 离散视角库（6 个 RoboCasa 内置摄像头）
 # ============================================================
 # 校赛 Day 2: 用 robosuite 内置摄像头名代替自定义位姿
 # "切换视角" = "切换摄像头"，无需 IK / 机械臂运动
@@ -7,25 +7,30 @@
 # ============================================================
 
 viewpoints:
-  - name: agentview
+  - name: robot0_agentview_center
     position: [0, 0, 60]
     orientation: [0, -45, 0]
-    purpose: "全景前视，用于场景概览"
+    purpose: "全景中央视角，用于场景概览"
 
-  - name: birdview
-    position: [0, 0, 100]
-    orientation: [0, -90, 0]
-    purpose: "顶视图，用于俯瞰布局"
+  - name: robot0_agentview_left
+    position: [-60, 0, 60]
+    orientation: [0, -45, 45]
+    purpose: "左侧全景视角，用于左半区观察"
 
-  - name: sideview
-    position: [60, 0, 30]
-    orientation: [0, -30, -90]
-    purpose: "侧视图，用于深度判断"
+  - name: robot0_agentview_right
+    position: [60, 0, 60]
+    orientation: [0, -45, -45]
+    purpose: "右侧全景视角，用于右半区观察"
 
-  - name: frontview
+  - name: robot0_frontview
     position: [0, -60, 30]
     orientation: [0, -30, 0]
     purpose: "正面视图，用于近距识别"
+
+  - name: robot0_robotview
+    position: [0, 30, 60]
+    orientation: [0, -45, 180]
+    purpose: "机器人视角，用于操作区域观察"
 
   - name: robot0_eye_in_hand
     position: [0, 0, 30]

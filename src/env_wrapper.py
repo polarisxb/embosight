@@ -28,10 +28,11 @@ class EnvConfig:
     image_height: int = 256
     output_dir: str = "./results/observations"
     camera_names: tuple[str, ...] = (
-        "agentview",
-        "birdview",
-        "sideview",
-        "frontview",
+        "robot0_agentview_center",
+        "robot0_agentview_left",
+        "robot0_agentview_right",
+        "robot0_frontview",
+        "robot0_robotview",
         "robot0_eye_in_hand",
     )
     layout_ids: Optional[int] = None
@@ -123,8 +124,8 @@ class EnvWrapper:
         img = self._latest_obs.get(img_key)
 
         if img is None:
-            logger.warning(f"未找到图像 {img_key}, 用 agentview 代替")
-            img = self._latest_obs.get("agentview_image")
+            logger.warning(f"未找到图像 {img_key}, 用 robot0_agentview_center 代替")
+            img = self._latest_obs.get("robot0_agentview_center_image")
 
         self._step += 1
         image_path = os.path.join(
