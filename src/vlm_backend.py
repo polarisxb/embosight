@@ -23,11 +23,11 @@ class VLMBackend:
 
     def __init__(
         self,
-        model_id: str = "Qwen/Qwen2.5-VL-7B-Instruct",
+        model_id: str = "./checkpoints/Qwen2.5-VL-7B-Instruct",
         device: str = "cuda",
         torch_dtype: str = "bfloat16",
         max_new_tokens: int = 1024,
-        cache_dir: Optional[str] = "./checkpoints",
+        cache_dir: Optional[str] = None,
     ) -> None:
         """
         Args:
@@ -70,15 +70,19 @@ class VLMBackend:
         }
         dtype = dtype_map.get(self.torch_dtype, torch.bfloat16)
 
+        load_kwargs = {}
+        if self.cache_dir:
+            load_kwargs["cache_dir"] = self.cache_dir
+
         self._processor = AutoProcessor.from_pretrained(
             self.model_id,
-            cache_dir=self.cache_dir,
+            **load_kwargs,
         )
         self._model = Qwen2VLForConditionalGeneration.from_pretrained(
             self.model_id,
             torch_dtype=dtype,
             device_map=self.device,
-            cache_dir=self.cache_dir,
+            **load_kwargs,
         )
         self._model.eval()
 
