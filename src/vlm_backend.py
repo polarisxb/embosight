@@ -79,10 +79,11 @@ class VLMBackend:
             self.model_id,
             **load_kwargs,
         )
+        device_map = "auto" if self.device.startswith("cuda") else "cpu"
         self._model = VLModelClass.from_pretrained(
             self.model_id,
             torch_dtype=dtype,
-            device_map=self.device,
+            device_map=device_map,
             **load_kwargs,
         )
         self._model.eval()
@@ -144,7 +145,7 @@ class VLMBackend:
             padding=True,
             return_tensors="pt",
         )
-        inputs = {k: v.to(self.device) for k, v in inputs.items()}
+        inputs = {k: v.to(self._model.device) for k, v in inputs.items()}
 
         with torch.inference_mode():
             generated_ids = self._model.generate(
