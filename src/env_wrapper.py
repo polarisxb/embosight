@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
@@ -71,8 +71,9 @@ class EnvWrapper:
             初始观察字典
         """
         if self._env is None:
-            os.environ.setdefault("MUJOCO_GL", "egl")
-            os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
+            if not self.config.has_renderer:
+                os.environ.setdefault("MUJOCO_GL", "egl")
+                os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
 
             import robocasa  # noqa: F401 — 注册 RoboCasa 环境到 robosuite
             import robosuite as suite
@@ -138,6 +139,7 @@ class EnvWrapper:
 
         target = np.asarray(target_pos_m, dtype=np.float32)
         action_dim = self._env.action_dim
+        dist = float("inf")
 
         for step in range(max_steps):
             current = self.get_eef_pos()
@@ -172,7 +174,8 @@ class EnvWrapper:
     def _load_aliases(self) -> dict[str, list[str]]:
         import yaml
 
-        path = Path("configs/object_aliases.yaml")
+        repo_root = Path(__file__).resolve().parent.parent
+        path = repo_root / "configs" / "object_aliases.yaml"
         if not path.exists():
             logger.warning(f"[grounding] alias map not found: {path}")
             return {}

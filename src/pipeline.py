@@ -89,6 +89,8 @@ class EmboSightPipeline:
                 subtasks: 分解出的子任务
                 observations: 多视角观察
                 description: 聚合后的结构化描述
+                action_plan: 行动决策 (type/target/reason/constraints)
+                action_result: 行动执行结果 (success/message/waypoints) 或 None
                 speech: TTS 语音文本
         """
         logger.info("=" * 60)

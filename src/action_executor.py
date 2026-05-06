@@ -217,11 +217,18 @@ class ActionExecutor:
             plan: ActionPlan from ActionDecider
             env: EnvWrapper instance
         """
-        if plan.action_type != "grasp":
+        if plan.action_type == "none":
             return ActionResult(
                 success=True,
                 executed=False,
                 message="无需物理动作",
+            )
+
+        if plan.action_type == "point":
+            return ActionResult(
+                success=True,
+                executed=False,
+                message="指向动作暂未实现",
             )
 
         # 1) Grounding
