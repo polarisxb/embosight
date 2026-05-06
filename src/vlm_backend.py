@@ -52,10 +52,11 @@ class VLMBackend:
 
         try:
             import torch
-            from transformers import (
-                Qwen2VLForConditionalGeneration,
-                AutoProcessor,
-            )
+            from transformers import AutoProcessor
+            try:
+                from transformers import Qwen2_5_VLForConditionalGeneration as VLModelClass
+            except ImportError:
+                from transformers import Qwen2VLForConditionalGeneration as VLModelClass
         except ImportError as e:
             raise ImportError(
                 f"请先安装依赖: pip install torch transformers, 错误: {e}"
@@ -78,7 +79,7 @@ class VLMBackend:
             self.model_id,
             **load_kwargs,
         )
-        self._model = Qwen2VLForConditionalGeneration.from_pretrained(
+        self._model = VLModelClass.from_pretrained(
             self.model_id,
             torch_dtype=dtype,
             device_map=self.device,

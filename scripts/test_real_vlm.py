@@ -44,7 +44,7 @@ def check_gpu():
             print(f"  [WARN] CUDA 不可用，将使用 CPU（非常慢）")
             return "cpu"
         gpu_name = torch.cuda.get_device_name(0)
-        gpu_mem = torch.cuda.get_device_properties(0).total_mem / 1024**3
+        gpu_mem = torch.cuda.get_device_properties(0).total_memory / 1024**3
         print(f"  GPU: {gpu_name}")
         print(f"  显存: {gpu_mem:.1f} GB")
         if gpu_mem < 16:
