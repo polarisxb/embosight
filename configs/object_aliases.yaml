@@ -1,0 +1,19 @@
+# 中文/英文用户目标名 → RoboCasa body name 候选列表
+# 运行 print(env._env.sim.model.body_names) 后按需补全
+aliases:
+  药瓶: [bottle, medicine_bottle, pill_bottle]
+  瓶子: [bottle]
+  水瓶: [water_bottle, bottle]
+  调味瓶: [seasoning_bottle, spice_bottle, bottle]
+  杯子: [cup, mug, glass]
+  马克杯: [mug]
+  锅: [pot, pan, saucepan]
+  平底锅: [pan, frying_pan]
+  碗: [bowl]
+  盘子: [plate, dish]
+  刀: [knife]
+  勺: [spoon, ladle]
+  叉子: [fork]
+  苹果: [apple]
+  面包: [bread]
+  罐头: [can]

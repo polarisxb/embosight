@@ -1,6 +1,6 @@
 """EmboSight 主流程
 
-将三大创新模块串联为端到端的视障辅助 pipeline。
+6 步 Pipeline: 任务分解 → 主动视角 → 场景描述 → 聚合 → 行动决策 → 行动执行
 
 使用示例:
     >>> from src.pipeline import EmboSightPipeline
@@ -18,6 +18,8 @@ from typing import Any
 
 import yaml
 
+from .action_decider import ActionDecider
+from .action_executor import ActionExecutor
 from .active_planner import ActivePlanner, Observation, ViewpointLibrary
 from .llm_backend import LLMBackend
 from .scene_describer import SceneDescriber, StructuredDescription
@@ -64,6 +66,15 @@ class EmboSightPipeline:
                 "scene_describer", "prompts/scene_describer.txt"
             ),
         )
+        self.action_decider = ActionDecider(
+            self.llm,
+            prompt_path=self.config.get("prompts", {}).get(
+                "action_decider", "prompts/action_decider.txt"
+            ),
+        )
+        self.action_executor = ActionExecutor(
+            scene_describer=self.scene_describer,
+        )
 
     def run(self, query: str, env) -> dict[str, Any]:
         """主入口: 执行完整 pipeline
@@ -105,7 +116,29 @@ class EmboSightPipeline:
 
         final_desc = self.scene_describer.aggregate(descriptions)
         speech = final_desc.to_speech()
-        logger.info(f"[Step 4] 聚合完成")
+        logger.info("[Step 4] 聚合完成")
+
+        # Step 5: 行动决策
+        logger.info("[Step 5] 行动决策")
+        action_plan = self.action_decider.decide(query, final_desc)
+        logger.info(
+            f"  → {action_plan.action_type} "
+            f"target='{action_plan.target_object}'"
+        )
+
+        # Step 6: 行动执行
+        action_result = None
+        if action_plan.needs_execution:
+            logger.info("[Step 6] 行动执行")
+            action_result = self.action_executor.execute(action_plan, env)
+            logger.info(
+                f"  → success={action_result.success}, "
+                f"msg={action_result.message}"
+            )
+            speech += f"\n[行动结果] {action_result.message}"
+        else:
+            logger.info("[Step 6] 跳过 (无需物理动作)")
+
         logger.info(f"最终输出: {speech}")
 
         return {
@@ -124,6 +157,23 @@ class EmboSightPipeline:
                 for o in observations
             ],
             "description": final_desc.to_dict(),
+            "action_plan": {
+                "action_type": action_plan.action_type,
+                "target_object": action_plan.target_object,
+                "reason": action_plan.reason,
+                "safety_constraints": action_plan.safety_constraints,
+            },
+            "action_result": (
+                {
+                    "success": action_result.success,
+                    "executed": action_result.executed,
+                    "message": action_result.message,
+                    "verification_match": action_result.verification_match,
+                    "waypoints": action_result.waypoints,
+                }
+                if action_result
+                else None
+            ),
             "speech": speech,
         }
 

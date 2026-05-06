@@ -23,6 +23,7 @@ def main() -> None:
     parser.add_argument("--query", type=str, required=True, help="视障者查询")
     parser.add_argument("--config", type=str, default="configs/default.yaml")
     parser.add_argument("--baseline", action="store_true", help="跑 baseline（固定视角扫描）")
+    parser.add_argument("--visualize", action="store_true", help="开 MuJoCo 实时 viewer")
     parser.add_argument("--output", type=str, default="results/demo.json")
     parser.add_argument("--log-level", type=str, default="INFO")
     args = parser.parse_args()
@@ -38,6 +39,7 @@ def main() -> None:
     logger.info(f"Query:    {args.query}")
     logger.info(f"Config:   {args.config}")
     logger.info(f"Mode:     {'Baseline' if args.baseline else 'Ours'}")
+    logger.info(f"Viewer:   {args.visualize}")
     logger.info("=" * 60)
 
     from src.env_wrapper import EnvWrapper, EnvConfig
@@ -60,6 +62,7 @@ def main() -> None:
             "robot0_robotview", "robot0_eye_in_hand",
         ])),
         output_dir=out_cfg.get("observation_dir", "./results/observations"),
+        has_renderer=args.visualize,
     )
 
     pipeline = EmboSightPipeline(args.config)
