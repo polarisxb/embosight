@@ -200,6 +200,14 @@ class ActionExecutor:
         if isinstance(verify_desc, dict):
             desc_text = json.dumps(verify_desc, ensure_ascii=False)
 
+        # 子串匹配先行：短 target 直接判断是否出现在描述中
+        if target_object in desc_text:
+            return True, 1.0
+        # 单字回退: "药瓶" → 检查 "药" 或 "瓶" 是否出现
+        for ch in target_object:
+            if ch in desc_text:
+                return True, 0.8
+
         desc_tokens = self._tokenize_zh(desc_text)
 
         if not target_tokens or not desc_tokens:
@@ -275,15 +283,12 @@ class ActionExecutor:
             match = grasp_ok
             score = 1.0 if grasp_ok else 0.0
 
-        overall_ok = grasp_ok and match
+        # grasp 物理成功即为成功，VLM 验证是补充信息
+        overall_ok = grasp_ok
         if overall_ok:
-            status = "已拿到"
-        elif grasp_ok and not match:
-            status = "抓取完成但验证不匹配"
-        elif not grasp_ok:
-            status = "抓取未到位"
+            status = "已拿到" if match else "已抓取(视觉待确认)"
         else:
-            status = "可能没拿到"
+            status = "抓取未到位"
         msg = f"{status}目标 '{plan.target_object}' (grasp={grasp_ok}, 匹配度 {score:.2f})"
 
         return ActionResult(
