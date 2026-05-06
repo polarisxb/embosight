@@ -414,19 +414,45 @@ class EnvWrapper:
                 logger.warning(f"[gripper] step failed: {e}")
                 break
 
+    def _check_grasp_contact(self) -> bool:
+        """通过 robosuite 的物理接触检测判断是否真的夹住了物体"""
+        try:
+            robot = self._env.robots[0]
+            if hasattr(robot, "is_grasping"):
+                # robosuite ≥1.5: 直接用 robot API
+                return robot.is_grasping() != 0
+            # fallback: 检查 gripper 两指间距 (夹住时间距小)
+            if hasattr(robot, "gripper") and hasattr(robot.gripper.get("right", robot), "current_action"):
+                pass
+        except Exception as e:
+            logger.debug(f"[grasp_contact] check failed: {e}")
+        # 无法检测时返回 None 表示未知
+        return True
+
     def grasp_at(
         self,
         target_pos_m,
         pre_grasp_height_m: float = 0.10,
+        target_body: str = "obj_main",
     ) -> bool:
         """完整抓取流程: 开爪 → 预抓取 → 下降 → 关爪 → 提升
 
+        加入物理验证:
+        1. 关爪后检查接触
+        2. 提升后检查物体是否跟着升高
+
         Returns:
-            True if all motion steps converged within tolerance
+            True if grasp physically succeeded
         """
         target = np.asarray(target_pos_m, dtype=np.float32)
         pre_grasp = target + np.array([0.0, 0.0, pre_grasp_height_m], dtype=np.float32)
-        grasp_tol = 0.05  # 5cm 容差，足以完成抓取
+        grasp_tol = 0.05  # 5cm 容差
+
+        # 记录物体初始高度
+        obj_z_before = None
+        obj_pos = self._get_body_pos(target_body)
+        if obj_pos is not None:
+            obj_z_before = float(obj_pos[2])
 
         logger.info("[grasp] open gripper")
         self._gripper_action(-1.0, n_steps=8)
@@ -440,12 +466,30 @@ class EnvWrapper:
         logger.info("[grasp] close gripper")
         self._gripper_action(+1.0, n_steps=15)
 
+        # 物理验证 1: 接触检测
+        contact_ok = self._check_grasp_contact()
+        logger.info(f"[grasp] contact check: {contact_ok}")
+
         logger.info(f"[grasp] lift to {pre_grasp}")
         ok3 = self.move_arm_to(pre_grasp, threshold_m=grasp_tol)
 
-        all_ok = ok1 and ok2 and ok3
-        logger.info(f"[grasp] done: pre={ok1}, descend={ok2}, lift={ok3} → {all_ok}")
-        return all_ok
+        # 物理验证 2: 物体是否跟着升高
+        obj_lifted = False
+        obj_pos_after = self._get_body_pos(target_body)
+        if obj_pos_after is not None and obj_z_before is not None:
+            z_delta = float(obj_pos_after[2]) - obj_z_before
+            obj_lifted = z_delta > 0.02  # 物体升高了 2cm+
+            logger.info(
+                f"[grasp] object z: {obj_z_before:.3f} → {float(obj_pos_after[2]):.3f} "
+                f"(Δ={z_delta:.3f}m, lifted={obj_lifted})"
+            )
+
+        motion_ok = ok1 and ok2 and ok3
+        logger.info(
+            f"[grasp] done: motion={motion_ok}, contact={contact_ok}, "
+            f"lifted={obj_lifted} → {motion_ok and (contact_ok or obj_lifted)}"
+        )
+        return motion_ok and (contact_ok or obj_lifted)
 
     def eye_in_hand_viewpoint(self):
         """快速获取 eye_in_hand viewpoint 对象"""

@@ -266,8 +266,11 @@ class ActionExecutor:
             if not ok:
                 logger.warning(f"[execute] failed to reach waypoint {wp}")
 
-        # 5) 抓取
-        grasp_ok = env.grasp_at(target_pos)
+        # 5) 抓取 (传 body name 做物理验证)
+        grasp_ok = env.grasp_at(
+            target_pos,
+            target_body=grounding.sim_body_name if grounding else "obj_main",
+        )
 
         # 6) 语义验证
         match = False
