@@ -211,29 +211,35 @@ def test_robocasa_kitchen() -> bool:
         import robocasa
         import robosuite as suite
 
-        print("正在尝试创建 RoboCasa Kitchen 任务（指定布局）...")
-        try:
-            env = suite.make(
-                env_name="PickPlaceCounterToCabinet",
-                robots="PandaMobile",
-                has_renderer=False,
-                has_offscreen_renderer=True,
-                use_camera_obs=True,
-                camera_names=["robot0_eye_in_hand"],
-                camera_heights=256,
-                camera_widths=256,
-                control_freq=20,
-                layout_ids=0,
-                style_ids=0,
-            )
-            obs = env.reset()
-            print(f"  Kitchen 任务创建成功 (layout=0, style=0)")
-            env.close()
-            print(f"{OK} RoboCasa Kitchen")
-            return True
-        except Exception as e:
-            print(f"{WARN} Kitchen 任务创建失败（可能 assets 未下载完整）: {e}")
-            return False
+        # 先尝试指定 layout/style，若因 numpy 类型兼容性问题失败则回退到随机布局
+        for attempt, kwargs in enumerate([
+            {"layout_ids": int(0), "style_ids": int(0)},
+            {},
+        ]):
+            label = "layout=0, style=0" if kwargs else "随机布局"
+            print(f"  尝试 {attempt + 1}: 创建 Kitchen 任务（{label}）...")
+            try:
+                env = suite.make(
+                    env_name="PickPlaceCounterToCabinet",
+                    robots="PandaMobile",
+                    has_renderer=False,
+                    has_offscreen_renderer=True,
+                    use_camera_obs=True,
+                    camera_names=["robot0_eye_in_hand"],
+                    camera_heights=256,
+                    camera_widths=256,
+                    control_freq=20,
+                    **kwargs,
+                )
+                obs = env.reset()
+                print(f"  Kitchen 任务创建成功（{label}）")
+                env.close()
+                print(f"{OK} RoboCasa Kitchen")
+                return True
+            except Exception as e:
+                print(f"  {WARN} {label} 失败: {e}")
+        print(f"{ERR} RoboCasa Kitchen 所有尝试均失败")
+        return False
 
     except Exception as e:
         print(f"{WARN} RoboCasa Kitchen 测试失败: {e}")
