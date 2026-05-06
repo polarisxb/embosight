@@ -123,17 +123,26 @@ class EnvWrapper:
             except Exception as e:
                 logger.warning(f"[render] {e}")
 
+    # Panda 臂展约 0.855m, 但有效抓取范围约 0.4m (含安全余量)
+    ARM_REACH_XY = 0.25  # XY 平面臂展阈值: 超过此值需底盘靠近
+    BASE_SPEED = 0.3     # 底盘 XY 步进量
+    ARM_STEP_CAP = 0.15  # 臂端 OSC 步进上限
+
     def move_arm_to(
         self,
         target_pos_m,
         max_steps: int = 800,
         threshold_m: float = 0.02,
     ) -> bool:
-        """OSC 增量控制移动末端到目标位置 (单位: m)
+        """自适应两阶段控制: 底盘靠近 → 手臂精调
 
-        PandaOmron composite layout (action_dim=12):
-          [0:3]=arm_pos, [3:6]=arm_rot, [6:10]=base, [10:12]=gripper
-        长距移动同时驱动底盘 XY 辅助靠近。
+        Phase 1 (base approach):
+            如果目标在手臂 XY 可达范围外, 先驱动底盘靠近,
+            同时手臂做轻度跟踪, 直到 XY 距离 < ARM_REACH_XY.
+        Phase 2 (arm fine control):
+            纯手臂 OSC 控制到达目标, 底盘只做微量辅助.
+
+        适配任意随机物体分布, 无需针对特定距离调参.
 
         Returns:
             True if converged within threshold
@@ -143,55 +152,101 @@ class EnvWrapper:
 
         target = np.asarray(target_pos_m, dtype=np.float32)
         if target.shape[0] > 3:
-            logger.debug(f"[move_arm_to] truncating {target.shape[0]}D → 3D (xyz only)")
             target = target[:3]
         action_dim = self._env.action_dim
-        dist = float("inf")
-        prev_dist = float("inf")
-        stall_count = 0
+        has_base = action_dim >= 10
 
-        for step in range(max_steps):
+        # ---------- Phase 1: 底盘靠近 ----------
+        steps_used = 0
+        if has_base:
+            phase1_budget = max_steps // 2  # 最多用一半步数做底盘靠近
+            prev_xy = float("inf")
+            stall = 0
+            for step in range(phase1_budget):
+                current = self.get_eef_pos()
+                delta = target - current
+                xy_dist = float(np.linalg.norm(delta[:2]))
+                total_dist = float(np.linalg.norm(delta))
+
+                if total_dist < threshold_m:
+                    return True
+                if xy_dist < self.ARM_REACH_XY:
+                    logger.debug(
+                        f"[move] phase1 done: step={step}, xy={xy_dist:.3f}m"
+                    )
+                    break
+
+                # stall 检测: 底盘不动了就切 phase2
+                if step > 0 and step % 60 == 0:
+                    if xy_dist >= prev_xy - 0.002:
+                        stall += 1
+                        if stall >= 3:
+                            logger.debug(f"[move] phase1 stall, xy={xy_dist:.3f}m")
+                            break
+                    else:
+                        stall = 0
+                    prev_xy = xy_dist
+
+                direction = delta / max(total_dist, 1e-6)
+                action = np.zeros(action_dim, dtype=np.float32)
+                # 底盘: 全力向目标 XY 方向移动
+                action[6] = direction[0] * self.BASE_SPEED
+                action[7] = direction[1] * self.BASE_SPEED
+                # 手臂: 轻度跟踪, 防止底盘移动时手臂甩开
+                action[0:3] = direction * min(0.05, total_dist)
+
+                try:
+                    obs, _, _, _ = self._env.step(action)
+                    self._latest_obs = obs
+                    self.render()
+                except Exception as e:
+                    logger.warning(f"[move] phase1 step failed: {e}")
+                    break
+                steps_used += 1
+
+        # ---------- Phase 2: 手臂精调 ----------
+        remaining = max_steps - steps_used
+        prev_dist = float("inf")
+        stall = 0
+        for step in range(remaining):
             current = self.get_eef_pos()
             delta = target - current
             dist = float(np.linalg.norm(delta))
 
             if dist < threshold_m:
-                logger.debug(f"[move_arm_to] converged step={step} dist={dist:.4f}m")
+                logger.debug(
+                    f"[move] phase2 converged: step={step}, dist={dist:.4f}m"
+                )
                 return True
 
-            # 发散/停滞检测: 每 80 步看一次, 允许 5 次 stall
+            # stall 检测
             if step > 0 and step % 80 == 0:
-                if dist >= prev_dist - 0.003:
-                    stall_count += 1
-                    if stall_count >= 5:
+                if dist >= prev_dist - 0.002:
+                    stall += 1
+                    if stall >= 4:
                         logger.warning(f"[move_arm_to] stalled, dist={dist:.4f}m")
                         return dist < threshold_m
                 else:
-                    stall_count = max(0, stall_count - 1)
+                    stall = max(0, stall - 1)
                 prev_dist = dist
 
             direction = delta / max(dist, 1e-6)
-
-            # 稳定 step_size: cap=0.15 防止 OSC 饱和
-            step_size = min(0.15, dist)
+            step_size = min(self.ARM_STEP_CAP, dist)
 
             action = np.zeros(action_dim, dtype=np.float32)
             action[0:3] = direction * step_size
 
-            # 底盘辅助: 距离越远底盘出力越大
-            if action_dim >= 10:
-                xy_dist = float(np.linalg.norm(delta[:2]))
-                if dist > 0.08:
-                    base_gain = min(0.3, dist * 0.5)
-                    action[6] = direction[0] * base_gain   # base X
-                    action[7] = direction[1] * base_gain   # base Y
+            # 微量底盘辅助: 手臂快到极限时帮一把
+            if has_base and dist > 0.08:
+                action[6] = direction[0] * min(0.1, dist * 0.3)
+                action[7] = direction[1] * min(0.1, dist * 0.3)
 
             try:
-                obs, _, done, _ = self._env.step(action)
+                obs, _, _, _ = self._env.step(action)
                 self._latest_obs = obs
                 self.render()
             except Exception as e:
-                logger.warning(f"[move_arm_to] step failed at {step}: {e}")
+                logger.warning(f"[move] phase2 step failed: {e}")
                 return False
 
         logger.warning(f"[move_arm_to] max_steps reached, dist={dist:.4f}m")
