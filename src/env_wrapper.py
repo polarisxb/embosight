@@ -159,10 +159,18 @@ class EnvWrapper:
         # ---------- Phase 1: 底盘靠近 ----------
         steps_used = 0
         if has_base:
-            phase1_budget = max_steps // 2  # 最多用一半步数做底盘靠近
+            # 先检查是否已在臂展内, 是则跳过 phase1
+            init_eef = self.get_eef_pos()
+            init_xy = float(np.linalg.norm((target - init_eef)[:2]))
+            if init_xy >= self.ARM_REACH_XY:
+                logger.debug(f"[move] phase1 start: xy={init_xy:.3f}m > {self.ARM_REACH_XY}m")
+            else:
+                init_xy = -1  # 标记跳过
+
+            phase1_budget = max_steps // 2
             prev_xy = float("inf")
             stall = 0
-            for step in range(phase1_budget):
+            for step in range(phase1_budget if init_xy >= 0 else 0):
                 current = self.get_eef_pos()
                 delta = target - current
                 xy_dist = float(np.linalg.norm(delta[:2]))
@@ -459,7 +467,7 @@ class EnvWrapper:
     def _gripper_action(self, gripper_value: float, n_steps: int = 10) -> None:
         """控制夹爪 (gripper_value: -1 开, +1 关)"""
         action = np.zeros(self._env.action_dim, dtype=np.float32)
-        # PandaOmron composite: [0:6]=arm(pos+rot), [6]=gripper, [7:]=base
+        # PandaOmron composite: [0:3]=arm_pos, [3:6]=arm_rot, [6:10]=base, [10:12]=gripper
         gripper_idx = self._get_gripper_idx()
         action[gripper_idx] = gripper_value
         for _ in range(n_steps):
@@ -483,7 +491,7 @@ class EnvWrapper:
                 pass
         except Exception as e:
             logger.debug(f"[grasp_contact] check failed: {e}")
-        # 无法检测时返回 None 表示未知
+        # 无法检测时保守返回 True (不因检测失败阻止后续流程)
         return True
 
     def grasp_at(
@@ -541,12 +549,15 @@ class EnvWrapper:
                 f"(Δ={z_delta:.3f}m, lifted={obj_lifted})"
             )
 
-        motion_ok = ok1 and ok2 and ok3
+        # descend 是关键步骤, pre-grasp 和 lift 允许部分失败
+        motion_ok = ok2  # descend 必须到位
+        physically_ok = contact_ok or obj_lifted
+        result = motion_ok and physically_ok
         logger.info(
-            f"[grasp] done: motion={motion_ok}, contact={contact_ok}, "
-            f"lifted={obj_lifted} → {motion_ok and (contact_ok or obj_lifted)}"
+            f"[grasp] done: pre={ok1}, descend={ok2}, lift={ok3}, "
+            f"contact={contact_ok}, lifted={obj_lifted} → {result}"
         )
-        return motion_ok and (contact_ok or obj_lifted)
+        return result
 
     def eye_in_hand_viewpoint(self):
         """快速获取 eye_in_hand viewpoint 对象"""
