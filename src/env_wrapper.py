@@ -467,14 +467,21 @@ class EnvWrapper:
         logger.debug(f"[grounding] task objects: {task_objs}")
         return task_objs
 
-    def ground_object(self, user_target: str) -> Optional[ObjectGrounding]:
+    def ground_object(
+        self, user_target: str, *, allow_fallback: bool = True
+    ) -> Optional[ObjectGrounding]:
         """将用户目标名 grounding 到仿真物体
 
         搜索策略 (按优先级):
         1. alias_map 别名匹配 → confidence=0.9
         2. body name 子串模糊匹配 → confidence=0.6
         3. LLM 语义匹配 (解析 body name 中的物体类型) → confidence=0.75
-        4. 回退: 返回 obj_main (RoboCasa 主任务物体) → confidence=0.5
+        4. 回退: 返回 obj_main (仅 allow_fallback=True 时) → confidence=0.5
+
+        Args:
+            user_target: 用户目标物体名 (中文或英文)
+            allow_fallback: 是否允许 fallback 到 obj_main.
+                用于区分主目标 (False) 和辅助查询如危险物体 (True).
 
         Returns:
             ObjectGrounding with meter coordinates, or None
@@ -523,9 +530,8 @@ class EnvWrapper:
         if llm_result is not None:
             return llm_result
 
-        # 4) 回退: 返回 obj_main (RoboCasa 主任务物体)
-        #    RoboCasa PickPlace 任务中 obj_main 就是要抓的物体
-        if "obj_main" in sim_body_names:
+        # 4) 回退: 返回 obj_main (仅辅助查询时允许)
+        if allow_fallback and "obj_main" in sim_body_names:
             pos = self._get_body_pos("obj_main")
             if pos is not None:
                 logger.info(
@@ -598,7 +604,23 @@ class EnvWrapper:
             )
 
             import json as _json
-            data = _json.loads(raw)
+            if not raw or not raw.strip():
+                logger.warning("[llm_grounding] LLM returned empty response")
+                return None
+            # 尝试从可能的 markdown 代码块中提取 JSON
+            text = raw.strip()
+            if "```" in text:
+                # 去掉 ```json ... ``` 包裹
+                import re
+                m = re.search(r"```(?:json)?\s*({.*?})\s*```", text, re.DOTALL)
+                if m:
+                    text = m.group(1)
+            # 尝试提取第一个 JSON 对象
+            start = text.find("{")
+            end = text.rfind("}") + 1
+            if start >= 0 and end > start:
+                text = text[start:end]
+            data = _json.loads(text)
             matched = data.get("match", "NONE").strip()
             logger.info(f"[llm_grounding] LLM match: '{matched}'")
 

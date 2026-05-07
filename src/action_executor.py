@@ -242,13 +242,13 @@ class ActionExecutor:
                 message="指向动作暂未实现",
             )
 
-        # 1) Grounding
-        grounding = env.ground_object(plan.target_object)
+        # 1) Grounding (不允许 fallback, 找不到就明确报错)
+        grounding = env.ground_object(plan.target_object, allow_fallback=False)
         if grounding is None:
             return ActionResult(
                 success=False,
                 executed=False,
-                message=f"无法定位目标物体: {plan.target_object}",
+                message=f"场景中未找到 '{plan.target_object}'，无法执行抓取",
             )
         target_pos = np.asarray(grounding.position_m, dtype=np.float32)
 
