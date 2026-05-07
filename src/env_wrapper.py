@@ -256,6 +256,28 @@ class EnvWrapper:
         except (KeyError, ValueError):
             return None
 
+    def _get_body_subtree_ids(self, body_name: str) -> set[int]:
+        sim = self._env.sim
+        body_id = sim.model.body_name2id(body_name)
+        ids = {body_id}
+        changed = True
+        while changed:
+            changed = False
+            for i in range(sim.model.nbody):
+                parent = int(sim.model.body_parentid[i])
+                if parent in ids and i not in ids:
+                    ids.add(i)
+                    changed = True
+        return ids
+
+    def _get_body_geom_ids(self, body_name: str) -> set[int]:
+        sim = self._env.sim
+        body_ids = self._get_body_subtree_ids(body_name)
+        return {
+            i for i in range(sim.model.ngeom)
+            if int(sim.model.geom_bodyid[i]) in body_ids
+        }
+
     def _get_body_aabb(
         self, body_name: str
     ) -> Optional[tuple[np.ndarray, np.ndarray]]:
@@ -269,11 +291,7 @@ class EnvWrapper:
         """
         sim = self._env.sim
         try:
-            body_id = sim.model.body_name2id(body_name)
-            geom_ids = [
-                i for i in range(sim.model.ngeom)
-                if sim.model.geom_bodyid[i] == body_id
-            ]
+            geom_ids = self._get_body_geom_ids(body_name)
             if not geom_ids:
                 return None
 
@@ -281,15 +299,44 @@ class EnvWrapper:
             for gid in geom_ids:
                 pos = np.asarray(sim.data.geom_xpos[gid], dtype=np.float32)
                 size = np.asarray(sim.model.geom_size[gid], dtype=np.float32)
-                # robust half-extent: 用 size 各分量的最大值作保守估计
-                half = np.array([
-                    max(size[0], size[1] if len(size) > 1 else 0),
-                    max(size[1] if len(size) > 1 else size[0], size[0]),
-                    size[2] if len(size) > 2 else
-                    (size[1] if len(size) > 1 else size[0]),
-                ], dtype=np.float32)
-                mins.append(pos - half)
-                maxs.append(pos + half)
+                geom_type = int(sim.model.geom_type[gid])
+
+                if geom_type == 7 and hasattr(sim.model, "mesh_vert"):
+                    mesh_id = int(sim.model.geom_dataid[gid])
+                    if mesh_id >= 0:
+                        adr = int(sim.model.mesh_vertadr[mesh_id])
+                        num = int(sim.model.mesh_vertnum[mesh_id])
+                        verts = np.asarray(
+                            sim.model.mesh_vert[adr: adr + num], dtype=np.float32
+                        )
+                        xmat = np.asarray(
+                            sim.data.geom_xmat[gid], dtype=np.float32
+                        ).reshape(3, 3)
+                        world = pos + verts @ xmat.T
+                        mins.append(np.min(world, axis=0))
+                        maxs.append(np.max(world, axis=0))
+                        continue
+
+                if geom_type == 2:
+                    local_half = np.array([size[0], size[0], size[0]], dtype=np.float32)
+                elif geom_type == 3:
+                    local_half = np.array(
+                        [size[0], size[0], size[1] + size[0]], dtype=np.float32
+                    )
+                elif geom_type == 5:
+                    local_half = np.array([size[0], size[0], size[1]], dtype=np.float32)
+                elif geom_type in (4, 6):
+                    local_half = size.copy()
+                else:
+                    r = float(sim.model.geom_rbound[gid]) if hasattr(
+                        sim.model, "geom_rbound"
+                    ) else float(np.max(size))
+                    local_half = np.array([r, r, r], dtype=np.float32)
+
+                xmat = np.asarray(sim.data.geom_xmat[gid], dtype=np.float32).reshape(3, 3)
+                world_half = np.abs(xmat) @ local_half
+                mins.append(pos - world_half)
+                maxs.append(pos + world_half)
 
             aabb_min = np.min(np.array(mins), axis=0)
             aabb_max = np.max(np.array(maxs), axis=0)
@@ -559,11 +606,7 @@ class EnvWrapper:
         """
         sim = self._env.sim
         try:
-            body_id = sim.model.body_name2id(target_body)
-            obj_geoms = {
-                i for i in range(sim.model.ngeom)
-                if sim.model.geom_bodyid[i] == body_id
-            }
+            obj_geoms = self._get_body_geom_ids(target_body)
             if not obj_geoms:
                 return False
 
@@ -638,11 +681,12 @@ class EnvWrapper:
         return contact, float(curr[2])
 
     def _close_gripper_until_grasp(
-        self, max_steps: int = 30, min_close_steps: int = 6
+        self, target_body: str, max_steps: int = 30, min_close_steps: int = 6
     ) -> bool:
         """力闭环关爪: 关闭直到检测到稳定夹持, 不是固定步数
 
         Args:
+            target_body: 目标物体 body name
             max_steps: 最大关爪步数 (上限保护)
             min_close_steps: 最少关爪步数 (给夹爪初始关闭时间)
 
@@ -659,7 +703,9 @@ class EnvWrapper:
             except Exception as e:
                 logger.warning(f"[close_gripper] step {i} failed: {e}")
                 return False
-            if i >= min_close_steps and self._check_grasp_contact():
+            target_contact = self._finger_object_contact(target_body)
+            generic_grasp = self._check_grasp_contact()
+            if i >= min_close_steps and target_contact and generic_grasp:
                 logger.info(f"[close_gripper] grasp confirmed at step {i}")
                 return True
         logger.warning(f"[close_gripper] no grasp after {max_steps} steps")
@@ -695,13 +741,17 @@ class EnvWrapper:
             return float(p[2]) if p is not None else None
         obj_z_before = _obj_z()
 
+        def _target_seed() -> np.ndarray:
+            p = self._get_body_pos(target_body)
+            return p if p is not None else fallback_target
+
         def _attempt(label: str) -> tuple[bool, bool, bool]:
             """单次抓取尝试
 
             Returns: (descend_contact, grasp_confirmed, mini_lift_ok)
             """
             # (a) 几何感知 wrist 目标
-            wrist_target = self._compute_grasp_pose(target_body, fallback_target)
+            wrist_target = self._compute_grasp_pose(target_body, _target_seed())
             pre_grasp = wrist_target + np.array(
                 [0.0, 0.0, pre_grasp_height_m], dtype=np.float32
             )
@@ -719,7 +769,7 @@ class EnvWrapper:
 
             logger.info(f"[grasp:{label}] close gripper (force loop)")
             grasp_confirmed = self._close_gripper_until_grasp(
-                max_steps=30, min_close_steps=6
+                target_body, max_steps=30, min_close_steps=6
             )
 
             # 微抬验证: 升 3cm 看物体是否跟随
@@ -750,7 +800,7 @@ class EnvWrapper:
             d1, g1 = d1 or d2, g1 or g2  # 累计
 
         # ===== 最终提升到 pre_grasp 高度 =====
-        wrist_now = self._compute_grasp_pose(target_body, fallback_target)
+        wrist_now = self._compute_grasp_pose(target_body, _target_seed())
         final_pre_grasp = wrist_now + np.array(
             [0.0, 0.0, pre_grasp_height_m], dtype=np.float32
         )
