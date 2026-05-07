@@ -83,7 +83,17 @@ def main():
     from src.safety_gate import SafetyGate
 
     vlm = VLMBackend()
-    grounder = VLMGrounder(vlm)
+
+    # LLM 用于 Level 5 语义匹配 fallback (当文本启发式失败时)
+    llm = None
+    try:
+        from src.llm_backend import LLMBackend
+        llm = LLMBackend(max_tokens=256, temperature=0.0)
+        logger.info("LLM backend loaded (for semantic matching fallback)")
+    except Exception as e:
+        logger.warning(f"LLM backend unavailable: {e} (will skip Level 5)")
+
+    grounder = VLMGrounder(vlm, llm_backend=llm)
     safety = SafetyGate()
 
     # ================================================================

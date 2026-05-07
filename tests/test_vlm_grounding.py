@@ -21,6 +21,7 @@ def grounder():
     """创建一个不需要真 VLM 的 VLMGrounder (仅测 parse + match)."""
     g = VLMGrounder.__new__(VLMGrounder)
     g.vlm = None
+    g._llm = None
     g._prompt_template = ""
     g._aliases = {
         "苹果": ["apple", "fruit"],

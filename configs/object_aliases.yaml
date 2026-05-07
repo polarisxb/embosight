@@ -89,6 +89,11 @@ aliases:
   盐: [salt, salt_and_pepper_shaker, seasoning]
   胡椒: [pepper, salt_and_pepper_shaker, seasoning]
   冰块: [ice_cube, ice]
+  酸奶: [yogurt, yoghurt, dairy]
+  煎饼: [pancake, crepe]
+  大饼: [bread_flat, flatbread, naan]
+  三明治: [sandwich_bread, sandwich, bread]
+  擀面杖: [rolling_pin, roller]
 
   # === 厨房电器/工具 ===
   搅拌器: [blender, mixer]

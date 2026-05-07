@@ -100,8 +100,10 @@ class VLMGrounder:
         vlm_backend,
         prompt_path: str = "prompts/vlm_grounding.txt",
         aliases_path: str = "configs/object_aliases.yaml",
+        llm_backend=None,
     ):
         self.vlm = vlm_backend
+        self._llm = llm_backend  # 用于 Level 5 语义匹配 (可选)
         self._prompt_template = self._load_prompt(prompt_path)
         self._aliases = self._load_aliases(aliases_path)
         # 构建反向索引: english_keyword → [zh_name1, zh_name2, ...]
@@ -329,6 +331,19 @@ class VLMGrounder:
             c.match_method = method
             c.matched_category = category
 
+        # Level 5: LLM 语义匹配 fallback
+        # 当文本启发式都无法匹配时, 让 LLM 用世界知识判断
+        best_text_score = max((c.query_match_score for c in candidates), default=0)
+        if best_text_score < 0.5 and candidates and self._llm is not None:
+            llm_idx = self._llm_semantic_match(candidates, user_query, gt_types)
+            if llm_idx is not None and 0 <= llm_idx < len(candidates):
+                candidates[llm_idx].query_match_score = 0.75
+                candidates[llm_idx].match_method = "llm_semantic"
+                candidates[llm_idx].matched_category = (
+                    candidates[llm_idx].likely_category
+                    or candidates[llm_idx].label.lower()
+                )
+
         # 按 query_match_score 降序
         candidates.sort(key=lambda c: c.query_match_score, reverse=True)
         return candidates
@@ -509,6 +524,82 @@ class VLMGrounder:
             best_score = 0.0
 
         return best_score, best_method, best_category
+
+    # ----------------------------------------------------------
+    # Level 5: LLM 语义匹配 (fallback when text heuristics fail)
+    # ----------------------------------------------------------
+
+    def _llm_semantic_match(
+        self,
+        candidates: list[GroundedCandidate],
+        user_query: str,
+        gt_types: set[str],
+    ) -> Optional[int]:
+        """用 LLM 世界知识判断哪个候选与用户查询语义匹配.
+
+        当所有文本启发式 (alias/fuzzy/semantic_pair) 都失败时,
+        让 LLM 基于候选描述 + 用户意图做出判断.
+
+        Returns:
+            匹配的候选索引 (0-based), 或 None 如果无匹配.
+        """
+        try:
+            # 构建候选描述列表
+            obj_lines = []
+            for i, c in enumerate(candidates):
+                cat_str = f" (likely: {c.likely_category})" if c.likely_category else ""
+                feat_str = f" [{c.visible_features[:40]}]" if c.visible_features else ""
+                obj_lines.append(f"  {i+1}. {c.label}{cat_str}{feat_str}")
+            obj_list = "\n".join(obj_lines)
+
+            gt_str = ", ".join(gt_types) if gt_types else "unknown"
+
+            prompt = (
+                f"Task: A user wants to grasp an object. Determine which "
+                f"detected object best matches their request.\n\n"
+                f"User query: '{user_query}'\n"
+                f"Ground truth objects in scene: [{gt_str}]\n\n"
+                f"Detected objects (by VLM):\n{obj_list}\n\n"
+                f"Instructions:\n"
+                f"1. Consider visual appearance, shape, color and category.\n"
+                f"2. A 'yellow ball' in a kitchen with GT 'lemon' is likely a lemon.\n"
+                f"3. A 'brown circular object' with GT 'yogurt' could be yogurt cup.\n"
+                f"4. Be strict: do NOT force a match if nothing is plausible.\n"
+                f"5. Prefer candidates whose likely_category aligns with GT.\n\n"
+                f"Reply in JSON: {{\"match_index\": <1-based index>}} "
+                f"or {{\"match_index\": 0}} if no good match."
+            )
+
+            raw = self._llm.generate(prompt)
+            if not raw or not raw.strip():
+                return None
+
+            # 解析 JSON
+            text = raw.strip()
+            # 处理 markdown 代码块
+            if "```" in text:
+                start = text.find("{")
+                end = text.rfind("}") + 1
+                if start >= 0 and end > start:
+                    text = text[start:end]
+
+            import json as _json
+            data = _json.loads(text)
+            idx = int(data.get("match_index", 0))
+
+            if idx > 0:
+                logger.info(
+                    f"[vlm_grounding] LLM semantic match: "
+                    f"'{candidates[idx-1].label}' (idx={idx}) for '{user_query}'"
+                )
+                return idx - 1  # 转为 0-based
+            else:
+                logger.info(f"[vlm_grounding] LLM says no match for '{user_query}'")
+                return None
+
+        except Exception as e:
+            logger.warning(f"[vlm_grounding] LLM semantic match failed: {e}")
+            return None
 
 
 # ============================================================
