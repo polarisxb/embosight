@@ -153,16 +153,27 @@ class EnvWrapper:
         try:
             robot = self._env.robots[0]
             idx = 0
+            parts_info = []
+            base_idx = None
+            base_dim = 0
             for part_name, ctrl in robot.composite_controller.part_controllers.items():
+                dim = ctrl.control_dim
+                parts_info.append(f"{part_name}[{idx}:{idx+dim}]")
                 pn = part_name.lower()
-                if "base" in pn or "mobile" in pn:
-                    self._base_idx_cache = idx
-                    logger.info(
-                        f"[base] detected index={idx} dim={ctrl.control_dim} "
-                        f"(part={part_name})"
-                    )
-                    return idx
-                idx += ctrl.control_dim
+                if base_idx is None and ("base" in pn or "mobile" in pn):
+                    base_idx = idx
+                    base_dim = dim
+                idx += dim
+            logger.info(
+                f"[base] action layout: {', '.join(parts_info)} "
+                f"| total={idx}"
+            )
+            if base_idx is not None:
+                self._base_idx_cache = base_idx
+                logger.info(
+                    f"[base] detected index={base_idx} dim={base_dim}"
+                )
+                return base_idx
         except Exception as e:
             logger.warning(f"[base] auto-detect failed ({e})")
         self._base_idx_cache = None
@@ -538,7 +549,7 @@ class EnvWrapper:
         """VLM 辅助开放词汇定位
 
         当别名/模糊匹配都失败时，拍一张场景图让 VLM 识别物体，
-        再将 VLM 输出与 sim body 做关键词匹配。
+        让 VLM 先描述场景中看到的物体，再判断哪个匹配用户目标。
 
         Returns:
             ObjectGrounding if VLM found a match, else None
@@ -564,28 +575,50 @@ class EnvWrapper:
             )
             obs = self.observe(vp)
 
-            obj_list_str = ", ".join(task_objs[:10])
+            # 构建物体 body name → 可读描述 的对照
+            obj_list_str = ", ".join(task_objs[:15])
             prompt = (
-                f"This is a kitchen scene. The user wants to find: '{user_target}'.\n"
-                f"The following objects exist in the simulation: [{obj_list_str}].\n"
-                "Which ONE of the listed simulation objects best matches "
-                f"'{user_target}'? Reply with ONLY the object name from the list, "
-                "nothing else. If none match, reply 'NONE'."
+                f"Look at this kitchen scene image carefully.\n"
+                f"The user is looking for: '{user_target}'.\n"
+                f"The simulation has these object body names: [{obj_list_str}].\n\n"
+                f"For each body name, its type is usually in the name "
+                f"(e.g. 'obj_Bottle001_Prop' is a bottle, "
+                f"'distr_counter_Cup003_main' is a cup on the counter).\n\n"
+                f"Which ONE body name is most likely '{user_target}'? "
+                f"Think about what '{user_target}' means "
+                f"(e.g. 杯子=cup, 碗=bowl, 药瓶=medicine bottle, 锅=pot).\n\n"
+                f"Rules:\n"
+                f"- ONLY pick from the list above\n"
+                f"- The object type in the body name must semantically match "
+                f"'{user_target}'\n"
+                f"- 'Juice' is NOT a 'cup/杯子', 'Turmeric' is NOT a '药瓶'\n"
+                f"- If NO body name matches '{user_target}', reply NONE\n\n"
+                f"Reply with ONLY the exact body name or NONE."
             )
             vlm_answer = self._vlm.describe(obs.image_path, prompt=prompt).strip()
+            # 清理 VLM 可能添加的引号或多余文字
+            vlm_answer = vlm_answer.strip("'\"` ")
+            if "\n" in vlm_answer:
+                vlm_answer = vlm_answer.split("\n")[0].strip()
             logger.info(f"[vlm_grounding] VLM answer: '{vlm_answer}'")
 
             if not vlm_answer or vlm_answer.upper() == "NONE":
                 return None
 
-            # 匹配 VLM 输出到 task_objs
+            # 匹配 VLM 输出到 task_objs (精确匹配优先)
             vlm_lower = vlm_answer.lower()
             best_body = None
             for body in task_objs:
-                if body.lower() in vlm_lower or vlm_lower in body.lower():
+                if body.lower() == vlm_lower:
                     best_body = body
                     break
-            # 如果精确匹配失败，用关键词重叠度
+            # 子串匹配
+            if best_body is None:
+                for body in task_objs:
+                    if body.lower() in vlm_lower or vlm_lower in body.lower():
+                        best_body = body
+                        break
+            # 关键词重叠度 (至少 2 个 token 重叠才算有效)
             if best_body is None:
                 vlm_tokens = set(vlm_lower.replace("_", " ").split())
                 best_score, best_body = 0, None
@@ -595,7 +628,7 @@ class EnvWrapper:
                     if overlap > best_score:
                         best_score = overlap
                         best_body = body
-                if best_score == 0:
+                if best_score < 2:  # 至少 2 词重叠才可信
                     best_body = None
 
             if best_body is not None:
@@ -612,6 +645,11 @@ class EnvWrapper:
                         confidence=0.7,
                         source="vlm_grounding",
                     )
+            else:
+                logger.info(
+                    f"[vlm_grounding] VLM answer '{vlm_answer}' "
+                    f"did not match any task object, skipping"
+                )
         except Exception as e:
             logger.warning(f"[vlm_grounding] failed: {e}")
         return None
@@ -780,6 +818,8 @@ class EnvWrapper:
         """
         target = np.asarray(target_pos, dtype=np.float32)
 
+        prev_z = None
+        stall_count = 0
         for i in range(max_steps):
             if self._finger_object_contact(target_body):
                 curr = self.get_eef_pos()
@@ -794,6 +834,18 @@ class EnvWrapper:
                 # 已到目标 z, 不再下降
                 logger.debug(f"[descend] reached target z without contact")
                 return self._finger_object_contact(target_body), float(curr[2])
+
+            # 收敛检测: 如果连续 3 步 z 几乎没下降，提前退出
+            if prev_z is not None and abs(prev_z - curr[2]) < 0.001:
+                stall_count += 1
+                if stall_count >= 3:
+                    logger.warning(
+                        f"[descend] z stalled at {curr[2]:.3f} for {stall_count} steps"
+                    )
+                    return self._finger_object_contact(target_body), float(curr[2])
+            else:
+                stall_count = 0
+            prev_z = float(curr[2])
 
             # 下降一小步, XY 同步对齐 target
             next_z = max(curr[2] - step_z, target[2])
