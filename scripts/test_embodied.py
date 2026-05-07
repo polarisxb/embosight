@@ -74,7 +74,10 @@ def test_observe_refresh(env) -> None:
     log.info("  PASS")
 
 
-def test_pipeline(query: str, config: str, visualize: bool) -> dict:
+def test_pipeline(
+    query: str, config: str, visualize: bool,
+    layout: int = None, style: int = None,
+) -> dict:
     """端到端 pipeline 测试"""
     log.info(f"=== Test 5: full pipeline | query='{query}' ===")
     from src.env_wrapper import EnvConfig, EnvWrapper
@@ -83,7 +86,13 @@ def test_pipeline(query: str, config: str, visualize: bool) -> dict:
 
     load_dotenv()
 
-    env = EnvWrapper(EnvConfig(has_renderer=visualize))
+    env_cfg = EnvConfig(has_renderer=visualize)
+    if layout is not None:
+        env_cfg.layout_ids = layout
+    if style is not None:
+        env_cfg.style_ids = style
+    log.info(f"  env: layout={env_cfg.layout_ids}, style={env_cfg.style_ids}")
+    env = EnvWrapper(env_cfg)
     env.reset()
 
     try:
@@ -123,9 +132,14 @@ def main():
     parser.add_argument("--query", default="帮我拿药瓶")
     parser.add_argument("--config", default="configs/default.yaml")
     parser.add_argument("--visualize", action="store_true")
+    parser.add_argument("--layout", type=int, default=None,
+                        help="RoboCasa layout id (-1=random)")
+    parser.add_argument("--style", type=int, default=None,
+                        help="RoboCasa style id (-1=random)")
     args = parser.parse_args()
 
-    test_pipeline(args.query, args.config, args.visualize)
+    test_pipeline(args.query, args.config, args.visualize,
+                  layout=args.layout, style=args.style)
 
 
 if __name__ == "__main__":
