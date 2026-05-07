@@ -429,19 +429,29 @@ class VLMGrounder:
             # Level 4: 语义近似 (peach ↔ apple, bottle ↔ jar)
             semantic_pairs = {
                 ("apple", "peach"), ("apple", "fruit"),
+                ("kiwi", "fruit"), ("mango", "fruit"),
+                ("lime", "fruit"), ("lemon", "fruit"),
+                ("orange", "fruit"), ("tangerine", "fruit"),
+                ("banana", "fruit"), ("grape", "fruit"),
                 ("bottle", "jar"), ("bottle", "container"),
-                ("cup", "mug"), ("cup", "glass"),
+                ("cup", "mug"), ("cup", "glass"), ("mug", "cup"),
                 ("bowl", "dish"),
                 ("knife", "blade"), ("knife", "cutter"),
                 ("pot", "pan"), ("pot", "saucepan"),
+                ("spoon", "ladle"), ("spoon", "wooden_spoon"),
+                ("can", "tin"), ("can", "container"),
             }
+            # 同时匹配 label 和 likely_category
+            match_texts = [label_lower, category_lower] if category_lower else [label_lower]
             for w1, w2 in semantic_pairs:
-                if (kw_lower == w1 and w2 in label_lower) or \
-                   (kw_lower == w2 and w1 in label_lower):
-                    if 0.7 > best_score:
-                        best_score = 0.7
-                        best_method = "semantic_pair"
-                        best_category = kw_lower
+                for text in match_texts:
+                    if (kw_lower == w1 and w2 in text) or \
+                       (kw_lower == w2 and w1 in text):
+                        if 0.7 > best_score:
+                            best_score = 0.7
+                            best_method = "semantic_pair"
+                            best_category = kw_lower
+                            break
 
         # GT cross-check: boost if confirmed, penalize if contradicted
         if gt_types and best_score > 0:
@@ -458,15 +468,40 @@ class VLMGrounder:
                     best_method += "+gt"
                     gt_confirmed = True
                     break
+                # 检查 likely_category 是否在 GT 中
+                if category_lower and (gt in category_lower or category_lower in gt):
+                    best_score = min(1.0, best_score + 0.1)
+                    best_method += "+gt"
+                    gt_confirmed = True
+                    break
 
             if not gt_confirmed:
-                # VLM 说有这个物体, 但 GT 里没有 → 可能是幻觉
-                best_score *= 0.3  # 大幅降分
-                best_method += "+gt_miss"
-                logger.debug(
-                    f"[vlm_grounding] GT miss penalty: '{label_lower}' "
-                    f"category='{best_category}' not in GT={gt_types}"
-                )
+                # 检查是否属于同一大类 (e.g. both fruits)
+                fruit_family = {"apple", "kiwi", "mango", "lime", "lemon",
+                                "orange", "tangerine", "banana", "peach",
+                                "grape", "pear", "watermelon", "fruit"}
+                container_family = {"bottle", "jar", "can", "container", "tin"}
+                families = [fruit_family, container_family]
+
+                same_family = False
+                check_items = {category_lower, best_category} - {""}
+                for family in families:
+                    if check_items & family and gt_types & family:
+                        same_family = True
+                        break
+
+                if same_family:
+                    # 同一大类, 可能只是 VLM 分辨不清 (apple vs kiwi)
+                    best_score *= 0.7
+                    best_method += "+gt_sibling"
+                else:
+                    # 完全不相关 → 可能是幻觉
+                    best_score *= 0.3
+                    best_method += "+gt_miss"
+                    logger.debug(
+                        f"[vlm_grounding] GT miss penalty: '{label_lower}' "
+                        f"category='{best_category}' not in GT={gt_types}"
+                    )
 
         # Penalty: 标签是通用名 (如 "black microwave") 且与查询无关
         generic_labels = {"microwave", "robot_arm", "robot arm", "cabinet", "wall", "floor"}
