@@ -28,6 +28,8 @@ logger = logging.getLogger("safequery_test")
 def main():
     parser = argparse.ArgumentParser(description="SafeQuery-VLM integration test")
     parser.add_argument("--query", default="帮我拿削皮器", help="User query")
+    parser.add_argument("--query-gt", action="store_true",
+                        help="Auto-generate query targeting obj_main from GT")
     parser.add_argument("--layout", type=int, default=None, help="Layout ID (-1=random)")
     parser.add_argument("--style", type=int, default=None, help="Style ID (-1=random)")
     parser.add_argument("--cameras", default="robot0_agentview_center,robot0_agentview_left,robot0_agentview_right",
@@ -54,6 +56,23 @@ def main():
     # GT 类别
     gt_types = env._get_obj_type_map()
     logger.info(f"GT object types: {gt_types}")
+
+    # --query-gt: 自动生成查询 (目标 obj_main)
+    if args.query_gt:
+        obj_main_type = gt_types.get('obj_main', '')
+        # 反向查 alias: 英文 → 中文
+        import yaml
+        alias_path = Path("configs/object_aliases.yaml")
+        zh_name = obj_main_type  # fallback to English
+        if alias_path.exists():
+            with open(alias_path, "r", encoding="utf-8") as f:
+                alias_data = yaml.safe_load(f)
+            for zh, en_list in alias_data.get("aliases", {}).items():
+                if obj_main_type in en_list or obj_main_type == zh:
+                    zh_name = zh
+                    break
+        args.query = f"帮我拿{zh_name}"
+        logger.info(f"[--query-gt] obj_main='{obj_main_type}' → query='{args.query}'")
 
     # ================================================================
     # 2. 初始化 VLM + Grounding + Safety
