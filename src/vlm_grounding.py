@@ -429,14 +429,30 @@ class VLMGrounder:
                         best_method = "semantic_pair"
                         best_category = kw_lower
 
-        # Bonus: GT cross-check
+        # GT cross-check: boost if confirmed, penalize if contradicted
         if gt_types and best_score > 0:
-            # 如果 VLM label 的某部分出现在 GT 里, 提升置信度
+            gt_confirmed = False
             for gt in gt_types:
                 if gt in label_lower or label_lower in gt:
                     best_score = min(1.0, best_score + 0.1)
                     best_method += "+gt"
+                    gt_confirmed = True
                     break
+                # 也检查 matched_category 是否在 GT 中
+                if best_category and (gt in best_category or best_category in gt):
+                    best_score = min(1.0, best_score + 0.1)
+                    best_method += "+gt"
+                    gt_confirmed = True
+                    break
+
+            if not gt_confirmed:
+                # VLM 说有这个物体, 但 GT 里没有 → 可能是幻觉
+                best_score *= 0.3  # 大幅降分
+                best_method += "+gt_miss"
+                logger.debug(
+                    f"[vlm_grounding] GT miss penalty: '{label_lower}' "
+                    f"category='{best_category}' not in GT={gt_types}"
+                )
 
         # Penalty: 标签是通用名 (如 "black microwave") 且与查询无关
         generic_labels = {"microwave", "robot_arm", "robot arm", "cabinet", "wall", "floor"}

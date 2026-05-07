@@ -177,15 +177,29 @@ class TestMatchQuery:
         assert mw[0].query_match_score == 0.0
 
     def test_gt_crosscheck_boosts_score(self, grounder, sample_candidates):
-        """GT cross-check: VLM 说 'red apple', GT 说 'peach', 应仍匹配苹果."""
+        """GT cross-check: VLM 说 'red apple', GT 包含 'apple' → boost."""
         result = grounder.match_query(
             sample_candidates,
             "帮我拿苹果",
-            gt_categories={"obj_main": "peach"},
+            gt_categories={"obj_main": "apple"},
         )
-        # apple 和 peach 不完全匹配, 但 apple 本身通过 alias 匹配
         assert result[0].label == "red apple"
-        assert result[0].query_match_score >= 0.85
+        assert result[0].query_match_score >= 0.95  # 0.9 + 0.1 boost
+        assert "+gt" in result[0].match_method
+
+    def test_gt_miss_penalizes_hallucination(self, grounder):
+        """GT cross-check: VLM 说 'brown cup' 但 GT={tangerine,cake} → 大幅降分."""
+        candidates = [
+            GroundedCandidate("brown cup", 0.8, (100,100,150,150), "brown ceramic"),
+        ]
+        result = grounder.match_query(
+            candidates,
+            "帮我拿杯子",
+            gt_categories={"obj_main": "tangerine", "distr_counter_main": "cake"},
+        )
+        # 'cup' matches query but NOT in GT → score * 0.3
+        assert result[0].query_match_score < 0.4
+        assert "gt_miss" in result[0].match_method
 
     def test_sorted_by_score_descending(self, grounder):
         """结果按 query_match_score 降序."""
