@@ -12,6 +12,8 @@ import numpy as np
 
 from .action_decider import ActionPlan
 from .env_wrapper import ObjectGrounding
+from .safety_gate import SafetyGate, SafetyDecision
+from .scene_model import SceneModel, GroundedObject
 
 logger = logging.getLogger(__name__)
 
@@ -76,11 +78,13 @@ class ActionExecutor:
         no_go_radius_m: float = 0.15,
         match_threshold: float = 0.5,
         enable_pre_verify: bool = True,
+        safety_rules_path: str = "configs/safety_rules.yaml",
     ) -> None:
         self.describer = scene_describer
         self.no_go_radius_m = no_go_radius_m
         self.match_threshold = match_threshold
         self.enable_pre_verify = enable_pre_verify
+        self.safety_gate = SafetyGate(safety_rules_path)
 
     # ------------------------------------------------------------------
     # 风险区域
@@ -294,6 +298,141 @@ class ActionExecutor:
     # ------------------------------------------------------------------
     # 主执行
     # ------------------------------------------------------------------
+
+    def execute_with_scene_model(
+        self,
+        plan: ActionPlan,
+        scene_model: SceneModel,
+        env,
+    ) -> ActionResult:
+        """Phase 5: 通过 SceneModel 执行行动 (不再独立 grounding).
+
+        信息流:
+            1. SceneModel 已包含 VLM grounding + 3D 位置 + 安全信息
+            2. SafetyGate check → 决定是否执行
+            3. 路径规划 (绕开高风险物体)
+            4. 抓取 + 语义验证
+
+        Args:
+            plan: ActionPlan from ActionDecider
+            scene_model: 融合后的 SceneModel
+            env: EnvWrapper
+        """
+        if plan.action_type == "none":
+            return ActionResult(success=True, executed=False, message="无需物理动作")
+        if plan.action_type == "point":
+            return ActionResult(success=True, executed=False, message="指向动作暂未实现")
+
+        # 1) 从 SceneModel 获取最佳匹配
+        best = scene_model.get_best_match(min_score=0.3)
+        if best is None:
+            return ActionResult(
+                success=False, executed=False,
+                message=f"场景中未找到 '{plan.target_object}'，无法执行",
+            )
+        logger.info(
+            f"[execute_sm] target='{best.label}' score={best.query_match_score:.2f} "
+            f"risk={best.safety_risk} pos={best.position_3d}"
+        )
+
+        # 2) SafetyGate check
+        decision = self.safety_gate.check(best)
+        logger.info(f"[execute_sm] safety: {decision.reason_log}")
+        if not decision.allow_execute:
+            return ActionResult(
+                success=False, executed=False,
+                message=decision.reason_user,
+            )
+
+        # 3) 获取 body_name (尝试 GT 映射)
+        body_name = best.body_name or "obj_main"
+        if body_name == "obj_main" and best.category_gt is None:
+            # 尝试通过 env 获取真实 body_name
+            grounding = env.ground_object(plan.target_object, allow_fallback=True)
+            if grounding is not None:
+                body_name = grounding.sim_body_name
+                best.body_name = body_name
+
+        target_pos = best.position_3d
+        # 如果 3D 位置不可靠 (position_confidence 很低), fallback 到 env grounding
+        if best.position_confidence < 0.3:
+            grounding = env.ground_object(plan.target_object, allow_fallback=True)
+            if grounding is not None:
+                target_pos = np.asarray(grounding.position_m, dtype=np.float32)
+                body_name = grounding.sim_body_name
+                logger.info(f"[execute_sm] low 3D conf, fallback to env grounding at {target_pos}")
+
+        # 4) 高风险物体作为 no-go zones
+        no_go_zones = []
+        for obj in scene_model.objects:
+            if obj is best:
+                continue
+            if obj.safety_risk in ("high", "hot", "sharp") and obj.position_confidence > 0.3:
+                no_go_zones.append(NoGoZone(
+                    name=obj.label,
+                    center_m=tuple(obj.position_3d.tolist()),
+                    radius_m=self.no_go_radius_m,
+                    risk_level=obj.safety_risk,
+                    reason=obj.safety_reason,
+                ))
+
+        # 5) 路径规划
+        start = env.get_eef_pos()
+        pre_grasp = np.asarray(target_pos, dtype=np.float32) + np.array([0, 0, 0.10], dtype=np.float32)
+        waypoints = self._plan_safe_path(start, pre_grasp, no_go_zones)
+
+        for wp in waypoints[:-1]:
+            ok = env.move_arm_to(wp)
+            if not ok:
+                logger.warning(f"[execute_sm] failed to reach waypoint {wp}")
+
+        # 6) 抓取 (+ pre-grasp 语义验证)
+        pre_verifier = self._build_pre_grasp_verifier(plan.target_object)
+        grasp_ok = env.grasp_at(
+            np.asarray(target_pos, dtype=np.float32),
+            target_body=body_name,
+            pre_grasp_verify=pre_verifier,
+        )
+
+        # 7) 后抓取语义验证
+        match = False
+        score = 0.0
+        if self.describer is not None:
+            try:
+                verify_obs = env.observe(env.eye_in_hand_viewpoint())
+                verify_desc = self.describer.describe(verify_obs.image_path)
+                match, score = self._verify_consistency(plan.target_object, verify_desc)
+            except Exception as e:
+                logger.warning(f"[execute_sm] verification failed: {e}")
+        else:
+            match = grasp_ok
+            score = 1.0 if grasp_ok else 0.0
+
+        if self.describer is not None:
+            overall_ok = grasp_ok and match
+            if grasp_ok and match:
+                status = "已拿到"
+            elif grasp_ok and not match:
+                status = "抓取了但不是目标物体 (语义不匹配)"
+            else:
+                status = "抓取未到位"
+        else:
+            overall_ok = grasp_ok
+            status = "已抓取(无视觉验证)" if grasp_ok else "抓取未到位"
+
+        msg = (
+            f"{status}目标 '{plan.target_object}' "
+            f"(grasp={grasp_ok}, 匹配度 {score:.2f}) "
+            f"{decision.reason_user}"
+        )
+
+        return ActionResult(
+            success=overall_ok,
+            executed=True,
+            message=msg,
+            no_go_zones=no_go_zones,
+            waypoints=[tuple(w.tolist()) for w in waypoints],
+        )
 
     def execute(self, plan: ActionPlan, env) -> ActionResult:
         """执行行动计划

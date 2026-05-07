@@ -24,6 +24,10 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Optional
 
+from .vlm_grounding import VLMGrounder, GroundedCandidate
+from .scene_model import SceneModel
+from .safety_gate import SafetyGate
+
 logger = logging.getLogger(__name__)
 
 
@@ -170,17 +174,31 @@ class SceneDescriber:
         vlm_client,
         prompt_path: str = "prompts/scene_describer.txt",
         use_geometric_postprocess: bool = True,
+        grounding_prompt_path: str = "prompts/vlm_grounding.txt",
+        aliases_path: str = "configs/object_aliases.yaml",
+        safety_rules_path: str = "configs/safety_rules.yaml",
     ) -> None:
         """
         Args:
             vlm_client: VLM 客户端
             prompt_path: 系统 Prompt 模板路径
             use_geometric_postprocess: 是否启用几何后处理（cm 级精度）
+            grounding_prompt_path: VLM grounding prompt 路径
+            aliases_path: 物体别名配置路径
+            safety_rules_path: 安全规则配置路径
         """
         self.vlm = vlm_client
         self.prompt_path = Path(prompt_path)
         self.system_prompt = self._load_prompt()
         self.use_geo = use_geometric_postprocess
+
+        # Phase 2-4 模块
+        self.grounder = VLMGrounder(
+            vlm_backend=vlm_client,
+            prompt_path=grounding_prompt_path,
+            aliases_path=aliases_path,
+        )
+        self.safety_gate = SafetyGate(safety_rules_path)
 
     def _load_prompt(self) -> str:
         if not self.prompt_path.exists():
@@ -366,6 +384,83 @@ class SceneDescriber:
             safety_alerts=all_safety,
             actionable_advice=all_advice,
         )
+
+    # ------------------------------------------------------------------
+    # Phase 5: 多视角 VLM Grounding + 3D 融合
+    # ------------------------------------------------------------------
+
+    def describe_with_grounding(
+        self,
+        observations: list,
+        user_query: str,
+        env=None,
+    ) -> SceneModel:
+        """多视角 VLM Grounding + 3D 融合 + Safety 注入.
+
+        新信息流 (Phase 5):
+            1. 对每个视角运行 VLMGrounder (Prompt D 开放式检测)
+            2. 后处理匹配 user_query
+            3. 通过 env 的 depth/camera 投影到 3D
+            4. SceneModel 融合多视角
+            5. SafetyGate 注入安全信息
+
+        Args:
+            observations: Observation 列表 (来自 active_planner)
+            user_query: 用户原始查询
+            env: EnvWrapper (用于 3D 投影, 可选)
+
+        Returns:
+            融合后的 SceneModel
+        """
+        scene = SceneModel()
+
+        # 获取 GT 类别 (如果 env 可用)
+        gt_categories = None
+        if env is not None and hasattr(env, '_get_obj_type_map'):
+            try:
+                gt_categories = env._get_obj_type_map()
+            except Exception as e:
+                logger.debug(f"[grounding] GT categories unavailable: {e}")
+
+        for obs in observations:
+            camera_name = obs.viewpoint.name
+            logger.info(f"[grounding] processing view: {camera_name}")
+
+            # 1. VLM 开放式检测 (不注入目标名)
+            candidates = self.grounder.ground(obs.image_path)
+
+            # 2. 后处理匹配 user_query
+            candidates = self.grounder.match_query(
+                candidates, user_query, gt_categories
+            )
+
+            # 3. 3D 投影 (如果 env 可用)
+            projector = None
+            if env is not None and hasattr(env, 'make_projector'):
+                try:
+                    projector = env.make_projector(camera_name)
+                except Exception as e:
+                    logger.warning(f"[grounding] projector failed for {camera_name}: {e}")
+
+            # 4. 加入 SceneModel
+            scene.add_view(camera_name, candidates, projector)
+
+        # 5. 安全信息注入
+        for obj in scene.objects:
+            self.safety_gate.update_object_safety(obj)
+
+        # 日志
+        best = scene.get_best_match()
+        if best:
+            logger.info(
+                f"[grounding] best match: '{best.label}' "
+                f"score={best.query_match_score:.2f} "
+                f"risk={best.safety_risk} pos={best.position_3d}"
+            )
+        else:
+            logger.warning(f"[grounding] no match found for query: {user_query}")
+
+        return scene
 
     @staticmethod
     def _fuzzy_match(a: str, b: str) -> bool:

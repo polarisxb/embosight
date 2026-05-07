@@ -23,6 +23,7 @@ from .action_executor import ActionExecutor
 from .active_planner import ActivePlanner, Observation, ViewpointLibrary
 from .llm_backend import LLMBackend
 from .scene_describer import SceneDescriber, StructuredDescription
+from .scene_model import SceneModel
 from .task_decomposer import Subtask, TaskDecomposer
 from .vlm_backend import VLMBackend
 
@@ -90,6 +91,7 @@ class EmboSightPipeline:
                 subtasks: 分解出的子任务
                 observations: 多视角观察
                 description: 聚合后的结构化描述
+                scene_model: SceneModel 融合结果 (Phase 5)
                 action_plan: 行动决策 (type/target/reason/constraints)
                 action_result: 行动执行结果 (success/message/waypoints) 或 None
                 speech: TTS 语音文本
@@ -106,6 +108,7 @@ class EmboSightPipeline:
         observations = self.active_planner.plan(subtasks, env)
         logger.info(f"[Step 2] 采集 {len(observations)} 个视角")
 
+        # Step 3: 场景描述 (旧路径: 五维度结构化描述)
         descriptions: list[StructuredDescription] = []
         for i, obs in enumerate(observations):
             desc = self.scene_describer.describe(
@@ -121,6 +124,19 @@ class EmboSightPipeline:
         speech = final_desc.to_speech()
         logger.info("[Step 4] 聚合完成")
 
+        # Step 4b: VLM Grounding + 3D 融合 (Phase 5 新路径)
+        scene_model = None
+        try:
+            scene_model = self.scene_describer.describe_with_grounding(
+                observations, query, env
+            )
+            logger.info(
+                f"[Step 4b] SceneModel: {len(scene_model)} objects, "
+                f"best={scene_model.get_best_match()}"
+            )
+        except Exception as e:
+            logger.warning(f"[Step 4b] VLM grounding failed, fallback to legacy: {e}")
+
         # Step 5: 行动决策
         logger.info("[Step 5] 行动决策")
         action_plan = self.action_decider.decide(query, final_desc)
@@ -133,7 +149,15 @@ class EmboSightPipeline:
         action_result = None
         if action_plan.needs_execution:
             logger.info("[Step 6] 行动执行")
-            action_result = self.action_executor.execute(action_plan, env)
+            # Phase 5: 优先用 SceneModel 路径
+            if scene_model is not None and len(scene_model) > 0:
+                logger.info("[Step 6] using SceneModel path")
+                action_result = self.action_executor.execute_with_scene_model(
+                    action_plan, scene_model, env
+                )
+            else:
+                logger.info("[Step 6] fallback to legacy execute")
+                action_result = self.action_executor.execute(action_plan, env)
             logger.info(
                 f"  → success={action_result.success}, "
                 f"msg={action_result.message}"
@@ -143,6 +167,17 @@ class EmboSightPipeline:
             logger.info("[Step 6] 跳过 (无需物理动作)")
 
         logger.info(f"最终输出: {speech}")
+
+        # 构建 scene_model 摘要
+        scene_model_summary = None
+        if scene_model is not None:
+            scene_model_summary = {
+                "total_objects": len(scene_model),
+                "objects": [o.to_dict() for o in scene_model.objects],
+            }
+            best = scene_model.get_best_match()
+            if best:
+                scene_model_summary["best_match"] = best.to_dict()
 
         return {
             "query": query,
@@ -160,6 +195,7 @@ class EmboSightPipeline:
                 for o in observations
             ],
             "description": final_desc.to_dict(),
+            "scene_model": scene_model_summary,
             "action_plan": {
                 "action_type": action_plan.action_type,
                 "target_object": action_plan.target_object,
