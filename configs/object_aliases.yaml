@@ -1,19 +1,98 @@
 # 中文/英文用户目标名 → RoboCasa body name 候选列表
+# RoboCasa 每次 reset 随机分配物品种类, body name 格式: obj_main / distr_counter_*_main
 # 运行 print(env._env.sim.model.body_names) 后按需补全
 aliases:
-  药瓶: [bottle, medicine_bottle, pill_bottle]
-  瓶子: [bottle]
+  # === 容器/瓶罐 ===
+  药瓶: [bottle, medicine_bottle, pill_bottle, obj_main]
+  瓶子: [bottle, jar, container]
   水瓶: [water_bottle, bottle]
-  调味瓶: [seasoning_bottle, spice_bottle, bottle]
-  杯子: [cup, mug, glass]
-  马克杯: [mug]
-  锅: [pot, pan, saucepan]
-  平底锅: [pan, frying_pan]
-  碗: [bowl]
-  盘子: [plate, dish]
-  刀: [knife]
-  勺: [spoon, ladle]
+  调味瓶: [seasoning_bottle, spice_bottle, bottle, condiment]
+  啤酒: [beer, bottle]
+  饮料: [drink, bottle, soda, juice]
+  酱油: [soy_sauce, sauce, bottle]
+  醋: [vinegar, bottle]
+  油: [oil, bottle]
+  罐头: [can, tin, jar]
+  罐子: [jar, can, container]
+
+  # === 杯具 ===
+  杯子: [cup, mug, glass, tumbler]
+  马克杯: [mug, cup]
+  水杯: [glass, cup, tumbler, water_glass]
+  咖啡杯: [coffee_cup, mug, cup]
+  茶杯: [tea_cup, cup, mug]
+  酒杯: [wine_glass, glass]
+
+  # === 锅具/烹饪 ===
+  锅: [pot, pan, saucepan, wok]
+  平底锅: [pan, frying_pan, skillet]
+  炒锅: [wok, pan]
+  汤锅: [pot, saucepan, stockpot]
+  锅盖: [lid, pot_lid, cover]
+  水壶: [kettle, teapot]
+  茶壶: [teapot, kettle]
+
+  # === 餐具 ===
+  碗: [bowl, soup_bowl]
+  盘子: [plate, dish, saucer]
+  碟子: [saucer, plate, dish]
+  刀: [knife, blade]
+  勺: [spoon, ladle, scoop]
   叉子: [fork]
-  苹果: [apple]
-  面包: [bread]
-  罐头: [can]
+  筷子: [chopstick]
+  砧板: [cutting_board, chopping_board, board]
+  托盘: [tray]
+
+  # === 水果蔬菜 ===
+  苹果: [apple, fruit]
+  香蕉: [banana, fruit]
+  橙子: [orange, fruit]
+  柠檬: [lemon, fruit]
+  番茄: [tomato, vegetable]
+  西红柿: [tomato, vegetable]
+  土豆: [potato, vegetable]
+  洋葱: [onion, vegetable]
+  胡萝卜: [carrot, vegetable]
+  黄瓜: [cucumber, vegetable]
+  玉米: [corn, vegetable]
+  生菜: [lettuce, vegetable]
+  蔬菜: [vegetable, lettuce, tomato, carrot]
+  水果: [fruit, apple, banana, orange]
+
+  # === 食物 ===
+  面包: [bread, toast, loaf]
+  蛋糕: [cake, pastry]
+  饼干: [cookie, biscuit, cracker]
+  鸡蛋: [egg]
+  牛奶: [milk, carton]
+  奶酪: [cheese]
+  黄油: [butter]
+  肉: [meat, steak]
+
+  # === 厨房电器/工具 ===
+  搅拌器: [blender, mixer]
+  开瓶器: [opener, bottle_opener, can_opener]
+  打蛋器: [whisk, beater]
+  铲子: [spatula, turner]
+  漏勺: [strainer, colander]
+  量杯: [measuring_cup, cup]
+
+  # === 清洁 ===
+  海绵: [sponge]
+  抹布: [cloth, rag, towel]
+  纸巾: [paper_towel, tissue, napkin]
+  洗洁精: [soap, detergent, dish_soap]
+
+  # === 英文直接映射 (用户可能直接说英文) ===
+  bottle: [bottle]
+  cup: [cup, mug]
+  bowl: [bowl]
+  plate: [plate]
+  knife: [knife]
+  spoon: [spoon]
+  fork: [fork]
+  pot: [pot]
+  pan: [pan]
+  apple: [apple]
+  bread: [bread]
+  can: [can]

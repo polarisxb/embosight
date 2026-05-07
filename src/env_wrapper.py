@@ -460,10 +460,10 @@ class EnvWrapper:
         """将用户目标名 grounding 到仿真物体
 
         搜索策略 (按优先级):
-        1. alias_map 精确匹配 body name
-        2. alias_map 精确匹配 task objects
-        3. body name 模糊匹配
-        4. 回退: 返回 obj_main (RoboCasa 主任务物体)
+        1. alias_map 别名匹配 → confidence=0.9
+        2. body name 子串模糊匹配 → confidence=0.6
+        3. VLM 开放词汇定位 (拍场景图识别) → confidence=0.7
+        4. 回退: 返回 obj_main (RoboCasa 主任务物体) → confidence=0.5
 
         Returns:
             ObjectGrounding with meter coordinates, or None
@@ -507,7 +507,12 @@ class EnvWrapper:
                         source="fuzzy_match",
                     )
 
-        # 3) 回退: 返回 obj_main (RoboCasa 主任务物体)
+        # 3) VLM 辅助定位 (open-vocabulary grounding)
+        vlm_result = self._vlm_guided_grounding(user_target, task_objs)
+        if vlm_result is not None:
+            return vlm_result
+
+        # 4) 回退: 返回 obj_main (RoboCasa 主任务物体)
         #    RoboCasa PickPlace 任务中 obj_main 就是要抓的物体
         if "obj_main" in sim_body_names:
             pos = self._get_body_pos("obj_main")
@@ -525,6 +530,90 @@ class EnvWrapper:
                 )
 
         logger.warning(f"[ground_object] failed to ground '{user_target}'")
+        return None
+
+    def _vlm_guided_grounding(
+        self, user_target: str, task_objs: list[str]
+    ) -> Optional[ObjectGrounding]:
+        """VLM 辅助开放词汇定位
+
+        当别名/模糊匹配都失败时，拍一张场景图让 VLM 识别物体，
+        再将 VLM 输出与 sim body 做关键词匹配。
+
+        Returns:
+            ObjectGrounding if VLM found a match, else None
+        """
+        if not hasattr(self, "_vlm") or self._vlm is None:
+            try:
+                from .vlm_backend import VLMBackend
+                self._vlm = VLMBackend()
+            except Exception as e:
+                logger.debug(f"[vlm_grounding] VLM unavailable: {e}")
+                return None
+
+        if not task_objs:
+            return None
+
+        try:
+            from .active_planner import Viewpoint
+            vp = Viewpoint(
+                name="robot0_agentview_center",
+                position=(0, 0, 0),
+                orientation=(0, 0, 0),
+                purpose="vlm_grounding",
+            )
+            obs = self.observe(vp)
+
+            obj_list_str = ", ".join(task_objs[:10])
+            prompt = (
+                f"This is a kitchen scene. The user wants to find: '{user_target}'.\n"
+                f"The following objects exist in the simulation: [{obj_list_str}].\n"
+                "Which ONE of the listed simulation objects best matches "
+                f"'{user_target}'? Reply with ONLY the object name from the list, "
+                "nothing else. If none match, reply 'NONE'."
+            )
+            vlm_answer = self._vlm.describe(obs.image_path, prompt=prompt).strip()
+            logger.info(f"[vlm_grounding] VLM answer: '{vlm_answer}'")
+
+            if not vlm_answer or vlm_answer.upper() == "NONE":
+                return None
+
+            # 匹配 VLM 输出到 task_objs
+            vlm_lower = vlm_answer.lower()
+            best_body = None
+            for body in task_objs:
+                if body.lower() in vlm_lower or vlm_lower in body.lower():
+                    best_body = body
+                    break
+            # 如果精确匹配失败，用关键词重叠度
+            if best_body is None:
+                vlm_tokens = set(vlm_lower.replace("_", " ").split())
+                best_score, best_body = 0, None
+                for body in task_objs:
+                    body_tokens = set(body.lower().replace("_", " ").split())
+                    overlap = len(vlm_tokens & body_tokens)
+                    if overlap > best_score:
+                        best_score = overlap
+                        best_body = body
+                if best_score == 0:
+                    best_body = None
+
+            if best_body is not None:
+                pos = self._get_body_pos(best_body)
+                if pos is not None:
+                    logger.info(
+                        f"[vlm_grounding] '{user_target}' → {best_body} at {pos}"
+                    )
+                    return ObjectGrounding(
+                        user_target=user_target,
+                        canonical_name=vlm_answer,
+                        sim_body_name=best_body,
+                        position_m=tuple(pos.tolist()),
+                        confidence=0.7,
+                        source="vlm_grounding",
+                    )
+        except Exception as e:
+            logger.warning(f"[vlm_grounding] failed: {e}")
         return None
 
     # ------------------------------------------------------------------
