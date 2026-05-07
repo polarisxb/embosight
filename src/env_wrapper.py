@@ -99,6 +99,9 @@ class EnvWrapper:
 
         self._latest_obs = self._env.reset()
         self._step = 0
+        # 清除上一 episode 的物体类型缓存 (新 episode 可能随机出不同物体)
+        if hasattr(self, "_obj_type_cache"):
+            self._obj_type_cache = {}
         logger.info(f"环境重置完成 (cameras={list(self.config.camera_names)})")
         return self._latest_obs
 
@@ -467,6 +470,46 @@ class EnvWrapper:
         logger.debug(f"[grounding] task objects: {task_objs}")
         return task_objs
 
+    def _get_obj_type_map(self) -> dict[str, str]:
+        """从 RoboCasa 的 ep_meta 提取 {body_name: object_cat} 映射.
+
+        RoboCasa 每次 reset 后, 真实物体类型只能从 env.get_ep_meta() 取到:
+            object_cfgs[i].info.cat ∈ {peeler, condiment_bottle, reamer, ...}
+            object_cfgs[i].name     ∈ {obj, distr_counter, distr_cab}
+            body_name = f"{name}_main"  (即 obj_main, distr_counter_main, ...)
+
+        这是 grounding 的关键信息源, 因为 body name 本身 (obj_main) 不含类型.
+
+        Returns:
+            {'obj_main': 'peeler', 'distr_counter_main': 'condiment_bottle', ...}
+            失败时返回空 dict (不阻塞其他 grounding 策略).
+        """
+        if not hasattr(self, "_obj_type_cache"):
+            self._obj_type_cache = {}
+
+        if self._obj_type_cache:
+            return self._obj_type_cache
+
+        try:
+            meta = self._env.get_ep_meta()
+        except Exception as e:
+            logger.debug(f"[obj_types] get_ep_meta failed: {e}")
+            return {}
+
+        result: dict[str, str] = {}
+        for cfg in meta.get("object_cfgs", []) or []:
+            name = cfg.get("name")
+            info = cfg.get("info", {}) or {}
+            cat = info.get("cat")
+            if name and cat:
+                body_name = f"{name}_main"
+                result[body_name] = str(cat)
+
+        if result:
+            logger.info(f"[obj_types] runtime object categories: {result}")
+        self._obj_type_cache = result
+        return result
+
     def ground_object(
         self, user_target: str, *, allow_fallback: bool = True
     ) -> Optional[ObjectGrounding]:
@@ -582,22 +625,35 @@ class EnvWrapper:
                 return None
 
         try:
-            obj_list = "\n".join(f"  {i+1}. {b}" for i, b in enumerate(task_objs[:20]))
+            # 运行时查真实物体类型 (RoboCasa ep_meta)
+            type_map = self._get_obj_type_map()
+            obj_lines = []
+            for i, b in enumerate(task_objs[:20]):
+                cat = type_map.get(b)
+                if cat:
+                    obj_lines.append(f"  {i+1}. {b} (type: {cat})")
+                else:
+                    obj_lines.append(f"  {i+1}. {b}")
+            obj_list = "\n".join(obj_lines)
+
             prompt = (
                 f"Task: Match a user's target object to simulation body names.\n\n"
                 f"User target: '{user_target}'\n"
                 f"(If Chinese: 杯子=cup/mug, 碗=bowl, 药瓶=medicine bottle, "
                 f"锅=pot/pan, 盘子=plate, 瓶子=bottle, 刀=knife, 勺=spoon, "
-                f"苹果=apple, 面包=bread, 水壶=kettle, 罐头=can)\n\n"
+                f"苹果=apple, 面包=bread, 水壶=kettle, 罐头=can, "
+                f"削皮器=peeler, 榨汁器=reamer, 调味瓶=condiment_bottle)\n\n"
                 f"Available body names:\n{obj_list}\n\n"
                 f"Instructions:\n"
-                f"1. Extract the object TYPE from each body name "
-                f"(e.g. 'obj_Juice003_Prop' → juice, "
-                f"'distr_counter_Cup005_main' → cup, "
-                f"'obj_Turmeric002_Prop' → turmeric/spice)\n"
-                f"2. Find which extracted type semantically matches "
-                f"'{user_target}'\n"
-                f"3. Be STRICT: juice≠cup, turmeric≠medicine, banana≠bowl\n\n"
+                f"1. Use 'type:' annotation if present (most reliable), "
+                f"otherwise parse the body name string.\n"
+                f"2. Find which object semantically matches '{user_target}'.\n"
+                f"3. Be STRICT about semantic equivalence:\n"
+                f"   - peeler≠knife (both tools but different function)\n"
+                f"   - condiment_bottle≠medicine_bottle (both bottles but different content)\n"
+                f"   - reamer≠juicer-as-cup (reamer is manual tool not a cup)\n"
+                f"   - juice≠cup, turmeric≠medicine, banana≠bowl\n"
+                f"4. If no good match exists, return NONE. Do NOT force a match.\n\n"
                 f"Reply in JSON: {{\"match\": \"<exact body name>\"}} "
                 f"or {{\"match\": \"NONE\"}} if no semantic match."
             )
