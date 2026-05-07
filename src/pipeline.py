@@ -74,6 +74,7 @@ class EmboSightPipeline:
         )
         self.action_executor = ActionExecutor(
             scene_describer=self.scene_describer,
+            **self.config.get("action_executor", {}),
         )
 
     def run(self, query: str, env) -> dict[str, Any]:

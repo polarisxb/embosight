@@ -37,6 +37,12 @@ prompts:
   active_planner: "prompts/active_planner.txt"
   scene_describer: "prompts/scene_describer.txt"
 
+# 行动执行器 (创新点⑥ 双闭环语义验证)
+action_executor:
+  no_go_radius_m: 0.15
+  match_threshold: 0.5
+  enable_pre_verify: true   # 设为 false 可做消融实验 (仅事后验证)
+
 # 仿真环境
 simulator:
   type: "robocasa"

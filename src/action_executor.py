@@ -62,17 +62,25 @@ HAZARD_OBJECTS = ["锅", "刀", "杯", "玻璃", "瓶", "壶", "炉"]
 # ============================================================
 
 class ActionExecutor:
-    """完整执行: grounding → 风险路径 → 抓取 → 语义验证"""
+    """完整执行: grounding → 风险路径 → pre-grasp 验证 → 抓取 → 语义验证
+
+    创新点⑥: 双闭环语义一致性验证
+        - 事前 (pre-grasp): 在 pre_grasp 位姿用 eye-in-hand 视角验证目标物体
+                            一致性, 错位时立即 abort, 不浪费抓取尝试
+        - 事后 (post-grasp): 抓取后再次用 VLM 验证, 确认抓到的就是目标
+    """
 
     def __init__(
         self,
         scene_describer=None,
         no_go_radius_m: float = 0.15,
         match_threshold: float = 0.5,
+        enable_pre_verify: bool = True,
     ) -> None:
         self.describer = scene_describer
         self.no_go_radius_m = no_go_radius_m
         self.match_threshold = match_threshold
+        self.enable_pre_verify = enable_pre_verify
 
     # ------------------------------------------------------------------
     # 风险区域
@@ -218,6 +226,72 @@ class ActionExecutor:
         return score >= self.match_threshold, score
 
     # ------------------------------------------------------------------
+    # 创新点⑥: pre-grasp 语义验证 (执行前闭环)
+    # ------------------------------------------------------------------
+
+    def _build_pre_grasp_verifier(self, target_object: str):
+        """构造 pre-grasp 语义验证回调
+
+        从 wrist 相机视角看, 目标应该位于画面正下方/中央 (因为 pre-grasp
+        正好停在目标正上方 10cm 处). VLM 看图判断中央是否就是用户要的物体.
+
+        Returns:
+            callable(image_path) -> (ok: bool, reason: str)
+            或 None 如果 verifier 不可用
+        """
+        if not self.enable_pre_verify or self.describer is None:
+            return None
+        if not hasattr(self.describer, "vlm") or self.describer.vlm is None:
+            return None
+
+        vlm = self.describer.vlm
+
+        def _verify(image_path: str) -> tuple[bool, str]:
+            prompt = (
+                f"This is a close-up image from the robot's wrist camera, "
+                f"looking down. The robot is about to grasp whatever is "
+                f"directly below (image center).\n\n"
+                f"User wants to grasp: '{target_object}'\n\n"
+                f"Look ONLY at the object in the image center "
+                f"(directly below the camera).\n"
+                f"Is that object truly a '{target_object}'?\n\n"
+                f"Reply with this exact format:\n"
+                f"DECISION: YES or NO\n"
+                f"REASON: <one short sentence>"
+            )
+            try:
+                raw = vlm.describe(image_path, prompt=prompt).strip()
+            except Exception as e:
+                return True, f"verifier-error-pass: {e}"
+
+            # 解析 DECISION
+            decision = None
+            reason = raw[:120]
+            for line in raw.splitlines():
+                line_s = line.strip()
+                if line_s.upper().startswith("DECISION"):
+                    val = line_s.split(":", 1)[-1].strip().upper()
+                    if val.startswith("Y"):
+                        decision = True
+                    elif val.startswith("N"):
+                        decision = False
+                if line_s.upper().startswith("REASON"):
+                    reason = line_s.split(":", 1)[-1].strip()[:120]
+
+            if decision is None:
+                # 未拿到明确判断: fallback 到关键词扫描, 默认放行
+                upper = raw.upper()
+                if "NO" in upper.split() and "YES" not in upper.split():
+                    decision = False
+                else:
+                    decision = True
+                    reason = f"unparsed-default-pass: {raw[:60]}"
+
+            return decision, reason
+
+        return _verify
+
+    # ------------------------------------------------------------------
     # 主执行
     # ------------------------------------------------------------------
 
@@ -266,10 +340,14 @@ class ActionExecutor:
             if not ok:
                 logger.warning(f"[execute] failed to reach waypoint {wp}")
 
-        # 5) 抓取 (传 body name 做物理验证)
+        # 5) 抓取 (创新点⑥ 事前闭环: pre-grasp 语义验证)
+        pre_verifier = self._build_pre_grasp_verifier(plan.target_object)
+        if pre_verifier is not None:
+            logger.info("[execute] pre-grasp verifier enabled")
         grasp_ok = env.grasp_at(
             target_pos,
             target_body=grounding.sim_body_name if grounding else "obj_main",
+            pre_grasp_verify=pre_verifier,
         )
 
         # 6) 语义验证
@@ -286,12 +364,18 @@ class ActionExecutor:
             match = grasp_ok
             score = 1.0 if grasp_ok else 0.0
 
-        # grasp 物理成功即为成功，VLM 验证是补充信息
-        overall_ok = grasp_ok
-        if overall_ok:
-            status = "已拿到" if match else "已抓取(视觉待确认)"
+        # success 要求物理抓取 + 语义验证双确认 (无 verifier 时只看物理)
+        if self.describer is not None:
+            overall_ok = grasp_ok and match
+            if grasp_ok and match:
+                status = "已拿到"
+            elif grasp_ok and not match:
+                status = "抓取了但不是目标物体 (语义不匹配)"
+            else:
+                status = "抓取未到位"
         else:
-            status = "抓取未到位"
+            overall_ok = grasp_ok
+            status = "已抓取(无视觉验证)" if grasp_ok else "抓取未到位"
         msg = f"{status}目标 '{plan.target_object}' (grasp={grasp_ok}, 匹配度 {score:.2f})"
 
         return ActionResult(

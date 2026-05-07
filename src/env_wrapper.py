@@ -906,12 +906,14 @@ class EnvWrapper:
         target_pos_m,
         pre_grasp_height_m: float = 0.10,
         target_body: str = "obj_main",
+        pre_grasp_verify=None,
     ) -> bool:
         """闭环自适应抓取流程
 
         范式:
             1. 几何感知 wrist 目标 (AABB → 中部偏上抓取点)
             2. 预抓取 (容差宽松, 用于粗对位)
+            2.5 [可选] pre-grasp 语义验证 (执行前闭环, 创新点⑥)
             3. 接触式下降 (步进 + 指尖-物体接触早停, 避免硬撞)
             4. 力闭环关爪 (检测到夹持即停, 不固定步数)
             5. 微抬验证 (升 3cm 看物体是否跟随 → 跟随才确认)
@@ -920,8 +922,16 @@ class EnvWrapper:
 
         每个环节都有反馈, 而非开环位置控制.
 
+        Args:
+            target_pos_m: fallback 目标位置 (世界系米制)
+            pre_grasp_height_m: 预抓取高度
+            target_body: sim body name, 用于物理验证
+            pre_grasp_verify: 可选的 pre-grasp 验证回调.
+                签名: (image_path: str) -> tuple[bool, str]
+                返回 (是否通过, 原因). 通过则继续, 不通过则放弃此次尝试.
+
         Returns:
-            True 若物体被成功抓起 (微抬或最终抬起 ≥1cm)
+            True 若物体被成功抓起 (最终抬起 ≥5cm)
         """
         fallback_target = np.asarray(target_pos_m, dtype=np.float32)
 
@@ -954,6 +964,25 @@ class EnvWrapper:
             if not pre_ok:
                 logger.warning(f"[grasp:{label}] pre-grasp unreachable, abort attempt")
                 return False, False, False, False
+
+            # 创新点⑥: pre-grasp 语义验证闭环 (事前主动验证)
+            if pre_grasp_verify is not None:
+                try:
+                    eih = self.observe(self.eye_in_hand_viewpoint())
+                    ok, reason = pre_grasp_verify(eih.image_path)
+                    if not ok:
+                        logger.warning(
+                            f"[grasp:{label}] pre-grasp verify FAILED: {reason}"
+                        )
+                        return False, False, False, False
+                    logger.info(
+                        f"[grasp:{label}] pre-grasp verify PASSED: {reason}"
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"[grasp:{label}] pre-grasp verify error, "
+                        f"continuing without it: {e}"
+                    )
 
             logger.info(f"[grasp:{label}] descend → {wrist_target}")
             descend_contact, final_z = self._descend_until_contact(
@@ -1025,7 +1054,10 @@ class EnvWrapper:
                 f"(Δ={z_delta:.3f}m, lifted={obj_lifted})"
             )
 
-        result = obj_lifted or attempt_ok
+        # 只有真正抬起 (≥5cm) 才算抓取成功. mini_lift (1cm) 不够,
+        # 因为 gripper 可能在 final lift 途中松开.
+        # 如需放宽, 可降低 0.05m 阈值, 但不能用 mini_lift 替代.
+        result = obj_lifted
         logger.info(
             f"[grasp] done: descend_contact={d1}, grasp_confirmed={g1}, "
             f"mini_lift={attempt_ok}, lift_ok={ok_lift}, "
