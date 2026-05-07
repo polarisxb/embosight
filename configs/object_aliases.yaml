@@ -48,8 +48,15 @@ aliases:
   # === 水果蔬菜 ===
   苹果: [apple, fruit]
   香蕉: [banana, fruit]
-  橙子: [orange, fruit]
+  橙子: [orange, tangerine, mandarin, fruit]
   柠檬: [lemon, fruit]
+  青柠: [lime, fruit]
+  猕猴桃: [kiwi, kiwifruit, fruit]
+  芒果: [mango, fruit]
+  桃子: [peach, fruit]
+  梨: [pear, fruit]
+  葡萄: [grape, fruit]
+  西瓜: [watermelon, melon, fruit]
   番茄: [tomato, vegetable]
   西红柿: [tomato, vegetable]
   土豆: [potato, vegetable]
@@ -58,10 +65,13 @@ aliases:
   黄瓜: [cucumber, vegetable]
   玉米: [corn, vegetable]
   生菜: [lettuce, vegetable]
+  蒜: [garlic, vegetable]
+  大蒜: [garlic, vegetable]
+  辣椒: [pepper, chili, vegetable]
   蔬菜: [vegetable, lettuce, tomato, carrot]
   水果: [fruit, apple, banana, orange]
 
-  # === 食物 ===
+  # === 食物/调料 ===
   面包: [bread, toast, loaf]
   蛋糕: [cake, pastry]
   饼干: [cookie, biscuit, cracker]
@@ -70,6 +80,15 @@ aliases:
   奶酪: [cheese]
   黄油: [butter]
   肉: [meat, steak]
+  果酱: [jam, jelly, marmalade]
+  果汁: [juice, drink]
+  酒: [wine, alcohol, liquor]
+  红酒: [wine, red_wine]
+  芥末: [mustard, condiment]
+  姜黄: [turmeric, spice]
+  盐: [salt, salt_and_pepper_shaker, seasoning]
+  胡椒: [pepper, salt_and_pepper_shaker, seasoning]
+  冰块: [ice_cube, ice]
 
   # === 厨房电器/工具 ===
   搅拌器: [blender, mixer]
@@ -78,6 +97,10 @@ aliases:
   铲子: [spatula, turner]
   漏勺: [strainer, colander]
   量杯: [measuring_cup, cup]
+  木铲: [wooden_spoon, spatula, spoon]
+  木勺: [wooden_spoon, ladle, spoon]
+  汤勺: [ladle, spoon, scoop]
+  削皮器: [peeler, vegetable_peeler]
 
   # === 清洁 ===
   海绵: [sponge]

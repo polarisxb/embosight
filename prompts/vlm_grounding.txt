@@ -1,7 +1,8 @@
 Look at this kitchen image carefully. List ONLY the physical objects you can actually see on the countertop or table surface. Do NOT invent objects that are not visible.
 
 For each object you see, provide:
-- name: a simple English noun describing what it looks like (e.g. 'white stick', 'green leafy vegetable', 'yellow box', 'cylindrical bottle', 'red fruit'). Use visual features in the name if you are unsure of the exact category.
+- name: a simple English description of what it looks like (e.g. 'white stick', 'green leafy vegetable', 'yellow box', 'red cylinder')
+- likely_category: your best guess of what this object actually IS in a kitchen context (e.g. 'garlic', 'kiwi', 'bottle', 'spoon', 'cheese'). Use a single common English noun. If truly uncertain, use 'unknown'.
 - bbox_2d: [x1, y1, x2, y2] bounding box in pixels. The image is 256x256 pixels. (0,0) is the top-left corner.
 - confidence: your confidence that this object actually exists at this location, from 0.0 to 1.0
 - visible_features: 1 sentence describing the object's shape, color, and material as you see it
@@ -10,7 +11,7 @@ Important rules:
 1. Only list objects ON the countertop/table. Do NOT list walls, cabinets, appliances (microwave, oven), or the robot arm.
 2. If you see NOTHING on the countertop, return {"objects": []}.
 3. Be honest about confidence. If something is partially occluded or far away, lower the confidence.
-4. Do NOT guess what an object is if you cannot clearly see it. Use descriptive names instead (e.g. "small dark object" rather than "knife").
+4. For likely_category, think about what kitchen items commonly have this shape/color/size. A small white bulb is likely garlic, a brown fuzzy sphere is likely kiwi, a red cylinder is likely a can, etc.
 
 Reply with ONLY a JSON object, no markdown formatting, no explanation:
-{"objects": [{"name": "...", "bbox_2d": [x1, y1, x2, y2], "confidence": 0.85, "visible_features": "..."}]}
+{"objects": [{"name": "...", "likely_category": "...", "bbox_2d": [x1, y1, x2, y2], "confidence": 0.85, "visible_features": "..."}]}

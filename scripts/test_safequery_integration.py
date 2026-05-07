@@ -114,7 +114,8 @@ def main():
         candidates = grounder.ground(img_path)
         logger.info(f"  VLM detected {len(candidates)} candidates:")
         for c in candidates:
-            logger.info(f"    {c.label}: bbox={c.bbox_2d} conf={c.confidence} feat={c.visible_features[:60]}")
+            cat_str = f" cat={c.likely_category}" if c.likely_category else ""
+            logger.info(f"    {c.label}: bbox={c.bbox_2d} conf={c.confidence}{cat_str} feat={c.visible_features[:50]}")
 
         # Query 匹配
         candidates = grounder.match_query(candidates, args.query, gt_types)

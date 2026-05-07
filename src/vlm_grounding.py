@@ -49,6 +49,7 @@ class GroundedCandidate:
     confidence: float                   # VLM 自评置信度 0.0-1.0
     bbox_2d: tuple[int, int, int, int]  # (x1, y1, x2, y2) 像素坐标, 256x256
     visible_features: str = ""          # VLM 给出的视觉描述 (形状/颜色/材质)
+    likely_category: str = ""           # VLM 猜测的物体类别 (e.g. "garlic", "kiwi")
 
     # 后处理填充 (match_query 阶段)
     query_match_score: float = 0.0      # 与用户 query 的匹配度 0.0-1.0
@@ -173,14 +174,17 @@ class VLMGrounder:
             "Look at this kitchen image carefully. List ONLY the physical objects "
             "you can actually see on the countertop or table. Do NOT invent objects.\n\n"
             "For each object you see, provide:\n"
-            "- name: a simple English noun describing what it looks like\n"
+            "- name: a simple English description of what it looks like\n"
+            "- likely_category: your best guess of what this object IS "
+            "(e.g. 'garlic', 'kiwi', 'bottle', 'spoon'). Use a single common noun. "
+            "If uncertain, use 'unknown'.\n"
             "- bbox_2d: [x1, y1, x2, y2] in pixels (image is 256x256)\n"
             "- confidence: 0.0 to 1.0\n"
             "- visible_features: 1 sentence describing shape/color/material\n\n"
             "If you see NOTHING on the countertop, return {\"objects\": []}.\n"
             "Reply with ONLY a JSON object:\n"
-            "{\"objects\": [{\"name\":..., \"bbox_2d\":..., \"confidence\":..., "
-            "\"visible_features\":...}]}"
+            "{\"objects\": [{\"name\":..., \"likely_category\":..., "
+            "\"bbox_2d\":..., \"confidence\":..., \"visible_features\":...}]}"
         )
 
     @staticmethod
@@ -267,12 +271,14 @@ class VLMGrounder:
                 label = str(item.get("name") or item.get("label") or "unknown").strip()
                 conf = float(item.get("confidence", 0.5))
                 features = str(item.get("visible_features", ""))
+                category = str(item.get("likely_category", "")).strip().lower()
 
                 candidates.append(GroundedCandidate(
                     label=label,
                     confidence=max(0.0, min(1.0, conf)),
                     bbox_2d=bbox,
                     visible_features=features,
+                    likely_category=category if category != "unknown" else "",
                 ))
 
         except Exception as e:
@@ -377,6 +383,7 @@ class VLMGrounder:
         """
         label_lower = candidate.label.lower()
         features_lower = candidate.visible_features.lower()
+        category_lower = candidate.likely_category.lower()
 
         best_score = 0.0
         best_method = "none"
@@ -384,6 +391,13 @@ class VLMGrounder:
 
         for kw in target_keywords:
             kw_lower = kw.lower()
+
+            # Level 0: likely_category 精确匹配 (最可靠)
+            if category_lower and (kw_lower in category_lower or category_lower in kw_lower):
+                if 0.9 > best_score:
+                    best_score = 0.9
+                    best_method = "category"
+                    best_category = category_lower
 
             # Level 1: 精确匹配 (label 包含关键词或关键词包含 label)
             if kw_lower in label_lower or label_lower in kw_lower:
