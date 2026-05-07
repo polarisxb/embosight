@@ -530,6 +530,13 @@ class EnvWrapper:
         if llm_result is not None:
             return llm_result
 
+        # 诊断: alias/fuzzy/LLM 全部失败时, 打印 task_objs 让用户/开发者看清
+        # 场景实际有什么 body, 是否真的没有目标物体
+        logger.info(
+            f"[ground_object] all strategies failed for '{user_target}'. "
+            f"task_objs ({len(task_objs)}): {task_objs[:30]}"
+        )
+
         # 4) 回退: 返回 obj_main (仅辅助查询时允许)
         if allow_fallback and "obj_main" in sim_body_names:
             pos = self._get_body_pos("obj_main")

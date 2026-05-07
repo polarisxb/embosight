@@ -3,7 +3,9 @@
 # 运行 print(env._env.sim.model.body_names) 后按需补全
 aliases:
   # === 容器/瓶罐 ===
-  药瓶: [bottle, medicine_bottle, pill_bottle, obj_main]
+  # 注意: obj_main 不应出现在 alias 中, 它是 RoboCasa 任务随机生成的物体,
+  # 类型不确定. 让 alias_map 只做真正的语义匹配, obj_main 由 fallback 路径处理.
+  药瓶: [bottle, medicine_bottle, pill_bottle, medicine, pill, drug]
   瓶子: [bottle, jar, container]
   水瓶: [water_bottle, bottle]
   调味瓶: [seasoning_bottle, spice_bottle, bottle, condiment]
