@@ -256,6 +256,88 @@ class EnvWrapper:
         except (KeyError, ValueError):
             return None
 
+    def _get_body_aabb(
+        self, body_name: str
+    ) -> Optional[tuple[np.ndarray, np.ndarray]]:
+        """获取 body 所有 geom 在世界系的 AABB (轴对齐包围盒)
+
+        累加该 body 下所有 geom 的位置 ± half-extent, 取并集.
+        对 sphere/cylinder 用 size[0] 作半径近似.
+
+        Returns:
+            (min_xyz, max_xyz) 或 None
+        """
+        sim = self._env.sim
+        try:
+            body_id = sim.model.body_name2id(body_name)
+            geom_ids = [
+                i for i in range(sim.model.ngeom)
+                if sim.model.geom_bodyid[i] == body_id
+            ]
+            if not geom_ids:
+                return None
+
+            mins, maxs = [], []
+            for gid in geom_ids:
+                pos = np.asarray(sim.data.geom_xpos[gid], dtype=np.float32)
+                size = np.asarray(sim.model.geom_size[gid], dtype=np.float32)
+                # robust half-extent: 用 size 各分量的最大值作保守估计
+                half = np.array([
+                    max(size[0], size[1] if len(size) > 1 else 0),
+                    max(size[1] if len(size) > 1 else size[0], size[0]),
+                    size[2] if len(size) > 2 else
+                    (size[1] if len(size) > 1 else size[0]),
+                ], dtype=np.float32)
+                mins.append(pos - half)
+                maxs.append(pos + half)
+
+            aabb_min = np.min(np.array(mins), axis=0)
+            aabb_max = np.max(np.array(maxs), axis=0)
+            return aabb_min.astype(np.float32), aabb_max.astype(np.float32)
+        except Exception as e:
+            logger.debug(f"[aabb] {body_name} failed: {e}")
+            return None
+
+    # 抓取相关常量
+    FINGERTIP_OFFSET_Z = 0.0  # eef_pos 已在指尖中点 (Panda gripper 默认)
+    GRASP_HEIGHT_RATIO = 0.55  # 指尖目标在物体高度 55% 处 (中部偏上, 重心稳定)
+
+    def _compute_grasp_pose(
+        self, body_name: str, fallback_pos: np.ndarray
+    ) -> np.ndarray:
+        """根据物体几何计算 wrist 目标位置 (世界系)
+
+        策略 (top-down grasp):
+            - AABB 给出物体真实顶/底高度
+            - 指尖目标 z = z_bot + GRASP_HEIGHT_RATIO * height
+            - wrist 目标 = (cx, cy, fingertip_z + FINGERTIP_OFFSET_Z)
+
+        Returns:
+            wrist 目标位置 (3D world)
+        """
+        fallback = np.asarray(fallback_pos, dtype=np.float32)
+        aabb = self._get_body_aabb(body_name)
+        if aabb is None:
+            logger.debug(f"[grasp_pose] no AABB for {body_name}, fallback to body_xpos")
+            return fallback
+
+        aabb_min, aabb_max = aabb
+        cx = 0.5 * (aabb_min[0] + aabb_max[0])
+        cy = 0.5 * (aabb_min[1] + aabb_max[1])
+        z_top = float(aabb_max[2])
+        z_bot = float(aabb_min[2])
+        height = z_top - z_bot
+
+        fingertip_z = z_bot + self.GRASP_HEIGHT_RATIO * height
+        wrist_z = fingertip_z + self.FINGERTIP_OFFSET_Z
+
+        target = np.array([cx, cy, wrist_z], dtype=np.float32)
+        logger.info(
+            f"[grasp_pose] '{body_name}' AABB z=[{z_bot:.3f},{z_top:.3f}] "
+            f"h={height:.3f}m → wrist_z={wrist_z:.3f} (was {fallback[2]:.3f})"
+        )
+        return target
+
     def _get_task_objects(self) -> list[str]:
         """获取 RoboCasa 环境中的任务物体 body name 列表
 
@@ -466,68 +548,231 @@ class EnvWrapper:
         # 无法检测时保守返回 True (不因检测失败阻止后续流程)
         return True
 
+    def _finger_object_contact(self, target_body: str) -> bool:
+        """检查夹爪指尖是否与指定物体的 geom 处于接触
+
+        通过遍历 `sim.data.contact[0:ncon]`, 判断每个接触对中:
+        是否一边是 target body 的 geom, 另一边是 finger geom.
+
+        相比 `_check_grasp_contact` (`is_grasping` 任意物体即 True),
+        此方法**特定到目标物体**, 用于下降阶段的早停判断.
+        """
+        sim = self._env.sim
+        try:
+            body_id = sim.model.body_name2id(target_body)
+            obj_geoms = {
+                i for i in range(sim.model.ngeom)
+                if sim.model.geom_bodyid[i] == body_id
+            }
+            if not obj_geoms:
+                return False
+
+            finger_kw = ("finger", "fingertip", "finger_pad", "tip", "pad")
+            finger_geoms = set()
+            for i in range(sim.model.ngeom):
+                try:
+                    name = sim.model.geom_id2name(i) or ""
+                except Exception:
+                    name = ""
+                lname = name.lower()
+                if any(kw in lname for kw in finger_kw):
+                    finger_geoms.add(i)
+
+            for i in range(sim.data.ncon):
+                c = sim.data.contact[i]
+                g1, g2 = int(c.geom1), int(c.geom2)
+                if (g1 in obj_geoms and g2 in finger_geoms) or \
+                   (g2 in obj_geoms and g1 in finger_geoms):
+                    return True
+        except Exception as e:
+            logger.debug(f"[finger_contact] {target_body}: {e}")
+        return False
+
+    def _descend_until_contact(
+        self,
+        target_pos: np.ndarray,
+        target_body: str,
+        step_z: float = 0.01,
+        max_steps: int = 25,
+    ) -> tuple[bool, float]:
+        """步进式下降, 指尖接触目标物体即停 (避免硬撞或停太高)
+
+        Args:
+            target_pos: wrist 最终目标 (世界系)
+            target_body: 用于接触检测的物体 body name
+            step_z: 每步下降量 (m)
+            max_steps: 最大步数
+
+        Returns:
+            (contact_ok, final_z): 是否接触到目标; 末端 Z
+        """
+        target = np.asarray(target_pos, dtype=np.float32)
+
+        for i in range(max_steps):
+            if self._finger_object_contact(target_body):
+                curr = self.get_eef_pos()
+                logger.info(
+                    f"[descend] contact at step {i}, "
+                    f"z={curr[2]:.3f} (target {target[2]:.3f})"
+                )
+                return True, float(curr[2])
+
+            curr = self.get_eef_pos()
+            if curr[2] <= target[2] + 0.005:
+                # 已到目标 z, 不再下降
+                logger.debug(f"[descend] reached target z without contact")
+                return self._finger_object_contact(target_body), float(curr[2])
+
+            # 下降一小步, XY 同步对齐 target
+            next_z = max(curr[2] - step_z, target[2])
+            next_target = np.array(
+                [target[0], target[1], next_z], dtype=np.float32
+            )
+            self.move_arm_to(
+                next_target, threshold_m=0.005, max_steps=120
+            )
+
+        curr = self.get_eef_pos()
+        contact = self._finger_object_contact(target_body)
+        logger.debug(f"[descend] max_steps reached, contact={contact}, z={curr[2]:.3f}")
+        return contact, float(curr[2])
+
+    def _close_gripper_until_grasp(
+        self, max_steps: int = 30, min_close_steps: int = 6
+    ) -> bool:
+        """力闭环关爪: 关闭直到检测到稳定夹持, 不是固定步数
+
+        Args:
+            max_steps: 最大关爪步数 (上限保护)
+            min_close_steps: 最少关爪步数 (给夹爪初始关闭时间)
+
+        Returns:
+            True 若检测到夹持, False 若超时无夹持
+        """
+        action = np.zeros(self._env.action_dim, dtype=np.float32)
+        action[self._get_gripper_idx()] = 1.0
+        for i in range(max_steps):
+            try:
+                obs, _, _, _ = self._env.step(action)
+                self._latest_obs = obs
+                self.render()
+            except Exception as e:
+                logger.warning(f"[close_gripper] step {i} failed: {e}")
+                return False
+            if i >= min_close_steps and self._check_grasp_contact():
+                logger.info(f"[close_gripper] grasp confirmed at step {i}")
+                return True
+        logger.warning(f"[close_gripper] no grasp after {max_steps} steps")
+        return False
+
     def grasp_at(
         self,
         target_pos_m,
         pre_grasp_height_m: float = 0.10,
         target_body: str = "obj_main",
     ) -> bool:
-        """完整抓取流程: 开爪 → 预抓取 → 下降 → 关爪 → 提升
+        """闭环自适应抓取流程
 
-        加入物理验证:
-        1. 关爪后检查接触
-        2. 提升后检查物体是否跟着升高
+        范式:
+            1. 几何感知 wrist 目标 (AABB → 中部偏上抓取点)
+            2. 预抓取 (容差宽松, 用于粗对位)
+            3. 接触式下降 (步进 + 指尖-物体接触早停, 避免硬撞)
+            4. 力闭环关爪 (检测到夹持即停, 不固定步数)
+            5. 微抬验证 (升 3cm 看物体是否跟随 → 跟随才确认)
+            6. 失败重试一次 (重新计算 grasp_pose, 物体可能被推动)
+            7. 最终提升
+
+        每个环节都有反馈, 而非开环位置控制.
 
         Returns:
-            True if grasp physically succeeded
+            True 若物体被成功抓起 (微抬或最终抬起 ≥1cm)
         """
-        target = np.asarray(target_pos_m, dtype=np.float32)
-        pre_grasp = target + np.array([0.0, 0.0, pre_grasp_height_m], dtype=np.float32)
-        grasp_tol = 0.05  # 5cm 容差
+        fallback_target = np.asarray(target_pos_m, dtype=np.float32)
 
-        # 记录物体初始高度
-        obj_z_before = None
-        obj_pos = self._get_body_pos(target_body)
-        if obj_pos is not None:
-            obj_z_before = float(obj_pos[2])
+        # 记录物体初始 Z (用于多次验证)
+        def _obj_z() -> Optional[float]:
+            p = self._get_body_pos(target_body)
+            return float(p[2]) if p is not None else None
+        obj_z_before = _obj_z()
 
-        logger.info("[grasp] open gripper")
-        self._gripper_action(-1.0, n_steps=8)
+        def _attempt(label: str) -> tuple[bool, bool, bool]:
+            """单次抓取尝试
 
-        logger.info(f"[grasp] move to pre-grasp {pre_grasp}")
-        ok1 = self.move_arm_to(pre_grasp, threshold_m=grasp_tol)
+            Returns: (descend_contact, grasp_confirmed, mini_lift_ok)
+            """
+            # (a) 几何感知 wrist 目标
+            wrist_target = self._compute_grasp_pose(target_body, fallback_target)
+            pre_grasp = wrist_target + np.array(
+                [0.0, 0.0, pre_grasp_height_m], dtype=np.float32
+            )
 
-        logger.info(f"[grasp] descend to target {target}")
-        ok2 = self.move_arm_to(target, threshold_m=grasp_tol)
+            logger.info(f"[grasp:{label}] open gripper")
+            self._gripper_action(-1.0, n_steps=8)
 
-        logger.info("[grasp] close gripper")
-        self._gripper_action(+1.0, n_steps=15)
+            logger.info(f"[grasp:{label}] pre-grasp → {pre_grasp}")
+            self.move_arm_to(pre_grasp, threshold_m=0.03)
 
-        # 物理验证 1: 接触检测
-        contact_ok = self._check_grasp_contact()
-        logger.info(f"[grasp] contact check: {contact_ok}")
+            logger.info(f"[grasp:{label}] descend → {wrist_target}")
+            descend_contact, final_z = self._descend_until_contact(
+                wrist_target, target_body, step_z=0.01, max_steps=25
+            )
 
-        logger.info(f"[grasp] lift to {pre_grasp}")
-        ok3 = self.move_arm_to(pre_grasp, threshold_m=grasp_tol)
+            logger.info(f"[grasp:{label}] close gripper (force loop)")
+            grasp_confirmed = self._close_gripper_until_grasp(
+                max_steps=30, min_close_steps=6
+            )
 
-        # 物理验证 2: 物体是否跟着升高
+            # 微抬验证: 升 3cm 看物体是否跟随
+            curr = self.get_eef_pos()
+            mini_target = curr + np.array([0.0, 0.0, 0.03], dtype=np.float32)
+            self.move_arm_to(mini_target, threshold_m=0.01, max_steps=120)
+            mini_lift_ok = False
+            obj_z_now = _obj_z()
+            if obj_z_now is not None and obj_z_before is not None:
+                dz = obj_z_now - obj_z_before
+                mini_lift_ok = dz > 0.01  # 物体跟随 ≥1cm
+                logger.info(
+                    f"[grasp:{label}] mini-lift: obj Δz={dz:.3f}m "
+                    f"→ ok={mini_lift_ok}"
+                )
+
+            return descend_contact, grasp_confirmed, mini_lift_ok
+
+        # ===== 第一次尝试 =====
+        d1, g1, m1 = _attempt("try1")
+        attempt_ok = m1  # 微抬验证为黄金标准
+
+        # ===== 失败则重试一次 (物体可能被推动, 重算 pose) =====
+        if not attempt_ok:
+            logger.warning("[grasp] try1 failed, retrying...")
+            d2, g2, m2 = _attempt("try2")
+            attempt_ok = m2
+            d1, g1 = d1 or d2, g1 or g2  # 累计
+
+        # ===== 最终提升到 pre_grasp 高度 =====
+        wrist_now = self._compute_grasp_pose(target_body, fallback_target)
+        final_pre_grasp = wrist_now + np.array(
+            [0.0, 0.0, pre_grasp_height_m], dtype=np.float32
+        )
+        logger.info(f"[grasp] final lift → {final_pre_grasp}")
+        ok_lift = self.move_arm_to(final_pre_grasp, threshold_m=0.03)
+
+        # ===== 最终物理验证: 物体是否真的被抬起 =====
         obj_lifted = False
-        obj_pos_after = self._get_body_pos(target_body)
-        if obj_pos_after is not None and obj_z_before is not None:
-            z_delta = float(obj_pos_after[2]) - obj_z_before
-            obj_lifted = z_delta > 0.02  # 物体升高了 2cm+
+        obj_z_after = _obj_z()
+        if obj_z_after is not None and obj_z_before is not None:
+            z_delta = obj_z_after - obj_z_before
+            obj_lifted = z_delta > 0.05  # 跟随 ≥5cm
             logger.info(
-                f"[grasp] object z: {obj_z_before:.3f} → {float(obj_pos_after[2]):.3f} "
+                f"[grasp] final z: {obj_z_before:.3f} → {obj_z_after:.3f} "
                 f"(Δ={z_delta:.3f}m, lifted={obj_lifted})"
             )
 
-        # descend 是关键步骤, pre-grasp 和 lift 允许部分失败
-        motion_ok = ok2  # descend 必须到位
-        physically_ok = contact_ok or obj_lifted
-        result = motion_ok and physically_ok
+        result = obj_lifted or attempt_ok
         logger.info(
-            f"[grasp] done: pre={ok1}, descend={ok2}, lift={ok3}, "
-            f"contact={contact_ok}, lifted={obj_lifted} → {result}"
+            f"[grasp] done: descend_contact={d1}, grasp_confirmed={g1}, "
+            f"mini_lift={attempt_ok}, lift_ok={ok_lift}, "
+            f"final_lifted={obj_lifted} → {result}"
         )
         return result
 
