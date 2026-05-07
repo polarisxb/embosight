@@ -87,6 +87,7 @@ class EnvWrapper:
                 camera_names=list(self.config.camera_names),
                 camera_heights=self.config.image_height,
                 camera_widths=self.config.image_width,
+                camera_depths=True,
                 control_freq=20,
             )
             if self.config.layout_ids is not None:
@@ -104,6 +105,104 @@ class EnvWrapper:
             self._obj_type_cache = {}
         logger.info(f"环境重置完成 (cameras={list(self.config.camera_names)})")
         return self._latest_obs
+
+    # ------------------------------------------------------------------
+    # 深度图 + 相机参数 (Phase 3: 3D 投影)
+    # ------------------------------------------------------------------
+
+    def get_depth_image(self, camera_name: str = "robot0_agentview_center") -> Optional[np.ndarray]:
+        """获取指定相机的深度图.
+
+        Returns:
+            HxW float32 深度缓冲 [0,1], 或 None
+        """
+        depth_key = f"{camera_name}_depth"
+        depth = self._latest_obs.get(depth_key)
+        if depth is None:
+            logger.warning(f"[depth] key '{depth_key}' not in obs")
+            return None
+        depth = np.asarray(depth, dtype=np.float32)
+        if depth.ndim == 3 and depth.shape[-1] == 1:
+            depth = depth[..., 0]
+        return depth
+
+    def get_camera_intrinsics(self, camera_name: str = "robot0_agentview_center") -> Optional[np.ndarray]:
+        """获取 3x3 内参矩阵 K.
+
+        从 MuJoCo sim.model.cam_fovy 计算 fx, fy, cx, cy.
+        """
+        if self._env is None:
+            return None
+        try:
+            sim = self._env.sim
+            cam_id = sim.model.camera_name2id(camera_name)
+            fovy_deg = float(sim.model.cam_fovy[cam_id])
+            h, w = self.config.image_height, self.config.image_width
+            fy = 0.5 * h / np.tan(0.5 * np.radians(fovy_deg))
+            fx = fy
+            cx, cy = w / 2.0, h / 2.0
+            return np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], dtype=np.float64)
+        except Exception as e:
+            logger.error(f"[intrinsics] failed for {camera_name}: {e}")
+            return None
+
+    def get_camera_extrinsic(self, camera_name: str = "robot0_agentview_center") -> Optional[tuple[np.ndarray, np.ndarray]]:
+        """获取相机世界位姿 (position, 3x3 rotation matrix).
+
+        Returns:
+            (cam_pos(3,), cam_rot(3,3)) 或 None
+        """
+        if self._env is None:
+            return None
+        try:
+            sim = self._env.sim
+            cam_id = sim.model.camera_name2id(camera_name)
+            cam_pos = sim.data.cam_xpos[cam_id].copy().astype(np.float64)
+            cam_rot = sim.data.cam_xmat[cam_id].reshape(3, 3).copy().astype(np.float64)
+            return cam_pos, cam_rot
+        except Exception as e:
+            logger.error(f"[extrinsic] failed for {camera_name}: {e}")
+            return None
+
+    def get_depth_params(self) -> tuple[float, float, float]:
+        """获取 MuJoCo depth buffer 归一化参数.
+
+        Returns:
+            (extent, znear_ratio, zfar_ratio)
+        """
+        sim = self._env.sim
+        extent = float(sim.model.stat.extent)
+        znear = float(sim.model.vis.map.znear)
+        zfar = float(sim.model.vis.map.zfar)
+        return extent, znear, zfar
+
+    def make_projector(self, camera_name: str = "robot0_agentview_center"):
+        """创建 bbox → 3D world 投影函数 (供 SceneModel.add_view 使用).
+
+        Returns:
+            callable: projector(bbox_2d) -> np.ndarray(3,) or None
+        """
+        depth = self.get_depth_image(camera_name)
+        K = self.get_camera_intrinsics(camera_name)
+        ext = self.get_camera_extrinsic(camera_name)
+
+        if depth is None or K is None or ext is None:
+            logger.warning(f"[projector] cannot build for {camera_name}: missing data")
+            return None
+
+        cam_pos, cam_rot = ext
+        extent, znear, zfar = self.get_depth_params()
+        img_size = self.config.image_width
+
+        from .scene_model import project_bbox_to_world
+
+        def _projector(bbox_2d: tuple) -> Optional[np.ndarray]:
+            return project_bbox_to_world(
+                bbox_2d, depth, K, cam_pos, cam_rot,
+                extent, znear, zfar, img_size,
+            )
+
+        return _projector
 
     # ------------------------------------------------------------------
     # 手臂控制 (Phase 1)
@@ -776,9 +875,24 @@ class EnvWrapper:
             except Exception as e:
                 logger.warning(f"图像保存失败: {e}")
 
+        # 深度图保存 (Phase 3)
+        depth_map_path = None
+        depth_key = f"{camera_name}_depth"
+        if depth_key in self._latest_obs:
+            depth_path = os.path.join(
+                self.config.output_dir,
+                f"step_{self._step:03d}_{camera_name}_depth.npy",
+            )
+            try:
+                np.save(depth_path, self._latest_obs[depth_key])
+                depth_map_path = depth_path
+            except Exception as e:
+                logger.warning(f"深度图保存失败: {e}")
+
         return Observation(
             viewpoint=viewpoint,
             image_path=image_path,
+            depth_map_path=depth_map_path,
         )
 
     # ------------------------------------------------------------------
