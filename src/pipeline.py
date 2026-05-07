@@ -105,10 +105,22 @@ class EmboSightPipeline:
         for t in subtasks:
             logger.info(f"  - {t}")
 
-        observations = self.active_planner.plan(subtasks, env)
-        logger.info(f"[Step 2] 采集 {len(observations)} 个视角")
+        # Phase 6: Grounding-Aware 规划 (边拍边 ground, 目标 found 则早停)
+        scene_model = None
+        try:
+            observations, scene_model = self.active_planner.plan_with_grounding(
+                subtasks, env, query, self.scene_describer
+            )
+            logger.info(
+                f"[Step 2] Grounding-aware 规划: {len(observations)} 视角, "
+                f"SceneModel: {len(scene_model) if scene_model else 0} objects"
+            )
+        except Exception as e:
+            logger.warning(f"[Step 2] Grounding-aware planning failed, fallback: {e}")
+            observations = self.active_planner.plan(subtasks, env)
+            logger.info(f"[Step 2] Fallback 采集 {len(observations)} 个视角")
 
-        # Step 3: 场景描述 (旧路径: 五维度结构化描述)
+        # Step 3: 场景描述 (五维度结构化描述, 用于 TTS 语音)
         descriptions: list[StructuredDescription] = []
         for i, obs in enumerate(observations):
             desc = self.scene_describer.describe(
@@ -124,18 +136,15 @@ class EmboSightPipeline:
         speech = final_desc.to_speech()
         logger.info("[Step 4] 聚合完成")
 
-        # Step 4b: VLM Grounding + 3D 融合 (Phase 5 新路径)
-        scene_model = None
-        try:
-            scene_model = self.scene_describer.describe_with_grounding(
-                observations, query, env
-            )
-            logger.info(
-                f"[Step 4b] SceneModel: {len(scene_model)} objects, "
-                f"best={scene_model.get_best_match()}"
-            )
-        except Exception as e:
-            logger.warning(f"[Step 4b] VLM grounding failed, fallback to legacy: {e}")
+        # 如果 plan_with_grounding 未产出 scene_model, 尝试独立 grounding
+        if scene_model is None or len(scene_model) == 0:
+            try:
+                scene_model = self.scene_describer.describe_with_grounding(
+                    observations, query, env
+                )
+                logger.info(f"[Step 4b] Fallback grounding: {len(scene_model)} objects")
+            except Exception as e:
+                logger.warning(f"[Step 4b] Fallback grounding failed: {e}")
 
         # Step 5: 行动决策
         logger.info("[Step 5] 行动决策")

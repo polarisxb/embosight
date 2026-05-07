@@ -161,6 +161,8 @@ class ActivePlanner:
         max_viewpoints: int = 6,
         coverage_threshold: float = 0.85,
         prompt_path: str = "prompts/active_planner.txt",
+        grounding_prompt_path: str = "prompts/active_planner_grounding_aware.txt",
+        grounding_confidence_threshold: float = 0.8,
     ) -> None:
         """
         Args:
@@ -169,12 +171,16 @@ class ActivePlanner:
             max_viewpoints: 最大视角数（防死循环）
             coverage_threshold: 任务覆盖率阈值
             prompt_path: 系统 Prompt 模板路径
+            grounding_prompt_path: Grounding-Aware Prompt 模板路径
+            grounding_confidence_threshold: grounding 早停置信度阈值
         """
         self.llm = llm_client
         self.vp_lib = viewpoint_lib
         self.max_vp = max_viewpoints
         self.coverage_threshold = coverage_threshold
+        self.grounding_conf_threshold = grounding_confidence_threshold
         self.system_prompt = self._load_prompt(prompt_path)
+        self.grounding_system_prompt = self._load_prompt(grounding_prompt_path)
 
     def _load_prompt(self, prompt_path: str) -> str:
         path = Path(prompt_path)
@@ -248,6 +254,244 @@ class ActivePlanner:
         final_coverage = self._update_coverage(subtasks, observations)
         logger.info(f"规划完成: {len(observations)} 个视角, 最终覆盖率 {final_coverage:.0%}")
         return observations
+
+    # ==========================================================
+    # Phase 6: Grounding-Aware 规划
+    # ==========================================================
+
+    def plan_with_grounding(
+        self,
+        subtasks: list,
+        env,
+        user_query: str,
+        scene_describer=None,
+    ) -> tuple[list["Observation"], Optional[Any]]:
+        """主入口 (Phase 6): 带 VLM grounding 早停的主动视角规划.
+
+        每拍一个视角就运行 VLM grounding, 如果目标已被发现且置信度足够,
+        则早停不再拍更多视角 — 节省 VLM 调用次数.
+
+        Args:
+            subtasks: 子任务列表
+            env: EnvWrapper
+            user_query: 用户原始查询
+            scene_describer: SceneDescriber (含 grounder + safety_gate)
+
+        Returns:
+            (observations, scene_model) — scene_model 可能为 None
+        """
+        from .scene_model import SceneModel
+
+        observations: list[Observation] = []
+        used_indices: set[int] = set()
+        scene_model = SceneModel() if scene_describer else None
+
+        # ---- 初始视角 ----
+        init_idx = 0
+        init_vp = self.vp_lib[init_idx]
+        init_obs = env.observe(init_vp)
+        observations.append(init_obs)
+        used_indices.add(init_idx)
+        logger.info(f"初始视角: {init_vp.name}")
+
+        # 立即运行 grounding
+        if scene_describer and scene_model is not None:
+            self._run_grounding_step(
+                init_obs, user_query, scene_describer, scene_model, env
+            )
+
+        while len(observations) < self.max_vp:
+            # ---- 检查 grounding 早停 ----
+            if scene_model is not None:
+                best = scene_model.get_best_match()
+                if best and best.query_match_score >= self.grounding_conf_threshold:
+                    # 同时检查覆盖率
+                    coverage = self._update_coverage(subtasks, observations)
+                    if coverage >= self.coverage_threshold:
+                        logger.info(
+                            f"[grounding_plan] 早停: target grounded "
+                            f"(score={best.query_match_score:.2f}) + "
+                            f"coverage={coverage:.0%} ({len(observations)} views)"
+                        )
+                        break
+
+            # ---- 覆盖率早停 ----
+            coverage = self._update_coverage(subtasks, observations)
+            if coverage >= self.coverage_threshold:
+                # 即使覆盖率达标, 如果 target 未 grounding 到足够置信度则继续
+                grounded_enough = (
+                    scene_model is None
+                    or scene_model.get_best_match(min_score=self.grounding_conf_threshold) is not None
+                )
+                if grounded_enough:
+                    logger.info(f"覆盖率达标，早停 ({len(observations)} views)")
+                    break
+
+            # ---- LLM 选视角 (grounding-aware prompt) ----
+            next_idx = self._select_next_grounding_aware(
+                subtasks, observations, used_indices,
+                user_query, scene_model
+            )
+            if next_idx < 0 or next_idx >= len(self.vp_lib):
+                logger.info(f"LLM 输出 -1（早停信号）")
+                break
+
+            next_vp = self.vp_lib[next_idx]
+            new_obs = env.observe(next_vp)
+            observations.append(new_obs)
+            used_indices.add(next_idx)
+            logger.info(f"视角 {len(observations)}: {next_vp.name}")
+
+            # 每拍一个视角就立即 grounding
+            if scene_describer and scene_model is not None:
+                self._run_grounding_step(
+                    new_obs, user_query, scene_describer, scene_model, env
+                )
+
+        final_coverage = self._update_coverage(subtasks, observations)
+        grounding_status = "N/A"
+        if scene_model:
+            best = scene_model.get_best_match()
+            grounding_status = f"{best.label}({best.query_match_score:.2f})" if best else "NOT_FOUND"
+        logger.info(
+            f"规划完成: {len(observations)} views, "
+            f"coverage={final_coverage:.0%}, grounding={grounding_status}"
+        )
+        return observations, scene_model
+
+    def _run_grounding_step(
+        self,
+        obs: Observation,
+        user_query: str,
+        scene_describer,
+        scene_model,
+        env,
+    ) -> None:
+        """对单个视角运行 VLM grounding 并加入 SceneModel."""
+        try:
+            camera_name = obs.viewpoint.name
+            candidates = scene_describer.grounder.ground(obs.image_path)
+
+            gt_categories = None
+            if env and hasattr(env, '_get_obj_type_map'):
+                try:
+                    gt_categories = env._get_obj_type_map()
+                except Exception:
+                    pass
+
+            candidates = scene_describer.grounder.match_query(
+                candidates, user_query, gt_categories
+            )
+
+            projector = None
+            if env and hasattr(env, 'make_projector'):
+                try:
+                    projector = env.make_projector(camera_name)
+                except Exception:
+                    pass
+
+            scene_model.add_view(camera_name, candidates, projector)
+
+            # 安全注入
+            for obj_item in scene_model.objects:
+                scene_describer.safety_gate.update_object_safety(obj_item)
+
+        except Exception as e:
+            logger.warning(f"[grounding_plan] grounding step failed for {obs.viewpoint.name}: {e}")
+
+    def _select_next_grounding_aware(
+        self,
+        subtasks: list,
+        observations: list[Observation],
+        used_indices: set[int],
+        user_query: str,
+        scene_model,
+    ) -> int:
+        """用 grounding-aware prompt 让 LLM 选视角."""
+        prompt = self._build_grounding_nbv_prompt(
+            subtasks, observations, used_indices, user_query, scene_model
+        )
+        try:
+            response = self.llm.generate(
+                user_message=prompt,
+                system=self.grounding_system_prompt,
+                json_mode=True,
+            )
+            data = json.loads(response)
+            idx = int(data.get("viewpoint_idx", -1))
+            reason = data.get("reason", "")
+            logger.debug(f"NBV-GA 决策: idx={idx}, reason={reason}")
+            return idx
+        except Exception as e:
+            logger.warning(f"NBV-GA 决策失败: {e}, fallback")
+            for i in range(len(self.vp_lib)):
+                if i not in used_indices:
+                    return i
+            return -1
+
+    def _build_grounding_nbv_prompt(
+        self,
+        subtasks: list,
+        observations: list[Observation],
+        used_indices: set[int],
+        user_query: str,
+        scene_model,
+    ) -> str:
+        """构建 Grounding-Aware NBV Prompt."""
+        lines = [f"## 用户查询: {user_query}"]
+
+        # Grounding 状态
+        lines.append("\n## Grounding 状态")
+        if scene_model and len(scene_model) > 0:
+            best = scene_model.get_best_match()
+            if best:
+                lines.append(
+                    f"  ★ 最佳匹配: '{best.label}' "
+                    f"(score={best.query_match_score:.2f}, risk={best.safety_risk})"
+                )
+                if best.query_match_score >= self.grounding_conf_threshold:
+                    lines.append("  → 目标已被高置信度 grounding, 考虑早停")
+            lines.append(f"  场景中共 {len(scene_model)} 个物体:")
+            for obj in scene_model.objects:
+                lines.append(
+                    f"    - {obj.label}: score={obj.query_match_score:.2f} "
+                    f"risk={obj.safety_risk} views={obj.observed_in_views}"
+                )
+        else:
+            lines.append("  ✗ 目标物体尚未被发现, 需要更多视角")
+
+        # 未覆盖维度
+        uncovered_dims: set[str] = set()
+        lines.append("\n## 子任务覆盖状态")
+        for i, t in enumerate(subtasks, 1):
+            status = "✓" if t.coverage_status else "✗"
+            dim_val = t.blind_dimension.value if hasattr(t.blind_dimension, 'value') else str(t.blind_dimension)
+            lines.append(f"  {i}. [{status}] {t.target} (dim={dim_val})")
+            if not t.coverage_status:
+                uncovered_dims.add(dim_val)
+
+        if uncovered_dims:
+            lines.append(f"\n## 未覆盖维度: {sorted(uncovered_dims)}")
+
+        # 已有观察
+        lines.append("\n## 已有观察")
+        for i, obs in enumerate(observations, 1):
+            desc = obs.description[:80] if obs.description else "（暂无描述）"
+            lines.append(f"  视角 {i} [{obs.viewpoint.name}]: {desc}")
+
+        # 视角库
+        lines.append("\n## 视角库")
+        for i, vp in enumerate(self.vp_lib.viewpoints):
+            mark = " [已用]" if i in used_indices else ""
+            lines.append(f"  {i}: {vp.name} - {vp.purpose}{mark}")
+
+        lines.append(
+            "\n请选择下一个视角索引。"
+            "优先级: grounding 目标 > 安全确认 > 维度覆盖。"
+            "如果目标已 grounding 且关键维度已覆盖, 输出 -1。"
+        )
+
+        return "\n".join(lines)
 
     # ==========================================================
     # 覆盖率追踪（创新点）
