@@ -473,7 +473,7 @@ class EnvWrapper:
         搜索策略 (按优先级):
         1. alias_map 别名匹配 → confidence=0.9
         2. body name 子串模糊匹配 → confidence=0.6
-        3. VLM 开放词汇定位 (拍场景图识别) → confidence=0.7
+        3. LLM 语义匹配 (解析 body name 中的物体类型) → confidence=0.75
         4. 回退: 返回 obj_main (RoboCasa 主任务物体) → confidence=0.5
 
         Returns:
@@ -518,10 +518,10 @@ class EnvWrapper:
                         source="fuzzy_match",
                     )
 
-        # 3) VLM 辅助定位 (open-vocabulary grounding)
-        vlm_result = self._vlm_guided_grounding(user_target, task_objs)
-        if vlm_result is not None:
-            return vlm_result
+        # 3) LLM 语义匹配 (解析 body name 中的物体类型)
+        llm_result = self._llm_semantic_grounding(user_target, task_objs)
+        if llm_result is not None:
+            return llm_result
 
         # 4) 回退: 返回 obj_main (RoboCasa 主任务物体)
         #    RoboCasa PickPlace 任务中 obj_main 就是要抓的物体
@@ -543,115 +543,102 @@ class EnvWrapper:
         logger.warning(f"[ground_object] failed to ground '{user_target}'")
         return None
 
-    def _vlm_guided_grounding(
+    def _llm_semantic_grounding(
         self, user_target: str, task_objs: list[str]
     ) -> Optional[ObjectGrounding]:
-        """VLM 辅助开放词汇定位
+        """LLM 语义匹配: 解析 body name 中的物体类型, 匹配用户目标
 
-        当别名/模糊匹配都失败时，拍一张场景图让 VLM 识别物体，
-        让 VLM 先描述场景中看到的物体，再判断哪个匹配用户目标。
+        优势 (相比 VLM):
+            - body name 解析是纯语言任务, LLM 天然擅长
+            - API 调用 ~1s, 比 VLM 推理 ~15s 快一个数量级
+            - 不依赖视觉, 不需要硬编码负面例子
+            - 能正确区分: Juice≠cup, Turmeric≠药瓶, Banana≠碗
 
         Returns:
-            ObjectGrounding if VLM found a match, else None
+            ObjectGrounding if LLM found a semantic match, else None
         """
-        if not hasattr(self, "_vlm") or self._vlm is None:
-            try:
-                from .vlm_backend import VLMBackend
-                self._vlm = VLMBackend()
-            except Exception as e:
-                logger.debug(f"[vlm_grounding] VLM unavailable: {e}")
-                return None
-
         if not task_objs:
             return None
 
-        try:
-            from .active_planner import Viewpoint
-            vp = Viewpoint(
-                name="robot0_agentview_center",
-                position=(0, 0, 0),
-                orientation=(0, 0, 0),
-                purpose="vlm_grounding",
-            )
-            obs = self.observe(vp)
-
-            # 构建物体 body name → 可读描述 的对照
-            obj_list_str = ", ".join(task_objs[:15])
-            prompt = (
-                f"Look at this kitchen scene image carefully.\n"
-                f"The user is looking for: '{user_target}'.\n"
-                f"The simulation has these object body names: [{obj_list_str}].\n\n"
-                f"For each body name, its type is usually in the name "
-                f"(e.g. 'obj_Bottle001_Prop' is a bottle, "
-                f"'distr_counter_Cup003_main' is a cup on the counter).\n\n"
-                f"Which ONE body name is most likely '{user_target}'? "
-                f"Think about what '{user_target}' means "
-                f"(e.g. 杯子=cup, 碗=bowl, 药瓶=medicine bottle, 锅=pot).\n\n"
-                f"Rules:\n"
-                f"- ONLY pick from the list above\n"
-                f"- The object type in the body name must semantically match "
-                f"'{user_target}'\n"
-                f"- 'Juice' is NOT a 'cup/杯子', 'Turmeric' is NOT a '药瓶'\n"
-                f"- If NO body name matches '{user_target}', reply NONE\n\n"
-                f"Reply with ONLY the exact body name or NONE."
-            )
-            vlm_answer = self._vlm.describe(obs.image_path, prompt=prompt).strip()
-            # 清理 VLM 可能添加的引号或多余文字
-            vlm_answer = vlm_answer.strip("'\"` ")
-            if "\n" in vlm_answer:
-                vlm_answer = vlm_answer.split("\n")[0].strip()
-            logger.info(f"[vlm_grounding] VLM answer: '{vlm_answer}'")
-
-            if not vlm_answer or vlm_answer.upper() == "NONE":
+        if not hasattr(self, "_llm") or self._llm is None:
+            try:
+                from .llm_backend import LLMBackend
+                self._llm = LLMBackend(max_tokens=256, temperature=0.0)
+            except Exception as e:
+                logger.debug(f"[llm_grounding] LLM unavailable: {e}")
                 return None
 
-            # 匹配 VLM 输出到 task_objs (精确匹配优先)
-            vlm_lower = vlm_answer.lower()
+        try:
+            obj_list = "\n".join(f"  {i+1}. {b}" for i, b in enumerate(task_objs[:20]))
+            prompt = (
+                f"Task: Match a user's target object to simulation body names.\n\n"
+                f"User target: '{user_target}'\n"
+                f"(If Chinese: 杯子=cup/mug, 碗=bowl, 药瓶=medicine bottle, "
+                f"锅=pot/pan, 盘子=plate, 瓶子=bottle, 刀=knife, 勺=spoon, "
+                f"苹果=apple, 面包=bread, 水壶=kettle, 罐头=can)\n\n"
+                f"Available body names:\n{obj_list}\n\n"
+                f"Instructions:\n"
+                f"1. Extract the object TYPE from each body name "
+                f"(e.g. 'obj_Juice003_Prop' → juice, "
+                f"'distr_counter_Cup005_main' → cup, "
+                f"'obj_Turmeric002_Prop' → turmeric/spice)\n"
+                f"2. Find which extracted type semantically matches "
+                f"'{user_target}'\n"
+                f"3. Be STRICT: juice≠cup, turmeric≠medicine, banana≠bowl\n\n"
+                f"Reply in JSON: {{\"match\": \"<exact body name>\"}} "
+                f"or {{\"match\": \"NONE\"}} if no semantic match."
+            )
+
+            raw = self._llm.generate(
+                user_message=prompt,
+                system="You are a precise object-matching assistant. "
+                       "Only match when the object types are semantically equivalent.",
+                json_mode=True,
+                temperature=0.0,
+            )
+
+            import json as _json
+            data = _json.loads(raw)
+            matched = data.get("match", "NONE").strip()
+            logger.info(f"[llm_grounding] LLM match: '{matched}'")
+
+            if not matched or matched.upper() == "NONE":
+                return None
+
+            # 验证 LLM 返回的 body name 确实在列表中
             best_body = None
+            matched_lower = matched.lower()
             for body in task_objs:
-                if body.lower() == vlm_lower:
+                if body.lower() == matched_lower:
                     best_body = body
                     break
-            # 子串匹配
             if best_body is None:
                 for body in task_objs:
-                    if body.lower() in vlm_lower or vlm_lower in body.lower():
+                    if matched_lower in body.lower() or body.lower() in matched_lower:
                         best_body = body
                         break
-            # 关键词重叠度 (至少 2 个 token 重叠才算有效)
-            if best_body is None:
-                vlm_tokens = set(vlm_lower.replace("_", " ").split())
-                best_score, best_body = 0, None
-                for body in task_objs:
-                    body_tokens = set(body.lower().replace("_", " ").split())
-                    overlap = len(vlm_tokens & body_tokens)
-                    if overlap > best_score:
-                        best_score = overlap
-                        best_body = body
-                if best_score < 2:  # 至少 2 词重叠才可信
-                    best_body = None
 
             if best_body is not None:
                 pos = self._get_body_pos(best_body)
                 if pos is not None:
                     logger.info(
-                        f"[vlm_grounding] '{user_target}' → {best_body} at {pos}"
+                        f"[llm_grounding] '{user_target}' → {best_body} at {pos}"
                     )
                     return ObjectGrounding(
                         user_target=user_target,
-                        canonical_name=vlm_answer,
+                        canonical_name=matched,
                         sim_body_name=best_body,
                         position_m=tuple(pos.tolist()),
-                        confidence=0.7,
-                        source="vlm_grounding",
+                        confidence=0.75,
+                        source="llm_grounding",
                     )
             else:
                 logger.info(
-                    f"[vlm_grounding] VLM answer '{vlm_answer}' "
-                    f"did not match any task object, skipping"
+                    f"[llm_grounding] LLM returned '{matched}' "
+                    f"but not in task_objs, skipping"
                 )
         except Exception as e:
-            logger.warning(f"[vlm_grounding] failed: {e}")
+            logger.warning(f"[llm_grounding] failed: {e}")
         return None
 
     # ------------------------------------------------------------------
