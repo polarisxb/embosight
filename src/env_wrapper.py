@@ -144,6 +144,29 @@ class EnvWrapper:
                 logger.warning(f"[render] {e}")
 
     ARM_STEP_CAP = 0.15  # 手臂 OSC 单步增量上限 (base 系)
+    BASE_XY_THRESHOLD = 0.25  # 底盘主导 → 手臂主导的切换距离 (m)
+
+    def _get_base_action_idx(self) -> Optional[int]:
+        """动态获取 base controller 在 action vector 中的起始 index"""
+        if hasattr(self, "_base_idx_cache"):
+            return self._base_idx_cache
+        try:
+            robot = self._env.robots[0]
+            idx = 0
+            for part_name, ctrl in robot.composite_controller.part_controllers.items():
+                pn = part_name.lower()
+                if "base" in pn or "mobile" in pn:
+                    self._base_idx_cache = idx
+                    logger.info(
+                        f"[base] detected index={idx} dim={ctrl.control_dim} "
+                        f"(part={part_name})"
+                    )
+                    return idx
+                idx += ctrl.control_dim
+        except Exception as e:
+            logger.warning(f"[base] auto-detect failed ({e})")
+        self._base_idx_cache = None
+        return None
 
     def move_arm_to(
         self,
@@ -155,12 +178,14 @@ class EnvWrapper:
 
         关键修正 (相比之前):
             - 手臂 OSC `input_ref_frame='base'`: action[0:3] 是 base 系增量
-            - 底盘 JointVelocity: action[6:10] 也是 base 系速度
+            - 底盘 JointVelocity (forward/side): 也是 base 系速度
+            - 底盘 action index 通过 _get_base_action_idx() 动态检测
             - 因此世界系 delta 必须先旋转到 base 系才能用作 action
 
         策略:
             每步重读 base_ori (因为底盘可能旋转), 把世界系 delta
             旋转到当前 base 系, 同时驱动手臂和底盘. 步数按距离动态分配.
+            底盘增益 0.8 (OmronMobileBase frictionloss=250, kv=1000).
 
         Returns:
             True if converged within threshold
@@ -172,17 +197,23 @@ class EnvWrapper:
         if target.shape[0] > 3:
             target = target[:3]
         action_dim = self._env.action_dim
-        has_base = action_dim >= 10
+        base_idx = self._get_base_action_idx()
+        has_base = base_idx is not None
 
         init_dist = float(np.linalg.norm(target - self.get_eef_pos()))
         if init_dist < threshold_m:
             return True
         if init_dist > 0.5:
             max_steps = max(max_steps, int(init_dist * 1500))
-        logger.debug(f"[move] dist={init_dist:.3f}m, max_steps={max_steps}")
+        logger.debug(
+            f"[move] target={target}, init_dist={init_dist:.3f}m, "
+            f"max_steps={max_steps}, base_idx={base_idx}"
+        )
 
         prev_dist = float("inf")
         stall = 0
+        check_interval = 120  # 每 N 步检查一次 stall
+        stall_limit = 6
 
         for step in range(max_steps):
             current = self.get_eef_pos()
@@ -193,16 +224,25 @@ class EnvWrapper:
                 logger.debug(f"[move] converged step={step} dist={dist:.4f}m")
                 return True
 
-            # stall 检测
-            if step > 0 and step % 80 == 0:
-                if dist >= prev_dist - 0.002:
+            # stall 检测: 放宽间隔和阈值
+            if step > 0 and step % check_interval == 0:
+                progress = prev_dist - dist
+                if progress < 0.005:
                     stall += 1
-                    if stall >= 5:
-                        logger.warning(f"[move_arm_to] stalled, dist={dist:.4f}m")
+                    if stall >= stall_limit:
+                        logger.warning(
+                            f"[move_arm_to] stalled at step={step}, "
+                            f"dist={dist:.4f}m (progress={progress:.4f}m)"
+                        )
                         return dist < threshold_m
                 else:
                     stall = max(0, stall - 1)
                 prev_dist = dist
+                if step % (check_interval * 3) == 0:
+                    logger.debug(
+                        f"[move] step={step} dist={dist:.3f}m "
+                        f"stall={stall}/{stall_limit}"
+                    )
 
             # 世界系 → base 系 (核心修正)
             _, base_ori = self.get_base_pose()
@@ -215,11 +255,11 @@ class EnvWrapper:
             # 手臂: base 系增量
             action[0:3] = dir_base * step_size
 
-            # 底盘: base 系 XY 速度, 距离越远增益越大
-            if has_base and dist > 0.10:
-                base_gain = min(0.3, dist * 0.5)
-                action[6] = float(dir_base[0]) * base_gain
-                action[7] = float(dir_base[1]) * base_gain
+            # 底盘: base 系 forward/side 速度
+            if has_base and dist > 0.05:
+                base_gain = min(0.8, dist * 0.8)
+                action[base_idx] = float(dir_base[0]) * base_gain      # forward
+                action[base_idx + 1] = float(dir_base[1]) * base_gain  # side
 
             try:
                 obs, _, _, _ = self._env.step(action)
@@ -568,7 +608,7 @@ class EnvWrapper:
     def _gripper_action(self, gripper_value: float, n_steps: int = 10) -> None:
         """控制夹爪 (gripper_value: -1 开, +1 关)"""
         action = np.zeros(self._env.action_dim, dtype=np.float32)
-        # PandaOmron composite: [0:3]=arm_pos, [3:6]=arm_rot, [6:10]=base, [10:12]=gripper
+        # PandaOmron composite: indices detected dynamically via part_controllers
         gripper_idx = self._get_gripper_idx()
         action[gripper_idx] = gripper_value
         for _ in range(n_steps):
@@ -745,10 +785,10 @@ class EnvWrapper:
             p = self._get_body_pos(target_body)
             return p if p is not None else fallback_target
 
-        def _attempt(label: str) -> tuple[bool, bool, bool]:
+        def _attempt(label: str) -> tuple[bool, bool, bool, bool]:
             """单次抓取尝试
 
-            Returns: (descend_contact, grasp_confirmed, mini_lift_ok)
+            Returns: (pre_ok, descend_contact, grasp_confirmed, mini_lift_ok)
             """
             # (a) 几何感知 wrist 目标
             wrist_target = self._compute_grasp_pose(target_body, _target_seed())
@@ -760,7 +800,10 @@ class EnvWrapper:
             self._gripper_action(-1.0, n_steps=8)
 
             logger.info(f"[grasp:{label}] pre-grasp → {pre_grasp}")
-            self.move_arm_to(pre_grasp, threshold_m=0.03)
+            pre_ok = self.move_arm_to(pre_grasp, threshold_m=0.03)
+            if not pre_ok:
+                logger.warning(f"[grasp:{label}] pre-grasp unreachable, abort attempt")
+                return False, False, False, False
 
             logger.info(f"[grasp:{label}] descend → {wrist_target}")
             descend_contact, final_z = self._descend_until_contact(
@@ -786,16 +829,30 @@ class EnvWrapper:
                     f"→ ok={mini_lift_ok}"
                 )
 
-            return descend_contact, grasp_confirmed, mini_lift_ok
+            return True, descend_contact, grasp_confirmed, mini_lift_ok
 
         # ===== 第一次尝试 =====
-        d1, g1, m1 = _attempt("try1")
+        p1, d1, g1, m1 = _attempt("try1")
+        if not p1:
+            logger.info(
+                "[grasp] done: pre_grasp=False, descend_contact=False, "
+                "grasp_confirmed=False, mini_lift=False, lift_ok=False, "
+                "final_lifted=False → False"
+            )
+            return False
         attempt_ok = m1  # 微抬验证为黄金标准
 
         # ===== 失败则重试一次 (物体可能被推动, 重算 pose) =====
         if not attempt_ok:
             logger.warning("[grasp] try1 failed, retrying...")
-            d2, g2, m2 = _attempt("try2")
+            p2, d2, g2, m2 = _attempt("try2")
+            if not p2:
+                logger.info(
+                    f"[grasp] done: descend_contact={d1 or d2}, "
+                    f"grasp_confirmed={g1 or g2}, mini_lift=False, "
+                    "lift_ok=False, final_lifted=False → False"
+                )
+                return False
             attempt_ok = m2
             d1, g1 = d1 or d2, g1 or g2  # 累计
 
