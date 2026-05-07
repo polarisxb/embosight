@@ -473,7 +473,26 @@ git push
 
 ### Phase 2 Path Selection
 
-**To be filled after Phase 1**: [PATH A | PATH B]
+**DECIDED: PATH A** (bbox + depth 3D projection)
+
+Phase 1 probe results (2026-05-07):
+
+| Parameter | Value |
+|-----------|-------|
+| VLM bbox output | ✅ All 4 prompts produce parseable bbox |
+| Prompt D (anti-hallucination) | ✅ No fake objects invented |
+| fovy | 45° (not 60° as originally assumed) |
+| fx = fy | 309.02 |
+| cx = cy | 128.0 |
+| depth shape | (256, 256, 1) float32 |
+| depth range | [0.9646, 0.9885] (normalized buffer) |
+| near / far | 0.0196m / 979.685m (extent=19.594) |
+| backprojection z_world | 0.964m ✅ (table height) |
+
+**Critical design change from probe findings:**
+- VLM HALLUCINATES when told to "find X" → Prompt D style ONLY (open listing)
+- User query matching must be POST-PROCESSING (fuzzy text match), NOT in VLM prompt
+- VLM confuses similar categories (peach→apple) → need fuzzy match + GT cross-check
 
 ### Core API (unchanged across paths)
 
