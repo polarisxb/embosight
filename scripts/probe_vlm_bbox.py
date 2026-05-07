@@ -38,6 +38,22 @@ BBOX_PROMPTS = {
         "- confidence: 0.0 to 1.0\n"
         "Reply in JSON: {\"objects\": [{...}, ...]}"
     ),
+    # prompt_D: 反幻觉版 —— 不指定目标名, 让 VLM 自由列出所见.
+    # 关键: 明确允许 "nothing" / empty list, 鼓励 VLM 说"我没看到".
+    "prompt_D_open_listing_no_hallucination": (
+        "Look at this kitchen image carefully. List ONLY the physical objects "
+        "you can actually see on the countertop. Do NOT invent objects.\n\n"
+        "For each object you see, provide:\n"
+        "- name: a simple English noun describing what it looks like "
+        "(e.g. 'white stick', 'green leafy vegetable', 'yellow box', "
+        "'cylindrical bottle'). Use visual features if you're unsure of the category.\n"
+        "- bbox_2d: [x1, y1, x2, y2] in pixels (image is 256x256)\n"
+        "- confidence: 0.0 to 1.0\n"
+        "- visible_features: 1 sentence describing shape/color/material\n\n"
+        "If you see NOTHING on the countertop, return {\"objects\": []}.\n"
+        "Reply with ONLY a JSON object: "
+        "{\"objects\": [{\"name\":..., \"bbox_2d\":..., \"confidence\":..., \"visible_features\":...}]}"
+    ),
 }
 
 
@@ -79,7 +95,13 @@ def main():
 
 
 def _parse_bboxes(raw: str) -> list:
-    """尝试从 VLM 输出解析 bbox. 多种格式都试一遍."""
+    """尝试从 VLM 输出解析 bbox. 支持多种格式:
+      - <|box_start|>(x1,y1),(x2,y2)<|box_end|>
+      - {"bbox": [x1,y1,x2,y2]}
+      - {"bbox_2d": [x1,y1,x2,y2], "label": "..."}
+      - {"objects": [{"name":..., "bbox"/"bbox_2d": [...], "confidence": ...}]}
+      - 顶层 JSON 数组: [{"bbox_2d": [...], "label": "..."}]
+    """
     results = []
 
     # Format 1: Qwen native <|box_start|>(x1,y1),(x2,y2)<|box_end|>
@@ -90,27 +112,62 @@ def _parse_bboxes(raw: str) -> list:
     for match in m:
         results.append({"format": "qwen_native", "bbox": [int(x) for x in match]})
 
-    # Format 2: JSON {"bbox": [x1,y1,x2,y2]} or {"objects": [{...}]}
+    # 清理 markdown fence
+    text = raw
+    if "```" in text:
+        mm = re.search(r"```(?:json)?\s*([\[{].*?[\]}])\s*```", text, re.DOTALL)
+        if mm:
+            text = mm.group(1)
+
+    # Format 2: 先试顶层 JSON array: [{"bbox_2d": [...], "label": "..."}, ...]
     try:
-        text = raw
-        if "```" in text:
-            mm = re.search(r"```(?:json)?\s*({.*?})\s*```", text, re.DOTALL)
-            if mm:
-                text = mm.group(1)
+        arr_start = text.find("[")
+        obj_start = text.find("{")
+        # 如果 array 在 object 之前, 尝试解析为 array
+        if arr_start >= 0 and (obj_start < 0 or arr_start < obj_start):
+            arr_end = text.rfind("]") + 1
+            if arr_end > arr_start:
+                data = json.loads(text[arr_start:arr_end])
+                if isinstance(data, list):
+                    for o in data:
+                        if not isinstance(o, dict):
+                            continue
+                        bb = o.get("bbox_2d") or o.get("bbox")
+                        if bb:
+                            results.append({
+                                "format": "json_array_top",
+                                "name": o.get("label") or o.get("name"),
+                                "bbox": bb,
+                                "confidence": o.get("confidence"),
+                            })
+                    if data:
+                        return results  # 成功, 不再试 object 格式
+    except Exception:
+        pass
+
+    # Format 3: 顶层 JSON object
+    try:
         start = text.find("{")
         end = text.rfind("}") + 1
         if start >= 0 and end > start:
             data = json.loads(text[start:end])
-            if "bbox" in data and data["bbox"]:
-                results.append({"format": "json_single", "bbox": data["bbox"]})
-            if "objects" in data:
+            # bbox / bbox_2d 单键
+            single_bb = data.get("bbox") or data.get("bbox_2d")
+            if single_bb:
+                results.append({"format": "json_single", "bbox": single_bb})
+            # objects 列表
+            if "objects" in data and isinstance(data["objects"], list):
                 for o in data["objects"]:
-                    if o.get("bbox"):
+                    if not isinstance(o, dict):
+                        continue
+                    bb = o.get("bbox_2d") or o.get("bbox")
+                    if bb:
                         results.append({
                             "format": "json_multi",
-                            "name": o.get("name"),
-                            "bbox": o["bbox"],
+                            "name": o.get("name") or o.get("label"),
+                            "bbox": bb,
                             "confidence": o.get("confidence"),
+                            "features": o.get("visible_features"),
                         })
     except Exception:
         pass

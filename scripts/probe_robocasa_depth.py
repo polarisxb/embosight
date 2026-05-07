@@ -34,7 +34,6 @@ def main():
         camera_heights=256,
         camera_widths=256,
         camera_depths=True,           # ← 关键: 请求 depth
-        camera_segmentations=None,
         control_freq=20,
     )
     obs = env.reset()
