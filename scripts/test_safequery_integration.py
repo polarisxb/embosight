@@ -44,6 +44,8 @@ def main():
     parser.add_argument("--skip-grasp", action="store_true", help="Skip grasp execution")
     parser.add_argument("--vlm-model", default="./checkpoints/Qwen2.5-VL-7B-Instruct",
                         help="VLM model path (e.g. ./checkpoints/Qwen3-VL-8B-Instruct)")
+    parser.add_argument("--image-size", type=int, default=512,
+                        help="Camera image resolution (default 512). Higher = better VLM detection but slower.")
     args = parser.parse_args()
 
     cameras = tuple(args.cameras.split(","))
@@ -57,7 +59,10 @@ def main():
         camera_names=cameras,
         layout_ids=args.layout,
         style_ids=args.style,
+        image_width=args.image_size,
+        image_height=args.image_size,
     )
+    logger.info(f"Image resolution: {args.image_size}x{args.image_size}")
     env = EnvWrapper(cfg)
     obs = env.reset()
     logger.info(f"Environment reset. action_dim={env._env.action_dim}")

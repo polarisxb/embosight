@@ -153,10 +153,7 @@ class VLMGrounder:
         Returns:
             GroundedCandidate 列表 (可能为空)
         """
-        prompt = self._build_prompt()
-        logger.info(f"[vlm_grounding] running on {image_path}")
-
-        # 读图像尺寸 (用于 bbox 自适应缩放)
+        # 先读图像尺寸 (用于 bbox 自适应缩放 + 动态 prompt)
         img_w, img_h = 256, 256
         try:
             from PIL import Image
@@ -164,6 +161,9 @@ class VLMGrounder:
                 img_w, img_h = im.size
         except Exception:
             pass
+
+        prompt = self._build_prompt(img_w=img_w, img_h=img_h)
+        logger.info(f"[vlm_grounding] running on {image_path} ({img_w}x{img_h})")
 
         try:
             raw = self.vlm.describe(image_path, prompt=prompt)
@@ -176,12 +176,22 @@ class VLMGrounder:
         logger.info(f"[vlm_grounding] detected {len(candidates)} candidates")
         return candidates
 
-    def _build_prompt(self) -> str:
-        """构建 Prompt D 风格的开放式检测 prompt."""
-        if self._prompt_template:
-            return self._prompt_template
+    def _build_prompt(self, img_w: int = 256, img_h: int = 256) -> str:
+        """构建 Prompt D 风格的开放式检测 prompt.
 
-        # fallback: 内建 prompt (与 prompts/vlm_grounding.txt 内容一致)
+        Args:
+            img_w/img_h: 图像实际尺寸, 注入 prompt 让 VLM 知道 bbox 范围
+        """
+        if self._prompt_template:
+            # 替换 prompt 模板中的尺寸占位符 (兼容旧模板的硬编码 256)
+            return (
+                self._prompt_template
+                .replace("{img_w}", str(img_w))
+                .replace("{img_h}", str(img_h))
+                .replace("256x256", f"{img_w}x{img_h}")
+            )
+
+        # fallback: 内建 prompt
         return (
             "Look at this kitchen image carefully. List ONLY the physical objects "
             "you can actually see on the countertop or table. Do NOT invent objects.\n\n"
@@ -190,7 +200,7 @@ class VLMGrounder:
             "- likely_category: your best guess of what this object IS "
             "(e.g. 'garlic', 'kiwi', 'bottle', 'spoon'). Use a single common noun. "
             "If uncertain, use 'unknown'.\n"
-            "- bbox_2d: [x1, y1, x2, y2] in pixels (image is 256x256)\n"
+            f"- bbox_2d: [x1, y1, x2, y2] in pixels (image is {img_w}x{img_h})\n"
             "- confidence: 0.0 to 1.0\n"
             "- visible_features: 1 sentence describing shape/color/material\n\n"
             "If you see NOTHING on the countertop, return {\"objects\": []}.\n"
