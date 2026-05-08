@@ -7,12 +7,26 @@
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
 from typing import Any, Literal, Optional
 
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+
+def _shannon(probs: list[float]) -> float:
+    """Shannon entropy in nats; 输入概率不必归一, 内部归一。"""
+    total = sum(p for p in probs if p > 0)
+    if total <= 0:
+        return 0.0
+    h = 0.0
+    for p in probs:
+        if p > 0:
+            q = p / total
+            h -= q * math.log(q)
+    return h
 
 
 # ============================================================
@@ -353,3 +367,122 @@ class WorldBelief:
             "safety":   safety_thr  if safety_thr  is not None else base["safety"],
             "grasp":    grasp_thr   if grasp_thr   is not None else base["grasp"],
         }
+    
+    # ──── 状态修改 ──────────────────────────
+    
+    MERGE_DISTANCE_M = 0.15           # TODO(v1.1): 实测调
+    MERGE_LABEL_INTERSECTION_MIN = 0.30  # TODO(v1.1): 实测调
+    PRUNE_MIN_STEPS = 3
+    PRUNE_PHANTOM_ENTROPY = 0.7
+    
+    def add_hypothesis(self, h: Hypothesis) -> None:
+        self.hypotheses.append(h)
+    
+    def merge_hypothesis(self, existing: Hypothesis, new_data: Hypothesis) -> bool:
+        """尝试把 new_data 合并进 existing。返回 True 表示合并成功。
+        
+        条件:
+        - position 距离 < MERGE_DISTANCE_M
+        - label_alternatives 概率交集 ≥ MERGE_LABEL_INTERSECTION_MIN
+        """
+        if existing not in self.hypotheses:
+            return False
+        dist = float(np.linalg.norm(existing.position_3d - new_data.position_3d))
+        if dist >= self.MERGE_DISTANCE_M:
+            return False
+        # label_alternatives 概率交集
+        e_dict = dict(existing.label_alternatives)
+        intersect = sum(min(p, e_dict.get(lbl, 0.0))
+                        for lbl, p in new_data.label_alternatives)
+        if intersect < self.MERGE_LABEL_INTERSECTION_MIN:
+            return False
+        # 合并: 位置加权平均, label 取概率高的
+        n_old = len(existing.observed_in_views) or 1
+        n_new = len(new_data.observed_in_views) or 1
+        existing.position_3d = (
+            existing.position_3d * n_old + new_data.position_3d * n_new
+        ) / (n_old + n_new)
+        existing.observed_in_views.extend(
+            v for v in new_data.observed_in_views
+            if v not in existing.observed_in_views
+        )
+        existing.bbox_per_view.update(new_data.bbox_per_view)
+        # label_alternatives: 概率平均后归一化
+        merged_alts: dict[str, float] = dict(existing.label_alternatives)
+        for lbl, p in new_data.label_alternatives:
+            merged_alts[lbl] = (merged_alts.get(lbl, 0.0) + p) / 2
+        total = sum(merged_alts.values()) or 1.0
+        existing.label_alternatives = sorted(
+            ((lbl, p / total) for lbl, p in merged_alts.items()),
+            key=lambda x: x[1], reverse=True,
+        )
+        existing.label = existing.label_alternatives[0][0]
+        # entropy 重算
+        existing.label_entropy = _shannon([p for _, p in existing.label_alternatives])
+        # 多视角 std (粗略: 简单更新)
+        existing.position_std_m = max(existing.position_std_m, dist / 2)
+        return True
+    
+    def prune_phantom_hypotheses(self) -> int:
+        """删除疑似幻觉 hypothesis (1 视角 + 高熵 + 步数>3)。返回删除数。"""
+        if len(self.action_history) <= self.PRUNE_MIN_STEPS:
+            return 0
+        before = len(self.hypotheses)
+        self.hypotheses = [
+            h for h in self.hypotheses
+            if not (
+                len(h.observed_in_views) <= 1
+                and h.label_entropy > self.PRUNE_PHANTOM_ENTROPY
+            )
+        ]
+        return before - len(self.hypotheses)
+    
+    def snapshot(self, step: int) -> BeliefSnapshot:
+        import time as _t
+        h = self.target()
+        target_summary = None
+        if h is not None:
+            target_summary = {
+                "label": h.label,
+                "label_entropy": h.label_entropy,
+                "position_3d": h.position_3d.tolist(),
+                "position_std_m": h.position_std_m,
+                "safety_entropy": h.safety_entropy,
+                "grasp_uncertainty": h.grasp_uncertainty,
+            }
+        h_for_axis = self.target()
+        if h_for_axis is not None:
+            ovr = h_for_axis.overall_uncertainty()
+        else:
+            ovr = 1.0
+        return BeliefSnapshot(
+            step=step,
+            timestamp=_t.time(),
+            n_hypotheses=len(self.hypotheses),
+            target_summary=target_summary,
+            most_uncertain_axis=self.most_uncertain_axis(),
+            overall_uncertainty=ovr,
+            n_evidence=len(self.evidence),
+            open_questions_count=len(self.open_questions),
+        )
+    
+    def consume_user_answer(self, question: str, answer: str, llm) -> None:
+        """v1 简化版: 把 (question, answer) 追加到 user_constraints。
+        
+        TODO(v1.1): LLM 解析答案 → boost/demote/constraint/unhelpful (设计稿 §6.1 + Edge 9.4/9.10)。
+        - 当前 v1: 答案仅作字符串保留, 下一轮 NBV/perception prompt 通过把 user_constraints
+          merge 进 decomposed.constraints 让 LLM "看见"。
+        - v1.1 升级: 加载 prompts/agent/user_answer_parse.txt, 输出 {boost: id, demote: id,
+          new_constraint: {...}, unhelpful: bool}, 直接修改 hypothesis.label_alternatives 概率。
+        - llm 参数当前不使用, 保留接口签名以避免 v1.1 升级时破坏调用方。
+        """
+        _ = llm  # v1 未使用; v1.1 接入 LLM 解析时启用
+        self.user_constraints.append(f"Q: {question} | A: {answer}")
+    
+    def compose_clarification(self) -> str:
+        """构造给用户的澄清问题。"""
+        h = self.target()
+        if h is None:
+            return f"我没看清您要的{self.decomposed.primary_target if self.decomposed else 'something'}, 您能描述一下它附近还有什么吗?"
+        alts = [lbl for lbl, _ in h.label_alternatives[:2]]
+        return f"我看到一个像{alts[0]}的东西, 也可能是{alts[1] if len(alts) > 1 else '别的'}, 您要的是哪个?"

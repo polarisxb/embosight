@@ -226,3 +226,89 @@ class TestMostUncertainAxis:
                        alternatives=[("apple", 0.9)])
         b.hypotheses = [h]
         assert b.most_uncertain_axis() == "safety"
+
+
+class TestMerge:
+    def test_close_distance_overlap_label_merges(self):
+        """距离 < 0.15m + 概率交集 > 0.30 → 合并。"""
+        b = WorldBelief(user_query="x")
+        b.decomposed = DecomposedTask(primary_target="apple")
+        h1 = _basic_hyp(label="apple",
+                        alternatives=[("apple", 0.7), ("pear", 0.3)])
+        h1.position_3d = np.array([0.50, 0.0, 0.9])
+        h1.observed_in_views = ["v1"]
+        b.hypotheses = [h1]
+        h2 = _basic_hyp(label="apple",
+                        alternatives=[("apple", 0.8), ("kiwi", 0.2)])
+        h2.position_3d = np.array([0.52, 0.01, 0.91])    # 距离 ~0.022m
+        h2.observed_in_views = ["v2"]
+        merged = b.merge_hypothesis(h1, h2)
+        assert merged is True
+        assert len(b.hypotheses) == 1
+        assert "v2" in b.hypotheses[0].observed_in_views
+    
+    def test_far_distance_does_not_merge(self):
+        b = WorldBelief(user_query="x")
+        b.decomposed = DecomposedTask(primary_target="apple")
+        h1 = _basic_hyp(label="apple")
+        h1.position_3d = np.array([0.5, 0, 0.9])
+        b.hypotheses = [h1]
+        h2 = _basic_hyp(label="apple")
+        h2.position_3d = np.array([0.8, 0, 0.9])         # 距离 0.3m > 0.15
+        merged = b.merge_hypothesis(h1, h2)
+        assert merged is False
+        assert len(b.hypotheses) == 1                    # 还没 add 进去
+    
+    def test_low_label_intersection_does_not_merge(self):
+        b = WorldBelief(user_query="x")
+        b.decomposed = DecomposedTask(primary_target="apple")
+        h1 = _basic_hyp(label="apple",
+                        alternatives=[("apple", 0.9), ("pear", 0.1)])
+        h2 = _basic_hyp(label="bottle",
+                        alternatives=[("bottle", 0.9), ("can", 0.1)])
+        h2.position_3d = h1.position_3d + np.array([0.02, 0, 0])
+        b.hypotheses = [h1]
+        # 概率交集: 仅 (apple, 0.9)/(apple, 0.0) = 0; bottle 0.9/0.0 = 0; → 0
+        merged = b.merge_hypothesis(h1, h2)
+        assert merged is False
+
+
+class TestPrune:
+    def test_phantom_pruned(self):
+        """1 视角 + entropy>0.7 + 步数>3 → 删。"""
+        b = WorldBelief(user_query="x")
+        h_ghost = _basic_hyp(label="ghost", label_e=0.85,
+                             alternatives=[("ghost", 0.4), ("blob", 0.4)])
+        h_ghost.observed_in_views = ["v1"]
+        b.hypotheses = [h_ghost]
+        # 模拟 4 步
+        for _ in range(4):
+            b.action_history.append(Action(kind="observe"))
+        n = b.prune_phantom_hypotheses()
+        assert n == 1
+        assert b.hypotheses == []
+    
+    def test_multi_view_not_pruned(self):
+        b = WorldBelief(user_query="x")
+        h = _basic_hyp(label="apple", label_e=0.85)
+        h.observed_in_views = ["v1", "v2"]
+        b.hypotheses = [h]
+        for _ in range(4):
+            b.action_history.append(Action(kind="observe"))
+        n = b.prune_phantom_hypotheses()
+        assert n == 0
+
+
+class TestSnapshot:
+    def test_snapshot_basic(self):
+        b = WorldBelief(user_query="拿苹果")
+        b.decomposed = DecomposedTask(primary_target="apple")
+        h = _basic_hyp(label="apple", label_e=0.4,
+                       alternatives=[("apple", 0.9)])
+        b.hypotheses = [h]
+        snap = b.snapshot(step=2)
+        assert snap.step == 2
+        assert snap.n_hypotheses == 1
+        assert snap.most_uncertain_axis == "label"
+        assert snap.target_summary is not None
+        assert snap.target_summary["label"] == "apple"
