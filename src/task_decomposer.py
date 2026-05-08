@@ -539,6 +539,60 @@ class TaskDecomposer:
 
         return sorted(valid, key=lambda t: t.priority)
 
+    # ============================================================
+    # v1: decompose_v1 -> DecomposedTask (替代 decompose)
+    # ============================================================
+
+    def decompose_v1(
+        self, query: str, prompt_path: str = "prompts/agent/decompose.txt",
+    ):
+        """v1 输出 DecomposedTask, 含 primary_target + constraints。"""
+        from pathlib import Path as _P
+        import json as _json
+        import re as _re
+        from src.world_belief import Constraint, DecomposedTask
+
+        p = _P(prompt_path)
+        if p.exists():
+            template = p.read_text(encoding="utf-8")
+            prompt = template.replace("{query}", query)
+        else:
+            prompt = (
+                f"Query: {query}\n"
+                f"Output JSON with primary_target and constraints[]."
+            )
+
+        try:
+            raw = self.llm.generate(prompt, system="")
+        except Exception:
+            return DecomposedTask(primary_target=query.strip(), raw_query=query)
+
+        m = _re.search(r"\{.*\}", raw, _re.DOTALL)
+        if not m:
+            return DecomposedTask(primary_target=query.strip(), raw_query=query)
+        try:
+            data = _json.loads(m.group())
+        except _json.JSONDecodeError:
+            return DecomposedTask(primary_target=query.strip(), raw_query=query)
+
+        primary = str(data.get("primary_target", query.strip()))
+        constraints: list[Constraint] = []
+        for c in data.get("constraints", []):
+            kind = c.get("kind")
+            if kind not in {"avoid", "prefer_view", "max_force", "user_hint"}:
+                continue
+            constraints.append(Constraint(
+                kind=kind,
+                target_label=c.get("target_label"),
+                text=c.get("text"),
+                reason=c.get("reason", ""),
+            ))
+        return DecomposedTask(
+            primary_target=primary,
+            constraints=constraints,
+            raw_query=query,
+        )
+
 
 # ============================================================
 # Module Test

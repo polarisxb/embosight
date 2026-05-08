@@ -1,0 +1,18 @@
+Query: {query}
+
+请输出 JSON:
+{
+  "primary_target": "<目标物体名, 中文或英文>",
+  "constraints": [
+    {"kind": "avoid", "target_label": "knife", "reason": "用户提到避开"},
+    {"kind": "user_hint", "text": "在水池左边", "reason": "位置提示"}
+  ]
+}
+
+规则:
+1. primary_target 是用户最想要的那一个东西 (单个)
+2. constraints 包含: 避让物体 (avoid) / 位置提示 (user_hint) / 视角偏好 (prefer_view)
+3. v1 单目标; 多目标 query 仍取最重要的一个
+4. 没 constraint 时返回空数组
+
+Reply ONLY raw JSON, no fences.
