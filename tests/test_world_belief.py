@@ -11,7 +11,23 @@ from src.world_belief import (
     Hypothesis, Pose, GraspCandidate, GraspAttempt,
     Action, Evidence, BeliefSnapshot, EpisodeResult,
     DecomposedTask, Constraint,
+    WorldBelief,
 )
+
+
+def _basic_hyp(label="apple", label_e=0.2, pos_std=0.04, safe_e=0.2,
+               candidates=None, attempts=None, alternatives=None):
+    return Hypothesis(
+        object_id=f"obj_{label}",
+        label=label,
+        label_alternatives=alternatives or [(label, 0.8), ("other", 0.2)],
+        label_entropy=label_e,
+        position_3d=np.array([0.5, 0.0, 0.9]),
+        position_std_m=pos_std,
+        safety_entropy=safe_e,
+        grasp_candidates=candidates or [],
+        grasp_attempts=attempts or [],
+    )
 
 
 class TestHypothesisBasics:
@@ -125,3 +141,88 @@ class TestActionEvidence:
         dt = DecomposedTask(primary_target="apple", raw_query="拿苹果")
         assert dt.constraints == []
         assert dt.primary_target == "apple"
+
+
+class TestWorldBeliefTarget:
+    def test_empty_belief_target_is_none(self):
+        b = WorldBelief(user_query="拿苹果")
+        b.decomposed = DecomposedTask(primary_target="apple")
+        assert b.target() is None
+    
+    def test_no_decomposed_target_is_none(self):
+        b = WorldBelief(user_query="anything")
+        b.hypotheses = [_basic_hyp()]
+        assert b.target() is None
+    
+    def test_label_match_returns_hyp(self):
+        b = WorldBelief(user_query="拿苹果")
+        b.decomposed = DecomposedTask(primary_target="apple")
+        h = _basic_hyp(label="apple",
+                       alternatives=[("apple", 0.9), ("kiwi", 0.1)])
+        b.hypotheses = [h]
+        assert b.target() is h
+    
+    def test_top1_top2_close_returns_none(self):
+        """top1 概率与 top2 差 < 0.2 → 模糊 (9.12)。"""
+        b = WorldBelief(user_query="拿苹果")
+        b.decomposed = DecomposedTask(primary_target="apple")
+        h1 = _basic_hyp(label="apple_1",
+                        alternatives=[("apple", 0.4), ("pear", 0.3)])
+        h2 = _basic_hyp(label="apple_2",
+                        alternatives=[("apple", 0.5), ("pear", 0.2)])
+        b.hypotheses = [h1, h2]
+        # top1=h2 (0.5), top2=h1 (0.4), diff=0.1 < 0.2 → None
+        assert b.target() is None
+
+
+class TestIsConfidentToAct:
+    def test_no_target_not_confident(self):
+        b = WorldBelief(user_query="拿苹果")
+        b.decomposed = DecomposedTask(primary_target="apple")
+        assert b.is_confident_to_act() is False
+    
+    def test_grasp_none_not_confident(self):
+        """grasp_uncertainty=None 视为不 confident (F2)。"""
+        b = WorldBelief(user_query="拿苹果")
+        b.decomposed = DecomposedTask(primary_target="apple")
+        # 其他 3 轴全 confident
+        h = _basic_hyp(label="apple", label_e=0.1, pos_std=0.02, safe_e=0.1,
+                       alternatives=[("apple", 0.9)])
+        b.hypotheses = [h]
+        assert b.is_confident_to_act() is False
+    
+    def test_all_axes_confident_returns_true(self):
+        c = GraspCandidate(point_3d=np.array([0.5,0,0.9]),
+                           approach_dir=np.array([0,0,-1]),
+                           finger_width_m=0.04, score=0.9)
+        b = WorldBelief(user_query="拿苹果")
+        b.decomposed = DecomposedTask(primary_target="apple")
+        h = _basic_hyp(label="apple", label_e=0.1, pos_std=0.02, safe_e=0.1,
+                       alternatives=[("apple", 0.9)], candidates=[c])
+        b.hypotheses = [h]
+        assert b.is_confident_to_act() is True
+
+
+class TestMostUncertainAxis:
+    def test_no_target_returns_label(self):
+        b = WorldBelief(user_query="拿苹果")
+        b.decomposed = DecomposedTask(primary_target="apple")
+        assert b.most_uncertain_axis() == "label"
+    
+    def test_grasp_none_skipped(self):
+        """grasp=None 时不参与最大轴选择 (F2)。"""
+        b = WorldBelief(user_query="拿苹果")
+        b.decomposed = DecomposedTask(primary_target="apple")
+        h = _basic_hyp(label="apple", label_e=0.5, pos_std=0.02, safe_e=0.1,
+                       alternatives=[("apple", 0.9)])
+        b.hypotheses = [h]
+        # 4 轴: label=0.5, pos=0.067, safe=0.1, grasp=None → label 最大
+        assert b.most_uncertain_axis() == "label"
+    
+    def test_safety_max(self):
+        b = WorldBelief(user_query="拿苹果")
+        b.decomposed = DecomposedTask(primary_target="apple")
+        h = _basic_hyp(label="apple", label_e=0.1, pos_std=0.02, safe_e=0.8,
+                       alternatives=[("apple", 0.9)])
+        b.hypotheses = [h]
+        assert b.most_uncertain_axis() == "safety"

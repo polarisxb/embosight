@@ -231,3 +231,125 @@ class EpisodeResult:
     n_steps: int
     elapsed_seconds: float
     failure_reason: Optional[str] = None
+
+
+# ============================================================
+# 4.4 WorldBelief
+# ============================================================
+
+@dataclass
+class WorldBelief:
+    """主信念状态, 贯穿整个 episode。"""
+    user_query: str
+    decomposed: Optional[DecomposedTask] = None
+    
+    hypotheses: list[Hypothesis] = field(default_factory=list)
+    evidence: list[Evidence] = field(default_factory=list)
+    open_questions: list[str] = field(default_factory=list)
+    action_history: list[Action] = field(default_factory=list)
+    user_constraints: list[str] = field(default_factory=list)
+    
+    # ──── 默认阈值 (可被 _dynamic_thresholds 覆盖) ────
+    DEFAULT_THRESHOLDS = {
+        "label": 0.30, "position": 0.05, "safety": 0.30, "grasp": 0.30,
+    }
+    HIGH_RISK_THRESHOLDS = {
+        "label": 0.15, "position": 0.03, "safety": 0.15, "grasp": 0.20,
+    }
+    AMBIGUITY_PROB_GAP = 0.20      # top1/top2 概率差 < 此值 → 模糊
+    
+    # ──── 查询接口 ──────────────────────────
+    
+    def target(self) -> Optional[Hypothesis]:
+        """返回最匹配 user_query 的 hypothesis。
+        
+        - 如无 decomposed 或无 hypotheses, None
+        - 取 label_alternatives 里 primary_target 的概率最大者
+        - 副分: 当前 label 文本含 primary_target 也算 0.5
+        - top1 与 top2 的概率差 < 0.2 → 视为模糊, 返回 None (Edge case 9.12)
+        """
+        if not self.hypotheses or not self.decomposed:
+            return None
+        target_word = self.decomposed.primary_target.lower()
+        scored: list[tuple[float, Hypothesis]] = []
+        for h in self.hypotheses:
+            prob = next(
+                (p for lbl, p in h.label_alternatives
+                 if target_word in lbl.lower()),
+                0.0,
+            )
+            if target_word in h.label.lower():
+                prob = max(prob, 0.5)
+            if prob > 0:
+                scored.append((prob, h))
+        if not scored:
+            return None
+        scored.sort(key=lambda t: t[0], reverse=True)
+        if len(scored) >= 2 and (scored[0][0] - scored[1][0]) < self.AMBIGUITY_PROB_GAP:
+            return None
+        return scored[0][1]
+    
+    def is_confident_to_act(
+        self,
+        label_thr: Optional[float] = None,
+        pos_thr_m: Optional[float] = None,
+        safety_thr: Optional[float] = None,
+        grasp_thr: Optional[float] = None,
+    ) -> bool:
+        """所有轴都低于阈值才能动手。grasp=None 视为不 confident。"""
+        h = self.target()
+        if h is None:
+            return False
+        thr = self._dynamic_thresholds(h, label_thr, pos_thr_m, safety_thr, grasp_thr)
+        gu = h.grasp_uncertainty if h.grasp_uncertainty is not None else 1.0
+        return (
+            h.label_entropy   < thr["label"]
+            and h.position_std_m < thr["position"]
+            and h.safety_entropy < thr["safety"]
+            and gu                < thr["grasp"]
+        )
+    
+    def most_uncertain_axis(self) -> Literal["label", "position", "safety", "grasp"]:
+        """最不确定的轴; grasp_uncertainty=None 时跳过。"""
+        h = self.target()
+        if h is None:
+            return "label"
+        norm_pos = min(1.0, h.position_std_m / 0.30)
+        scores: dict[str, float] = {
+            "label":    h.label_entropy,
+            "position": norm_pos,
+            "safety":   h.safety_entropy,
+        }
+        if h.grasp_uncertainty is not None:
+            scores["grasp"] = h.grasp_uncertainty
+        return max(scores, key=scores.get)        # type: ignore[return-value]
+    
+    def used_views(self) -> set[str]:
+        return {
+            getattr(a.viewpoint, "name", str(a.viewpoint))
+            for a in self.action_history
+            if a.kind == "observe" and a.viewpoint is not None
+        }
+    
+    # ──── 内部 ───────────────────────────────
+    
+    def _dynamic_thresholds(
+        self, h: Hypothesis,
+        label_thr, pos_thr_m, safety_thr, grasp_thr,
+    ) -> dict[str, float]:
+        """高风险物体严格, safe 物体宽松。
+        
+        high_risk = h.safety_dist 中 sharp/hot/chemical 之和 > 0.5
+        """
+        risk_score = (
+            h.safety_dist.get("sharp", 0.0)
+            + h.safety_dist.get("hot", 0.0)
+            + h.safety_dist.get("chemical", 0.0)
+        )
+        base = self.HIGH_RISK_THRESHOLDS if risk_score > 0.5 else self.DEFAULT_THRESHOLDS
+        return {
+            "label":    label_thr   if label_thr   is not None else base["label"],
+            "position": pos_thr_m   if pos_thr_m   is not None else base["position"],
+            "safety":   safety_thr  if safety_thr  is not None else base["safety"],
+            "grasp":    grasp_thr   if grasp_thr   is not None else base["grasp"],
+        }
