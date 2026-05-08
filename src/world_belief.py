@@ -147,3 +147,87 @@ class Hypothesis:
         if gu is not None:
             axes.append(gu)
         return max(axes)
+
+
+# ============================================================
+# 4.6 DecomposedTask / Constraint
+# ============================================================
+
+@dataclass
+class Constraint:
+    kind: Literal["avoid", "prefer_view", "max_force", "user_hint"]
+    target_label: Optional[str] = None
+    text: Optional[str] = None
+    reason: str = ""
+
+
+@dataclass
+class DecomposedTask:
+    primary_target: str
+    constraints: list[Constraint] = field(default_factory=list)
+    raw_query: str = ""
+
+
+# ============================================================
+# 4.3 Evidence / Action / BeliefSnapshot
+# ============================================================
+
+EvidenceSource = Literal[
+    "vlm_ground", "vlm_zoom", "vlm_verify",
+    "llm_safety", "llm_decompose", "user_answer",
+    "grasp_attempt", "depth_projection", "vlm_failed",
+]
+
+
+@dataclass
+class Evidence:
+    """一次工具调用的原始结果, 用于审计 + replay。"""
+    source: EvidenceSource
+    timestamp: float
+    raw_payload: dict[str, Any]
+    consumed_by: list[str] = field(default_factory=list)
+
+
+ActionKind = Literal[
+    "observe", "re_observe", "classify_safety",
+    "plan_grasp_candidates", "grasp", "ask_user", "give_up",
+]
+
+
+@dataclass
+class Action:
+    kind: ActionKind
+    target_hypothesis: Optional["Hypothesis"] = None
+    viewpoint: Optional[Any] = None    # Viewpoint 类在 active_planner, 此处不直接 import
+    strategy: Optional[Literal["zoom_in", "parallax_view", "parallax_for_pose"]] = None
+    question: Optional[str] = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class BeliefSnapshot:
+    """某时刻 belief 的浅拷贝, 用于 EpisodeLogger。"""
+    step: int
+    timestamp: float
+    n_hypotheses: int
+    target_summary: Optional[dict[str, Any]]
+    most_uncertain_axis: str
+    overall_uncertainty: float
+    n_evidence: int
+    open_questions_count: int
+
+
+# ============================================================
+# 4.5 EpisodeResult
+# ============================================================
+
+@dataclass
+class EpisodeResult:
+    success: bool
+    target: Optional[Hypothesis]
+    speech: str
+    belief_trace: list[BeliefSnapshot]
+    action_history: list[Action]
+    n_steps: int
+    elapsed_seconds: float
+    failure_reason: Optional[str] = None

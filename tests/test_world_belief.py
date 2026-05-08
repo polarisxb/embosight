@@ -9,6 +9,8 @@ import numpy as np
 
 from src.world_belief import (
     Hypothesis, Pose, GraspCandidate, GraspAttempt,
+    Action, Evidence, BeliefSnapshot, EpisodeResult,
+    DecomposedTask, Constraint,
 )
 
 
@@ -107,3 +109,19 @@ class TestOverallUncertainty:
         h = self._make(label_e=0.0, pos_std=0.15, safe_e=0.0)
         # 0.15 / 0.30 = 0.5
         assert h.overall_uncertainty() == pytest.approx(0.5)
+
+
+class TestActionEvidence:
+    def test_action_default_metadata_dict(self):
+        a = Action(kind="observe")
+        assert a.kind == "observe"
+        assert a.metadata == {}
+    
+    def test_evidence_default_consumed_by_empty(self):
+        ev = Evidence(source="vlm_ground", timestamp=1.0, raw_payload={"x": 1})
+        assert ev.consumed_by == []
+    
+    def test_decomposed_task_constraints_empty(self):
+        dt = DecomposedTask(primary_target="apple", raw_query="拿苹果")
+        assert dt.constraints == []
+        assert dt.primary_target == "apple"
