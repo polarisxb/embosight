@@ -8,9 +8,9 @@ import pytest
 import numpy as np
 
 from src.world_belief import (
-    Hypothesis, Pose, GraspCandidate, GraspAttempt,
-    Action, Evidence, BeliefSnapshot, EpisodeResult,
-    DecomposedTask, Constraint,
+    Hypothesis, GraspCandidate, GraspAttempt,
+    Action, Evidence,
+    DecomposedTask,
     WorldBelief,
 )
 
@@ -312,3 +312,59 @@ class TestSnapshot:
         assert snap.most_uncertain_axis == "label"
         assert snap.target_summary is not None
         assert snap.target_summary["label"] == "apple"
+
+
+class TestEdgeCases:
+    def test_high_risk_tightens_thresholds(self):
+        """sharp+hot+chemical > 0.5 → high_risk (label thr 0.30 → 0.15)。"""
+        b = WorldBelief(user_query="拿削皮器")
+        b.decomposed = DecomposedTask(primary_target="peeler")
+        c = GraspCandidate(point_3d=np.array([0.5,0,0.9]),
+                           approach_dir=np.array([0,0,-1]),
+                           finger_width_m=0.04, score=0.9)
+        h = _basic_hyp(label="peeler",
+                       alternatives=[("peeler", 0.85)])
+        h.label_entropy = 0.20    # 普通模式 < 0.30 confident, high-risk 模式 > 0.15 不 confident
+        h.position_std_m = 0.02
+        h.safety_dist = {"sharp": 0.7, "safe": 0.3}
+        h.safety_entropy = 0.10
+        h.grasp_candidates = [c]
+        b.hypotheses = [h]
+        # high_risk 阈值收紧 label=0.15, label_entropy=0.20 > 0.15 → 不 confident
+        assert b.is_confident_to_act() is False
+    
+    def test_merge_distance_boundary(self):
+        """距离 0.149 vs 0.151。"""
+        b = WorldBelief(user_query="x")
+        b.decomposed = DecomposedTask(primary_target="apple")
+        h1 = _basic_hyp(label="apple")
+        h1.position_3d = np.array([0.5, 0.0, 0.9])
+        b.hypotheses = [h1]
+        # 0.149 → merge ok
+        h_close = _basic_hyp(label="apple")
+        h_close.position_3d = np.array([0.5 + 0.149, 0, 0.9])
+        assert b.merge_hypothesis(h1, h_close) is True
+        # reset
+        h1.position_3d = np.array([0.5, 0.0, 0.9])
+        # 0.151 → no merge
+        h_far = _basic_hyp(label="apple")
+        h_far.position_3d = np.array([0.5 + 0.151, 0, 0.9])
+        assert b.merge_hypothesis(h1, h_far) is False
+    
+    def test_prune_recent_steps_kept(self):
+        """步数 ≤ PRUNE_MIN_STEPS → 不 prune (即使是幻觉)。"""
+        b = WorldBelief(user_query="x")
+        h = _basic_hyp(label="ghost", label_e=0.85)
+        h.observed_in_views = ["v1"]
+        b.hypotheses = [h]
+        # 仅 2 步
+        b.action_history.append(Action(kind="observe"))
+        b.action_history.append(Action(kind="observe"))
+        n = b.prune_phantom_hypotheses()
+        assert n == 0
+    
+    def test_consume_user_answer_appends_constraint(self):
+        b = WorldBelief(user_query="x")
+        b.consume_user_answer("您要的是哪个?", "圆形的", llm=None)
+        assert len(b.user_constraints) == 1
+        assert "圆形的" in b.user_constraints[0]
