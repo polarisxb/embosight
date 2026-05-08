@@ -12,8 +12,8 @@ import numpy as np
 
 from .action_decider import ActionPlan
 from .env_wrapper import ObjectGrounding
-from .safety_gate import SafetyGate, SafetyDecision
-from .scene_model import SceneModel, GroundedObject
+from .safety_gate import SafetyGate
+from .scene_model import SceneModel
 
 logger = logging.getLogger(__name__)
 
@@ -526,6 +526,143 @@ class ActionExecutor:
             no_go_zones=no_go_zones,
             waypoints=[tuple(w.tolist()) for w in waypoints],
         )
+
+    # ============================================================
+    # v1 接口 (Hypothesis-based; 替代老 execute, Phase 15 删老)
+    # ============================================================
+
+    def act(self, target, decomposed, env):
+        """v1 主接口: 抓取 target Hypothesis, 失败结构化回写。
+
+        Returns: GraspActionResult (定义见模块底部)。
+        """
+        from src.world_belief import GraspAttempt
+
+        used = {self._cand_sig(a.candidate) for a in target.grasp_attempts}
+        candidate = next(
+            (c for c in target.grasp_candidates
+             if self._cand_sig(c) not in used),
+            None,
+        )
+        if candidate is None:
+            return self._failed_result(
+                None, "ik_unreachable",
+                {"reason": "no_candidate"}, env,
+            )
+
+        # 1. pre-grasp
+        if not env.move_to_pre_grasp(candidate):
+            return self._failed_result(
+                candidate, "ik_unreachable",
+                {"stage": "pre_grasp"}, env,
+            )
+
+        # 2. descend
+        z_target = float(candidate.point_3d[2])
+        descend_ok, z_actual = env.descend(candidate.point_3d)
+        if not descend_ok:
+            return self._failed_result(
+                candidate, "hit_z_floor",
+                {"z_target": z_target, "z_actual": float(z_actual),
+                 "stage": "descend"},
+                env,
+            )
+
+        # 3. close gripper
+        env.close_gripper()
+
+        # 4. lift
+        lift_ok, final_z = env.lift()
+        if not lift_ok:
+            return self._failed_result(
+                candidate, "slipped",
+                {"z_target": z_target, "z_actual": float(z_actual),
+                 "final_z": float(final_z), "stage": "lift"},
+                env,
+            )
+
+        import time as _time
+        eef = env.get_eef_pos()
+        attempt = GraspAttempt(
+            timestamp=_time.time(),
+            candidate=candidate,
+            failure_mode="success",
+            end_effector_pose_reached=tuple(np.asarray(eef).tolist()) + (0.0, 0.0, 0.0),
+            diagnostic={"z_target": z_target, "z_actual": float(z_actual),
+                        "final_z": float(final_z), "stage": "complete"},
+        )
+        return GraspActionResult(success=True, attempt=attempt)
+
+    def verify_grasp(self, target, env) -> tuple[bool, float]:
+        """post-grasp 语义验证占位; Phase 12 接 perception.verify_grasp。"""
+        return True, 1.0
+
+    def release_and_retreat(self, env, retreat_height_m: float = 0.10) -> None:
+        """F6: verify_mismatch / 异常退出时, 先松开夹爪再撤回。"""
+        env.open_gripper()
+        try:
+            current = env.get_eef_pos()
+            target = np.asarray(current, dtype=np.float32) + \
+                np.array([0.0, 0.0, retreat_height_m], dtype=np.float32)
+            env.move_arm_to(target, threshold_m=0.02)
+        except Exception as e:
+            logger.warning(f"[release_and_retreat] retreat failed: {e}")
+
+    def _failed_result(self, candidate, mode: str, diag: dict, env):
+        from src.world_belief import GraspAttempt, GraspCandidate
+        try:
+            self.release_and_retreat(env)
+        except Exception:
+            pass
+        if candidate is None:
+            candidate = GraspCandidate(
+                point_3d=np.zeros(3, dtype=np.float32),
+                approach_dir=np.zeros(3, dtype=np.float32),
+                finger_width_m=0.04, score=0.0,
+                source="geometric_centroid",
+            )
+        import time as _time
+        attempt = GraspAttempt(
+            timestamp=_time.time(),
+            candidate=candidate,
+            failure_mode=mode,  # type: ignore[arg-type]
+            end_effector_pose_reached=(0.0,) * 6,
+            diagnostic=diag,
+        )
+        return GraspActionResult(success=False, attempt=attempt)
+
+    @staticmethod
+    def _cand_sig(c) -> tuple:
+        return (
+            round(float(c.point_3d[0]), 3),
+            round(float(c.point_3d[1]), 3),
+            round(float(c.point_3d[2]), 3),
+            round(float(c.approach_dir[0]), 2),
+            round(float(c.approach_dir[1]), 2),
+            round(float(c.approach_dir[2]), 2),
+        )
+
+
+# ============================================================
+# v1 ActionResult (基于 Hypothesis, 与老 ActionResult 区分名)
+# ============================================================
+
+@dataclass
+class GraspActionResult:
+    """ActionExecutor.act 返回; 区别于老 ActionResult。"""
+    success: bool
+    attempt: Any                       # GraspAttempt (避免循环 import)
+    new_observations: list = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {
+            "success": self.success,
+            "attempt": {
+                "failure_mode": self.attempt.failure_mode,
+                "diagnostic": self.attempt.diagnostic,
+                "candidate_source": self.attempt.candidate.source,
+            },
+        }
 
 
 # ============================================================
