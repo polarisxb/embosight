@@ -163,12 +163,33 @@ def main():
     logger.info(f"SCENE MODEL RESULTS ({len(scene)} objects)")
     logger.info(f"{'='*60}")
 
+    # 打印 GT 真实位置 (用于诊断融合位置误差)
+    gt_positions = {}
+    for body_name in ["obj_main", "distr_counter_main", "distr_cab_main"]:
+        pos = env._get_body_pos(body_name)
+        if pos is not None:
+            gt_positions[body_name] = pos
+            logger.info(
+                f"  [GT] {body_name}='{gt_types.get(body_name, '?')}' "
+                f"@ {np.round(pos, 3).tolist()}"
+            )
+
     for obj in scene.objects:
+        # 计算到所有 GT 物体的距离, 找最近
+        nearest_gt = None
+        nearest_dist = float('inf')
+        for gt_name, gt_pos in gt_positions.items():
+            d = float(np.linalg.norm(obj.position_3d - gt_pos))
+            if d < nearest_dist:
+                nearest_dist = d
+                nearest_gt = gt_name
+        gt_info = f"  [nearest_GT: {nearest_gt} ({gt_types.get(nearest_gt, '?')}) d={nearest_dist:.2f}m]" if nearest_gt else ""
         logger.info(
             f"  {obj.object_id}: '{obj.label}' "
-            f"pos={obj.position_3d} conf={obj.position_confidence:.2f} "
+            f"pos={np.round(obj.position_3d, 3).tolist()} conf={obj.position_confidence:.2f} "
             f"views={obj.observed_in_views} "
             f"match_score={obj.query_match_score:.2f} method={obj.match_method}"
+            f"{gt_info}"
         )
 
     # ================================================================
