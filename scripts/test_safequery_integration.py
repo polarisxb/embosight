@@ -24,6 +24,13 @@ import numpy as np
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 logger = logging.getLogger("safequery_test")
 
+# 加载 .env (DEEPSEEK_API_KEY 等)
+try:
+    from src.utils import load_dotenv
+    load_dotenv(".env")
+except Exception as e:
+    logger.warning(f"Failed to load .env: {e}")
+
 
 def main():
     parser = argparse.ArgumentParser(description="SafeQuery-VLM integration test")
