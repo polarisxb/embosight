@@ -171,7 +171,8 @@ class VLMGrounder:
             logger.error(f"[vlm_grounding] VLM call failed: {e}")
             return []
 
-        logger.debug(f"[vlm_grounding] raw VLM output (first 500 chars): {raw[:500]}")
+        # raw VLM output 用 INFO 级别便于诊断 (检测异常时)
+        logger.info(f"[vlm_grounding] raw output ({len(raw)} chars): {raw[:500]}")
         candidates = self._parse(raw, img_w=img_w, img_h=img_h)
         logger.info(f"[vlm_grounding] detected {len(candidates)} candidates")
         return candidates
