@@ -693,3 +693,84 @@ if __name__ == "__main__":
     vp_lib = ViewpointLibrary()
     print(f"  视角库大小: {len(vp_lib)}")
     print(f"  视角列表预览:\n{vp_lib.list_for_prompt()}")
+
+
+# ============================================================
+# v1 新接口: ActiveViewpointSelector (LLM-based, replace ActivePlanner.plan)
+# ============================================================
+
+import re as _re  # noqa: E402
+from pathlib import Path as _Path  # noqa: E402
+from typing import Literal as _Literal, Optional as _Optional  # noqa: E402
+
+from src.world_belief import WorldBelief as _WorldBelief  # noqa: E402
+
+_NBV_PROMPT_PATH = "prompts/agent/nbv_select.txt"
+
+
+class ActiveViewpointSelector:
+    """LLM 选下一视角。4 种 preference 注入 prompt; 越界/重复 → None。"""
+
+    def __init__(self, llm, viewpoint_lib, prompt_path: str = _NBV_PROMPT_PATH):
+        self.llm = llm
+        self.vp_lib = viewpoint_lib
+        p = _Path(prompt_path)
+        self._template = p.read_text(encoding="utf-8") if p.exists() else None
+
+    def select(
+        self,
+        belief: _WorldBelief,
+        exclude: set[str],
+        preference: _Literal[
+            "search_target", "disambiguate_label",
+            "parallax_position", "grasp_pose",
+        ] = "search_target",
+    ) -> _Optional[object]:
+        candidates = [
+            (i, vp) for i, vp in enumerate(self.vp_lib)
+            if vp.name not in exclude
+        ]
+        if not candidates:
+            return None
+
+        prompt = self._build_prompt(belief, exclude, preference)
+        try:
+            raw = self.llm.generate(prompt, system="")
+        except Exception as e:
+            logger.warning(f"[viewpoint_selector] LLM failed: {e}")
+            return candidates[0][1]
+
+        m = _re.search(r"-?\d+", raw)
+        if not m:
+            return None
+        idx = int(m.group())
+        if idx == -1:
+            return None
+        if idx < 0 or idx >= len(self.vp_lib):
+            return None
+        vp = self.vp_lib[idx]
+        if vp.name in exclude:
+            return None
+        return vp
+
+    def _build_prompt(
+        self, belief: _WorldBelief, exclude: set[str], preference: str,
+    ) -> str:
+        if self._template is None:
+            return f"Pick a viewpoint index for {preference}, skip {exclude}."
+        primary = belief.decomposed.primary_target if belief.decomposed else "?"
+        hyp_lines = [
+            f"  - {h.label} (entropy={h.label_entropy:.2f}, "
+            f"pos_std={h.position_std_m:.2f}m, views={h.observed_in_views})"
+            for h in belief.hypotheses
+        ] or ["  (无)"]
+        vp_lines = [f"  {i}: {vp.name}" for i, vp in enumerate(self.vp_lib)]
+        return (
+            self._template
+            .replace("{primary_target}", primary)
+            .replace("{n_hyp}", str(len(belief.hypotheses)))
+            .replace("{hyp_list}", "\n".join(hyp_lines))
+            .replace("{used_views}", ", ".join(sorted(exclude)) or "(无)")
+            .replace("{vp_list}", "\n".join(vp_lines))
+            .replace("{preference}", preference)
+        )
