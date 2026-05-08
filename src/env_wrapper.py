@@ -1003,6 +1003,11 @@ class EnvWrapper:
             (contact_ok, final_z): 是否接触到目标; 末端 Z
         """
         target = np.asarray(target_pos, dtype=np.float32)
+        start_z = float(self.get_eef_pos()[2])
+        logger.info(
+            f"[descend] start z={start_z:.3f} → target z={target[2]:.3f} "
+            f"(Δ={start_z - target[2]:.3f}m), step_z={step_z:.3f}m"
+        )
 
         prev_z = None
         stall_count = 0
@@ -1018,15 +1023,17 @@ class EnvWrapper:
             curr = self.get_eef_pos()
             if curr[2] <= target[2] + 0.005:
                 # 已到目标 z, 不再下降
-                logger.debug(f"[descend] reached target z without contact")
+                logger.info(f"[descend] reached target z={curr[2]:.3f} without contact")
                 return self._finger_object_contact(target_body), float(curr[2])
 
-            # 收敛检测: 如果连续 3 步 z 几乎没下降，提前退出
-            if prev_z is not None and abs(prev_z - curr[2]) < 0.001:
+            # 收敛检测: 连续 3 步 z 几乎没下降才算 stall (放宽至 0.5mm)
+            if prev_z is not None and abs(prev_z - curr[2]) < 0.0005:
                 stall_count += 1
                 if stall_count >= 3:
                     logger.warning(
-                        f"[descend] z stalled at {curr[2]:.3f} for {stall_count} steps"
+                        f"[descend] z stalled at {curr[2]:.3f} for {stall_count} steps "
+                        f"(Δ={curr[2] - target[2]:.3f}m above target). "
+                        f"可能撞到桌面/物体侧面或机械臂可达性极限."
                     )
                     return self._finger_object_contact(target_body), float(curr[2])
             else:
@@ -1038,9 +1045,16 @@ class EnvWrapper:
             next_target = np.array(
                 [target[0], target[1], next_z], dtype=np.float32
             )
+            # 增大 max_steps (120→200) 给收敛更多时间
             self.move_arm_to(
-                next_target, threshold_m=0.005, max_steps=120
+                next_target, threshold_m=0.005, max_steps=200
             )
+            after_z = float(self.get_eef_pos()[2])
+            if i % 3 == 0 or i < 5:
+                logger.debug(
+                    f"[descend] step {i}: z {curr[2]:.4f}→{after_z:.4f} "
+                    f"(target_substep={next_z:.4f}, final_target={target[2]:.3f})"
+                )
 
         curr = self.get_eef_pos()
         contact = self._finger_object_contact(target_body)

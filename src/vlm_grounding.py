@@ -156,13 +156,23 @@ class VLMGrounder:
         prompt = self._build_prompt()
         logger.info(f"[vlm_grounding] running on {image_path}")
 
+        # 读图像尺寸 (用于 bbox 自适应缩放)
+        img_w, img_h = 256, 256
+        try:
+            from PIL import Image
+            with Image.open(image_path) as im:
+                img_w, img_h = im.size
+        except Exception:
+            pass
+
         try:
             raw = self.vlm.describe(image_path, prompt=prompt)
         except Exception as e:
             logger.error(f"[vlm_grounding] VLM call failed: {e}")
             return []
 
-        candidates = self._parse(raw)
+        logger.debug(f"[vlm_grounding] raw VLM output (first 500 chars): {raw[:500]}")
+        candidates = self._parse(raw, img_w=img_w, img_h=img_h)
         logger.info(f"[vlm_grounding] detected {len(candidates)} candidates")
         return candidates
 
@@ -190,7 +200,57 @@ class VLMGrounder:
         )
 
     @staticmethod
-    def _parse(raw: str) -> list[GroundedCandidate]:
+    def _normalize_bbox(
+        bbox: tuple[int, int, int, int], img_w: int = 256, img_h: int = 256
+    ) -> Optional[tuple[int, int, int, int]]:
+        """自适应解析 bbox: 检测格式 (xyxy vs xywh) + 坐标空间 (1000网格 vs 原始像素).
+
+        Qwen2.5-VL 原生输出: (x1, y1, x2, y2) 在原始图像像素坐标
+        Qwen3-VL 输出: 可能 (x1, y1, x2, y2) 在 1000-grid 或 (x, y, w, h)
+
+        Args:
+            bbox: 原始 4 元组
+            img_w/img_h: 目标图像像素尺寸
+
+        Returns:
+            (x1, y1, x2, y2) 在图像像素坐标系中的合法 bbox, 或 None
+        """
+        a, b, c, d = bbox
+        max_dim = max(img_w, img_h)
+
+        # 检测格式: 如果 c < a 或 d < b, 一定是 (x, y, w, h)
+        if c < a or d < b:
+            x1, y1, x2, y2 = a, b, a + c, b + d
+        else:
+            x1, y1, x2, y2 = a, b, c, d
+
+        # 检测坐标空间: 如果最大值超出图像边界明显 (>15%), 认为是 normalized 空间
+        max_val = max(x1, y1, x2, y2)
+        if max_val > max_dim * 1.15:
+            # 猜测 grid: 常见 1000 (很多 VLM normalized) 或 1024
+            if max_val <= 1010:
+                grid = 1000.0
+            elif max_val <= 1030:
+                grid = 1024.0
+            else:
+                grid = float(max_val)  # 以观察最大值为尺度
+            x1 = int(x1 * img_w / grid)
+            y1 = int(y1 * img_h / grid)
+            x2 = int(x2 * img_w / grid)
+            y2 = int(y2 * img_h / grid)
+
+        # 合法性检查
+        if x2 <= x1 or y2 <= y1:
+            return None
+        # clip 到边界
+        x1 = max(0, min(img_w - 1, x1))
+        y1 = max(0, min(img_h - 1, y1))
+        x2 = max(x1 + 1, min(img_w, x2))
+        y2 = max(y1 + 1, min(img_h, y2))
+        return (x1, y1, x2, y2)
+
+    @staticmethod
+    def _parse(raw: str, img_w: int = 256, img_h: int = 256) -> list[GroundedCandidate]:
         """解析 VLM JSON 输出为 GroundedCandidate 列表.
 
         支持格式:
@@ -258,17 +318,15 @@ class VLMGrounder:
                     continue
 
                 try:
-                    bbox = tuple(int(v) for v in bbox_raw)
+                    bbox_raw_t = tuple(int(v) for v in bbox_raw)
                 except (ValueError, TypeError):
                     continue
 
-                # 验证 bbox 合理性 (256x256 图像)
-                x1, y1, x2, y2 = bbox
-                if x2 <= x1 or y2 <= y1:
+                # 自适应解析 bbox 格式与坐标空间 (兼容 Qwen2.5-VL / Qwen3-VL)
+                normalized = VLMGrounder._normalize_bbox(bbox_raw_t, img_w, img_h)
+                if normalized is None:
                     continue
-                if x1 < 0 or y1 < 0 or x2 > 256 or y2 > 256:
-                    # 容忍轻微越界, 裁剪到边界
-                    bbox = (max(0, x1), max(0, y1), min(256, x2), min(256, y2))
+                bbox = normalized
 
                 label = str(item.get("name") or item.get("label") or "unknown").strip()
                 conf = float(item.get("confidence", 0.5))

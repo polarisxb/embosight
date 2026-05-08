@@ -124,10 +124,31 @@ class TestParse:
         assert len(result) == 0
 
     def test_parse_invalid_bbox_skipped(self):
-        """bbox 无效 (x2 <= x1) 的候选被跳过."""
-        raw = '{"objects": [{"name": "bad", "bbox_2d": [50, 50, 10, 10], "confidence": 0.8}]}'
+        """bbox 无效 (零尺寸) 的候选被跳过。
+
+        注: [50, 50, 10, 10] 现在被解读为 xywh 格式 (Qwen3-VL 兼容),
+        所以真正的非法 bbox 是零宽零高。
+        """
+        raw = '{"objects": [{"name": "bad", "bbox_2d": [50, 50, 0, 0], "confidence": 0.8}]}'
         result = VLMGrounder._parse(raw)
         assert len(result) == 0
+
+    def test_parse_xywh_format(self):
+        """Qwen3-VL 兼容: (x, y, w, h) 格式应被识别并转换为 (x1,y1,x2,y2)."""
+        raw = '{"objects": [{"name": "obj", "bbox_2d": [50, 60, 30, 40], "confidence": 0.9}]}'
+        result = VLMGrounder._parse(raw)
+        assert len(result) == 1
+        assert result[0].bbox_2d == (50, 60, 80, 100)
+
+    def test_parse_normalized_1000_grid(self):
+        """Qwen3-VL 兼容: 在 1000-grid normalized 空间的 bbox 应被缩放到图像像素空间."""
+        # 1000-grid 中 (250, 250, 500, 500) → 256-grid 中应约为 (64, 64, 128, 128)
+        raw = '{"objects": [{"name": "obj", "bbox_2d": [250, 250, 500, 500], "confidence": 0.9}]}'
+        result = VLMGrounder._parse(raw, img_w=256, img_h=256)
+        assert len(result) == 1
+        x1, y1, x2, y2 = result[0].bbox_2d
+        assert 60 <= x1 <= 68 and 60 <= y1 <= 68
+        assert 124 <= x2 <= 132 and 124 <= y2 <= 132
 
     def test_parse_clips_bbox_to_boundary(self):
         """bbox 略微越界时裁剪到 [0,256]."""
