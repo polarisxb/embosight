@@ -1,11 +1,13 @@
-"""VLM 后端封装（Qwen2.5-VL 本地部署）
+"""VLM 后端封装（Qwen2.5-VL / Qwen3-VL 本地部署）
 
-加载 Qwen2.5-VL-7B 模型在 GPU 上推理。
+加载 Qwen-VL 系列模型在 GPU 上推理。
 延迟加载策略：仅在第一次调用 describe() 时加载模型，避免 import 副作用。
+根据 model_id 自动检测模型代次 (2.5 vs 3), 选择对应的 model class。
 
 使用示例:
     >>> from src.vlm_backend import VLMBackend
-    >>> vlm = VLMBackend()
+    >>> vlm = VLMBackend()  # 默认 Qwen2.5-VL-7B
+    >>> vlm = VLMBackend("./checkpoints/Qwen3-VL-8B-Instruct")  # Qwen3-VL
     >>> desc = vlm.describe("kitchen.png", prompt="请描述图像内容")
 """
 
@@ -19,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 class VLMBackend:
-    """Qwen2.5-VL 视觉-语言模型客户端"""
+    """Qwen VL 系列视觉-语言模型客户端 (支持 2.5-VL / 3-VL)"""
 
     def __init__(
         self,
@@ -53,16 +55,28 @@ class VLMBackend:
         try:
             import torch
             from transformers import AutoProcessor
-            try:
-                from transformers import Qwen2_5_VLForConditionalGeneration as VLModelClass
-            except ImportError:
-                from transformers import Qwen2VLForConditionalGeneration as VLModelClass
         except ImportError as e:
             raise ImportError(
                 f"请先安装依赖: pip install torch transformers, 错误: {e}"
             ) from e
 
-        logger.info(f"正在加载 Qwen2.5-VL: {self.model_id}")
+        # 根据 model_id 自动检测模型代次
+        is_qwen3 = "qwen3" in self.model_id.lower() or "Qwen3" in self.model_id
+        if is_qwen3:
+            try:
+                from transformers import Qwen3VLForConditionalGeneration as VLModelClass
+            except ImportError:
+                from transformers import AutoModelForImageTextToText as VLModelClass
+            gen_tag = "Qwen3-VL"
+        else:
+            try:
+                from transformers import Qwen2_5_VLForConditionalGeneration as VLModelClass
+            except ImportError:
+                from transformers import Qwen2VLForConditionalGeneration as VLModelClass
+            gen_tag = "Qwen2.5-VL"
+
+        self._is_qwen3 = is_qwen3
+        logger.info(f"正在加载 {gen_tag}: {self.model_id}")
 
         dtype_map = {
             "bfloat16": torch.bfloat16,
@@ -88,7 +102,7 @@ class VLMBackend:
         )
         self._model.eval()
 
-        logger.info(f"Qwen2.5-VL 加载完成 (dtype={self.torch_dtype}, device={self.device})")
+        logger.info(f"{gen_tag} 加载完成 (dtype={self.torch_dtype}, device={self.device})")
 
     def describe(
         self,
@@ -105,7 +119,8 @@ class VLMBackend:
             VLM 输出文本
 
         TODO:
-            完整推理逻辑参考 Qwen2.5-VL 官方示例:
+            完整推理逻辑参考 Qwen VL 官方示例:
+            https://github.com/QwenLM/Qwen3-VL
             https://github.com/QwenLM/Qwen2.5-VL
         """
         self._ensure_loaded()
@@ -132,19 +147,30 @@ class VLMBackend:
             }
         ]
 
-        text = self._processor.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True,
-        )
-        image_inputs, video_inputs = process_vision_info(messages)
-        inputs = self._processor(
-            text=[text],
-            images=image_inputs,
-            videos=video_inputs,
-            padding=True,
-            return_tensors="pt",
-        )
+        if getattr(self, '_is_qwen3', False):
+            # Qwen3-VL: apply_chat_template 直接返回 tokenized dict
+            inputs = self._processor.apply_chat_template(
+                messages,
+                tokenize=True,
+                add_generation_prompt=True,
+                return_dict=True,
+                return_tensors="pt",
+            )
+        else:
+            # Qwen2.5-VL: 需要手动 process_vision_info
+            text = self._processor.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+            image_inputs, video_inputs = process_vision_info(messages)
+            inputs = self._processor(
+                text=[text],
+                images=image_inputs,
+                videos=video_inputs,
+                padding=True,
+                return_tensors="pt",
+            )
         inputs = {k: v.to(self._model.device) for k, v in inputs.items()}
 
         with torch.inference_mode():

@@ -22,8 +22,8 @@
 # Core ML Framework (注: torch/torchvision 单独装, 见上方说明)
 # torch>=2.3.0,<2.6.0      ← 单独装 torch==2.3.0+cu121
 # torchvision>=0.18.0      ← 单独装 torchvision==0.18.0+cu121
-# transformers 锁定版本范围 (4.49+ 支持 Qwen2.5-VL, <4.51 兼容 PyTorch 2.3)
-transformers>=4.49.0,<4.51.0
+# transformers 版本范围 (4.57+ 支持 Qwen3-VL, <5.0 兼容 PyTorch 2.3)
+transformers>=4.57.0,<5.0.0
 accelerate>=0.30.0,<1.5.0
 huggingface-hub>=0.23.0
 safetensors>=0.4.0

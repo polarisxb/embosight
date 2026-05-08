@@ -35,6 +35,8 @@ def main():
     parser.add_argument("--cameras", default="robot0_agentview_center,robot0_agentview_left,robot0_agentview_right",
                         help="Comma-separated camera names")
     parser.add_argument("--skip-grasp", action="store_true", help="Skip grasp execution")
+    parser.add_argument("--vlm-model", default="./checkpoints/Qwen2.5-VL-7B-Instruct",
+                        help="VLM model path (e.g. ./checkpoints/Qwen3-VL-8B-Instruct)")
     args = parser.parse_args()
 
     cameras = tuple(args.cameras.split(","))
@@ -82,7 +84,8 @@ def main():
     from src.scene_model import SceneModel
     from src.safety_gate import SafetyGate
 
-    vlm = VLMBackend()
+    vlm = VLMBackend(model_id=args.vlm_model)
+    logger.info(f"VLM model: {args.vlm_model}")
 
     # LLM 用于 Level 5 语义匹配 fallback (当文本启发式失败时)
     llm = None
