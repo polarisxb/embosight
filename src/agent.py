@@ -367,7 +367,7 @@ class EmboSightAgent:
         self, belief: WorldBelief, start: float,
     ) -> EpisodeResult:
         h = belief.target()
-        return EpisodeResult(
+        result = EpisodeResult(
             success=True,
             target=h,
             speech=self._build_speech(belief, success=True),
@@ -377,12 +377,18 @@ class EmboSightAgent:
             n_steps=len(belief.action_history),
             elapsed_seconds=time.time() - start,
         )
+        if self.logger:
+            try:
+                self.logger.end_episode(result)
+            except Exception as e:
+                logger.warning(f"[agent] logger.end_episode failed: {e}")
+        return result
 
     def _giveup_result(
         self, belief: WorldBelief, start: float,
         reason: Optional[str] = None,
     ) -> EpisodeResult:
-        return EpisodeResult(
+        result = EpisodeResult(
             success=False,
             target=belief.target(),
             speech=self._build_speech(belief, success=False, reason=reason),
@@ -392,6 +398,12 @@ class EmboSightAgent:
             elapsed_seconds=time.time() - start,
             failure_reason=reason,
         )
+        if self.logger:
+            try:
+                self.logger.end_episode(result)
+            except Exception as e:
+                logger.warning(f"[agent] logger.end_episode failed: {e}")
+        return result
 
     @staticmethod
     def _build_speech(
