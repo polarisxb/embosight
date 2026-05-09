@@ -23,6 +23,11 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from src.utils import load_dotenv
+
+# 优先加载项目根 .env (含 DEEPSEEK_API_KEY 等)
+load_dotenv(str(Path(__file__).parent.parent / ".env"))
+
 from src.action_executor import ActionExecutor
 from src.active_planner import ActiveViewpointSelector, ViewpointLibrary
 from src.agent import EmboSightAgent
