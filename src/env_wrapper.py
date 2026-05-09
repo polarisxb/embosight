@@ -1282,7 +1282,7 @@ class EnvWrapper:
         """简化 IK 可达性判断: sim 里始终返 True, 由 move_arm_to 失败时捕获。"""
         return True
 
-    def move_to_pre_grasp(self, candidate, height_m: float = 0.10) -> bool:
+    def move_to_pre_grasp(self, candidate, height_m: float = 0.05) -> bool:
         """移动到 candidate 上方 height_m 处 (pre-grasp 高度)。"""
         pre_pos = (
             np.asarray(candidate.point_3d, dtype=np.float32)
@@ -1293,7 +1293,7 @@ class EnvWrapper:
             self._gripper_action(-1.0, n_steps=8)
         except Exception:
             pass
-        return self.move_arm_to(pre_pos, threshold_m=0.03)
+        return self.move_arm_to(pre_pos, threshold_m=0.05)
 
     def descend(
         self, point_3d, target_label: Optional[str] = None,
