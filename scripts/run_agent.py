@@ -171,7 +171,7 @@ def main() -> int:
         vlm=vlm,
     )
 
-    result = agent.run(args.query, env)
+    result = agent.run(query, env)
     print("\n========== EPISODE RESULT ==========")
     print(f"success: {result.success}")
     print(f"speech : {result.speech}")
