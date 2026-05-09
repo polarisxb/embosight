@@ -384,7 +384,7 @@ class WorldBelief:
     MERGE_DISTANCE_M = 0.15           # TODO(v1.1): 实测调
     MERGE_LABEL_INTERSECTION_MIN = 0.30  # TODO(v1.1): 实测调
     PRUNE_MIN_STEPS = 3
-    PRUNE_PHANTOM_ENTROPY = 0.7
+    PRUNE_PHANTOM_ENTROPY = 0.95  # 只剪极高熵 (VLM 在 sim 上典型 0.7-0.8)
     
     def add_hypothesis(self, h: Hypothesis) -> None:
         self.hypotheses.append(h)
