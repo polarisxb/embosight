@@ -15,9 +15,9 @@ llm:
   temperature: 0.1
   timeout: 60.0
 
-# VLM 后端 (Qwen2.5-VL-7B)
+# VLM 后端 (Qwen3-VL-8B)
 vlm:
-  model_id: "./checkpoints/Qwen2.5-VL-7B-Instruct"
+  model_id: "./checkpoints/Qwen3-VL-8B-Instruct"
   device: "cuda"
   torch_dtype: "bfloat16"
   max_new_tokens: 1024
