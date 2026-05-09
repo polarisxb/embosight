@@ -16,5 +16,23 @@ scenarios:
     query: "pick up the apple"
     expected_object: apple
     user_mode: fake_from_robocasa
-    max_resets: 10
+    max_resets: 50
+    difficulty: easy
+
+  - id: fixed_seed_discover_002
+    env_name: PickPlaceCounterToCabinet
+    seed: 43
+    query: "pick up anything"
+    expected_object: null
+    user_mode: fake_from_robocasa
+    max_resets: 1
+    difficulty: easy
+
+  - id: fixed_seed_discover_003
+    env_name: PickPlaceCounterToCabinet
+    seed: 47
+    query: "pick up anything"
+    expected_object: null
+    user_mode: fake_from_robocasa
+    max_resets: 1
     difficulty: easy
