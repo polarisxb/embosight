@@ -170,6 +170,18 @@ class TestWorldBeliefTarget:
         b.hypotheses = [h]
         assert b.target() is h
     
+    def test_low_prob_alternative_does_not_select_wrong_top_label(self):
+        b = WorldBelief(user_query="pick up the croissant")
+        b.decomposed = DecomposedTask(primary_target="croissant")
+        h = _basic_hyp(label="banana",
+                       alternatives=[
+                           ("banana", 0.586),
+                           ("apple", 0.254),
+                           ("croissant", 0.160),
+                       ])
+        b.hypotheses = [h]
+        assert b.target() is None
+    
     def test_top1_top2_close_returns_none(self):
         """top1 概率与 top2 差 < 0.2 → 模糊 (9.12)。"""
         b = WorldBelief(user_query="拿苹果")

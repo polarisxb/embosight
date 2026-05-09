@@ -305,14 +305,28 @@ class WorldBelief:
         target_key = _label_key(target_word)
         scored: list[tuple[float, Hypothesis]] = []
         for h in self.hypotheses:
-            prob = next(
-                (p for lbl, p in h.label_alternatives
-                 if target_word in lbl.lower() or target_key in _label_key(lbl)),
-                0.0,
+            label_matches = (
+                target_word in h.label.lower()
+                or target_key in _label_key(h.label)
             )
-            if target_word in h.label.lower() or target_key in _label_key(h.label):
-                prob = max(prob, 0.5)
+            prob = 0.0
+            if h.label_alternatives:
+                top_label, top_prob = max(h.label_alternatives, key=lambda item: item[1])
+                top_matches = (
+                    target_word in top_label.lower()
+                    or target_key in _label_key(top_label)
+                )
+                if top_matches:
+                    prob = top_prob
+            if label_matches:
+                alt_prob = next(
+                    (p for lbl, p in h.label_alternatives
+                     if target_word in lbl.lower() or target_key in _label_key(lbl)),
+                    0.0,
+                )
+                prob = max(prob, alt_prob, 0.5)
             if prob > 0:
+                prob = max(prob, 0.5)
                 scored.append((prob, h))
         if not scored:
             return None
