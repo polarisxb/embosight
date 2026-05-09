@@ -19,6 +19,12 @@ class OracleSummary:
     vlm_labels: list[str]
     selected_target_label: str | None
     selected_target_position: list[float] | None
+    selected_target_label_entropy: float | None
+    selected_target_position_std_m: float | None
+    selected_target_safety_entropy: float | None
+    selected_target_grasp_uncertainty: float | None
+    dominant_uncertainty_axis: str | None
+    planning_blockers: list[str]
     grasp_failure_mode: str | None
     grasp_candidate_source: str | None
 
@@ -35,8 +41,10 @@ def summarize_episode(
     path = Path(episode_path)
     data = json.loads(path.read_text(encoding="utf-8"))
     final_result = data.get("final_result") or {}
-    target = _latest_target_summary(data.get("snapshots", []))
+    target_snapshot = _latest_target_snapshot(data.get("snapshots", []))
+    target = target_snapshot.get("target_summary") if target_snapshot else None
     grasp_attempt = _latest_grasp_attempt(data.get("evidence", []))
+    action_sequence = [str(a.get("kind", "")) for a in data.get("actions", [])]
     object_match = None
     if expected_object is not None and actual_object is not None:
         object_match = _label_key(expected_object) == _label_key(actual_object)
@@ -48,20 +56,38 @@ def summarize_episode(
         object_match=object_match,
         success=final_result.get("success"),
         failure_reason=final_result.get("failure_reason"),
-        action_sequence=[str(a.get("kind", "")) for a in data.get("actions", [])],
+        action_sequence=action_sequence,
         vlm_labels=_vlm_labels(data.get("evidence", [])),
         selected_target_label=target.get("label") if target else None,
         selected_target_position=target.get("position_3d") if target else None,
+        selected_target_label_entropy=_float_or_none(
+            target.get("label_entropy") if target else None,
+        ),
+        selected_target_position_std_m=_float_or_none(
+            target.get("position_std_m") if target else None,
+        ),
+        selected_target_safety_entropy=_float_or_none(
+            target.get("safety_entropy") if target else None,
+        ),
+        selected_target_grasp_uncertainty=_float_or_none(
+            target.get("grasp_uncertainty") if target else None,
+        ),
+        dominant_uncertainty_axis=(
+            str(target_snapshot.get("most_uncertain_axis"))
+            if target_snapshot and target_snapshot.get("most_uncertain_axis") is not None
+            else None
+        ),
+        planning_blockers=_planning_blockers(target, action_sequence),
         grasp_failure_mode=grasp_attempt.get("failure_mode") if grasp_attempt else None,
         grasp_candidate_source=grasp_attempt.get("candidate_source") if grasp_attempt else None,
     )
 
 
-def _latest_target_summary(snapshots: list[dict[str, Any]]) -> dict[str, Any] | None:
+def _latest_target_snapshot(snapshots: list[dict[str, Any]]) -> dict[str, Any] | None:
     for snap in reversed(snapshots):
         target = snap.get("target_summary")
         if target:
-            return target
+            return snap
     return None
 
 
@@ -86,6 +112,31 @@ def _vlm_labels(evidence: list[dict[str, Any]]) -> list[str]:
             if label is not None:
                 labels.append(str(label))
     return labels
+
+
+def _planning_blockers(
+    target: dict[str, Any] | None,
+    action_sequence: list[str],
+) -> list[str]:
+    if target is None or "plan_grasp_candidates" in action_sequence:
+        return []
+    blockers: list[str] = []
+    label_entropy = _float_or_none(target.get("label_entropy"))
+    position_std = _float_or_none(target.get("position_std_m"))
+    safety_entropy = _float_or_none(target.get("safety_entropy"))
+    if label_entropy is not None and label_entropy >= 0.80:
+        blockers.append("label_entropy>=0.80")
+    if position_std is not None and position_std >= 0.10:
+        blockers.append("position_std_m>=0.10")
+    if safety_entropy is not None and safety_entropy >= 0.50:
+        blockers.append("safety_entropy>=0.50")
+    return blockers
+
+
+def _float_or_none(value: Any) -> float | None:
+    if value is None:
+        return None
+    return float(value)
 
 
 def _label_key(text: str) -> str:

@@ -16,6 +16,7 @@ def test_summarize_episode_extracts_failure_mode_and_target(tmp_path):
             {"step": 1, "target_summary": None},
             {
                 "step": 2,
+                "most_uncertain_axis": "label",
                 "target_summary": {
                     "label": "apple",
                     "label_entropy": 0.2,
@@ -75,6 +76,54 @@ def test_summarize_episode_extracts_failure_mode_and_target(tmp_path):
     assert summary.action_sequence == ["observe", "plan_grasp_candidates", "grasp"]
     assert summary.vlm_labels == ["apple"]
     assert summary.selected_target_label == "apple"
+    assert summary.selected_target_label_entropy == 0.2
+    assert summary.selected_target_position_std_m == 0.02
+    assert summary.selected_target_safety_entropy == 0.1
+    assert summary.selected_target_grasp_uncertainty == 0.2
+    assert summary.dominant_uncertainty_axis == "label"
+    assert summary.planning_blockers == []
     assert summary.grasp_failure_mode == "hit_z_floor"
     assert summary.grasp_candidate_source == "vlm_top_grasp"
     assert summary.to_dict()["grasp_failure_mode"] == "hit_z_floor"
+
+
+def test_summarize_episode_reports_planning_blockers(tmp_path):
+    from src.eval_oracle import summarize_episode
+
+    episode = {
+        "query": "pick up the blender_jug",
+        "snapshots": [
+            {
+                "step": 3,
+                "most_uncertain_axis": "label",
+                "target_summary": {
+                    "label": "blender_jug",
+                    "label_entropy": 0.95,
+                    "position_3d": [7.68, -0.98, 0.94],
+                    "position_std_m": 0.02,
+                    "safety_entropy": 0.2,
+                    "grasp_uncertainty": None,
+                },
+            },
+        ],
+        "actions": [
+            {"kind": "observe"},
+            {"kind": "classify_safety"},
+            {"kind": "re_observe"},
+            {"kind": "ask_user"},
+        ],
+        "evidence": [],
+        "final_result": {
+            "success": False,
+            "failure_reason": "MAX_STEPS reached",
+        },
+    }
+    path = tmp_path / "episode.json"
+    path.write_text(json.dumps(episode), encoding="utf-8")
+
+    summary = summarize_episode(path)
+
+    assert summary.selected_target_label == "blender_jug"
+    assert summary.selected_target_label_entropy == 0.95
+    assert summary.dominant_uncertainty_axis == "label"
+    assert summary.planning_blockers == ["label_entropy>=0.80"]
