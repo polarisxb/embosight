@@ -34,29 +34,36 @@ class CLIPScorer:
         self._device = device or "cpu"
         self._model = None
         self._processor = None
+        self._load_failed = False
 
     # ──────────────────────────────────────
     # Lazy loading
     # ──────────────────────────────────────
 
     def _ensure_loaded(self) -> None:
-        if self._model is not None:
+        if self._model is not None or self._load_failed:
             return
         try:
             from transformers import CLIPModel, CLIPProcessor
             logger.info("[clip] 加载 CLIP: %s (device=%s)", self._model_name, self._device)
-            self._processor = CLIPProcessor.from_pretrained(self._model_name)
-            self._model = CLIPModel.from_pretrained(self._model_name)
+            self._processor = CLIPProcessor.from_pretrained(
+                self._model_name, use_fast=False,
+            )
+            # 强制 safetensors 格式, 绕过 torch.load CVE-2025-32434 限制
+            self._model = CLIPModel.from_pretrained(
+                self._model_name, use_safetensors=True,
+            )
             self._model = self._model.to(self._device).eval()
             logger.info("[clip] CLIP 加载完成")
         except Exception as e:
             logger.warning("[clip] CLIP 加载失败: %s", e)
             self._model = None
+            self._load_failed = True
 
     @property
     def available(self) -> bool:
         """CLIP 是否可用 (加载成功)。"""
-        if self._model is None:
+        if self._model is None and not self._load_failed:
             self._ensure_loaded()
         return self._model is not None
 
