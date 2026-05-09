@@ -240,7 +240,14 @@ class EmboSightAgent:
 
         elif action.kind == "plan_grasp_candidates":
             cands = self.grasp_planner.plan(action.target_hypothesis, env)
-            action.target_hypothesis.grasp_candidates = cands
+            # 必须更新 belief.hypotheses 里的 hypothesis (不是 action 上的引用)
+            target_id = action.target_hypothesis.object_id
+            for h in belief.hypotheses:
+                if h.object_id == target_id:
+                    h.grasp_candidates = cands
+                    break
+            else:
+                action.target_hypothesis.grasp_candidates = cands
             belief.evidence.append(Evidence(
                 source="depth_projection", timestamp=time.time(),
                 raw_payload={"n_candidates": len(cands)},
