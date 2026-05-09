@@ -545,14 +545,14 @@ class WorldBelief:
         self.user_constraints.append(f"Q: {question} | A: {answer}")
         if not self.decomposed:
             return
-        target_key = _label_key(self.decomposed.primary_target)
-        if target_key not in _label_key(answer):
-            return
         h = self.target()
         if h is None:
             return
         if any(a.failure_mode == "verify_mismatch" for a in h.grasp_attempts):
             return
+        if not self._answer_confirms_target(answer, h):
+            return
+        target_key = _label_key(self.decomposed.primary_target)
         labels = [lbl for lbl, _ in h.label_alternatives if _label_key(lbl) != target_key]
         h.label_alternatives = [(self.decomposed.primary_target, 0.90)]
         if labels:
@@ -561,6 +561,21 @@ class WorldBelief:
         h.label = self.decomposed.primary_target
         h.label_entropy = _shannon([p for _, p in h.label_alternatives])
     
+    _NEGATIVE_KEYWORDS = {"不是", "不要", "都不", "没有", "不对", "错了", "不知道"}
+
+    def _answer_confirms_target(self, answer: str, h: Hypothesis) -> bool:
+        target_key = _label_key(self.decomposed.primary_target)
+        answer_key = _label_key(answer)
+        if target_key and target_key in answer_key:
+            return True
+        if any(neg in answer for neg in self._NEGATIVE_KEYWORDS):
+            return False
+        for lbl, _ in h.label_alternatives:
+            lbl_key = _label_key(lbl)
+            if lbl_key != target_key and lbl_key and lbl_key in answer_key:
+                return False
+        return True
+
     def compose_clarification(self) -> str:
         """构造给用户的澄清问题。"""
         h = self.target()

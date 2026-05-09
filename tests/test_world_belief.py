@@ -488,3 +488,56 @@ class TestEdgeCases:
 
         assert h.label_entropy < WorldBelief.DEFAULT_THRESHOLDS["label"]
         assert h.label_alternatives[0] == ("tupperware", 0.90)
+
+    def test_consume_user_answer_chinese_affirmative_reduces_entropy(self):
+        """FakeUserChannel 用中文回答 '是的' 也应确认目标。"""
+        b = WorldBelief(user_query="pick up the tupperware")
+        b.decomposed = DecomposedTask(primary_target="tupperware")
+        h = _basic_hyp(
+            label="tupperware",
+            label_e=0.95,
+            safe_e=0.2,
+            alternatives=[("tupperware", 0.50), ("box", 0.30), ("container", 0.20)],
+        )
+        b.hypotheses = [h]
+
+        b.consume_user_answer(
+            "我看到一个tupperware样的东西, 也可能是box, 您要的是哪个?",
+            "是的，就是那个",
+            llm=None,
+        )
+
+        assert h.label_entropy < WorldBelief.DEFAULT_THRESHOLDS["label"]
+        assert h.label_alternatives[0][0] == "tupperware"
+
+    def test_consume_user_answer_mentioning_alt_does_not_confirm(self):
+        """用户说 '不是，是box' 不应确认 tupperware。"""
+        b = WorldBelief(user_query="pick up the tupperware")
+        b.decomposed = DecomposedTask(primary_target="tupperware")
+        h = _basic_hyp(
+            label="tupperware",
+            label_e=0.95,
+            safe_e=0.2,
+            alternatives=[("tupperware", 0.50), ("box", 0.30), ("container", 0.20)],
+        )
+        b.hypotheses = [h]
+
+        b.consume_user_answer("您要的是哪个?", "不是，我要的是 box", llm=None)
+
+        assert h.label_entropy == 0.95  # unchanged
+
+    def test_consume_user_answer_negative_does_not_confirm(self):
+        """用户说 '都不是' 不应确认。"""
+        b = WorldBelief(user_query="pick up the tupperware")
+        b.decomposed = DecomposedTask(primary_target="tupperware")
+        h = _basic_hyp(
+            label="tupperware",
+            label_e=0.95,
+            safe_e=0.2,
+            alternatives=[("tupperware", 0.50), ("box", 0.30), ("container", 0.20)],
+        )
+        b.hypotheses = [h]
+
+        b.consume_user_answer("您要的是哪个?", "都不是", llm=None)
+
+        assert h.label_entropy == 0.95  # unchanged
