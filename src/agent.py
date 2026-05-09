@@ -235,6 +235,7 @@ class EmboSightAgent:
             logger.warning("[semantic_fallback] LLM call failed: %s", e)
             return False
 
+        logger.info("[semantic_fallback] LLM answer='%s' for primary='%s', labels=%s", answer, primary, labels)
         if not answer or answer == "none":
             return False
 
@@ -253,7 +254,25 @@ class EmboSightAgent:
         primary_key = _label_key(primary)
         already = any(primary_key in _label_key(lbl) for lbl, _ in matched_h.label_alternatives)
         if already:
-            return True  # 已存在
+            # 已存在但可能概率太低, 确保 >= 0.35 (通过 target() 的 0.20 阈值)
+            boosted = False
+            new_alts = []
+            for lbl, p in matched_h.label_alternatives:
+                if primary_key in _label_key(lbl) and p < 0.35:
+                    new_alts.append((lbl, 0.35))
+                    boosted = True
+                else:
+                    new_alts.append((lbl, p))
+            if boosted:
+                total = sum(p for _, p in new_alts) or 1.0
+                matched_h.label_alternatives = sorted(
+                    ((lbl, p / total) for lbl, p in new_alts),
+                    key=lambda x: x[1], reverse=True,
+                )
+                matched_h.label_entropy = _shannon(
+                    [p for _, p in matched_h.label_alternatives]
+                )
+            return True
 
         matched_h.label_alternatives.append((primary, 0.40))
         total = sum(p for _, p in matched_h.label_alternatives) or 1.0

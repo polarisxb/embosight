@@ -253,22 +253,27 @@ class QueryAwareGrounder:
         scores = self._clip_scorer.score_crops(image_path, bboxes, primary_target)
 
         from src.clip_scorer import CLIPScorer
-        for h, score in zip(hyps, scores):
-            if score < CLIPScorer.INJECT_THRESHOLD:
-                continue
-            # 注入 primary_target 到 alternatives
-            h.label_alternatives.append((primary_target, float(score)))
-            # 重新归一化
-            total = sum(p for _, p in h.label_alternatives) or 1.0
-            h.label_alternatives = sorted(
-                ((lbl, p / total) for lbl, p in h.label_alternatives),
-                key=lambda x: x[1], reverse=True,
-            )
-            h.label_entropy = _shannon([p for _, p in h.label_alternatives])
-            logger.info(
-                "[clip] injected '%s' (sim=%.3f) into %s (label='%s')",
-                primary_target, score, h.object_id, h.label,
-            )
+        # 只注入到 CLIP 分数最高的单个 hypothesis, 避免多个注入导致歧义
+        best_idx, best_score = -1, 0.0
+        for i, score in enumerate(scores):
+            if score >= CLIPScorer.INJECT_THRESHOLD and score > best_score:
+                best_idx, best_score = i, score
+        if best_idx < 0:
+            return
+        h = hyps[best_idx]
+        # 注入概率至少 0.35, 保证归一化后 > 0.20 (通过 target() 阈值)
+        inject_prob = max(0.35, float(best_score))
+        h.label_alternatives.append((primary_target, inject_prob))
+        total = sum(p for _, p in h.label_alternatives) or 1.0
+        h.label_alternatives = sorted(
+            ((lbl, p / total) for lbl, p in h.label_alternatives),
+            key=lambda x: x[1], reverse=True,
+        )
+        h.label_entropy = _shannon([p for _, p in h.label_alternatives])
+        logger.info(
+            "[clip] injected '%s' (sim=%.3f, prob=%.2f) into %s (label='%s')",
+            primary_target, best_score, inject_prob, h.object_id, h.label,
+        )
 
     @staticmethod
     def _extract_json(raw: str) -> Optional[dict]:
