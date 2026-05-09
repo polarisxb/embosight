@@ -36,7 +36,7 @@ class FakeEnv:
         self.calls.append("move_to_pre_grasp")
         return self.ik_ok
 
-    def descend(self, point_3d, target_label=None):
+    def descend(self, point_3d, target_label=None, **kwargs):
         self.calls.append("descend")
         if self.descend_ok:
             return True, point_3d[2]

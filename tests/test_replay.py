@@ -63,7 +63,7 @@ class FakeEnv:
     def move_to_pre_grasp(self, c):
         return True
 
-    def descend(self, p, target_label=None):
+    def descend(self, p, target_label=None, **kwargs):
         return True, float(np.asarray(p)[2])
 
     def close_gripper(self, target_label=None):

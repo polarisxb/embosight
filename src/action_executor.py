@@ -76,10 +76,18 @@ class ActionExecutor:
                 {"stage": "pre_grasp"}, env,
             )
 
-        # 2. descend
+        # 2. descend (策略感知的 depth margin)
         z_target = float(candidate.point_3d[2])
+        margin_m = 0.015  # 默认
+        if hasattr(target, "grasp_strategy") and target.grasp_strategy:
+            from src.grasp_planner import GraspPlanner
+            params = GraspPlanner._STRATEGY_PARAMS.get(
+                target.grasp_strategy.strategy, {},
+            )
+            margin_m = params.get("depth_margin", 0.015)
         descend_ok, z_actual = env.descend(
             candidate.point_3d, target_label=getattr(target, "label", None),
+            margin_m=margin_m,
         )
         if not descend_ok:
             return self._failed_result(

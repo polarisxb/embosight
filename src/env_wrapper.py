@@ -1047,7 +1047,7 @@ class EnvWrapper:
                 return True, float(curr[2])
 
             curr = self.get_eef_pos()
-            if curr[2] <= target[2] + 0.005:
+            if curr[2] <= target[2] + 0.001:
                 # 已到目标 z, 不再下降
                 logger.info(f"[descend] reached target z={curr[2]:.3f} without contact")
                 return self._finger_object_contact(target_body), float(curr[2])
@@ -1333,16 +1333,21 @@ class EnvWrapper:
     def descend(
         self, point_3d, target_label: Optional[str] = None,
         step_z: float = 0.01, max_steps: int = 25,
+        margin_m: float = 0.015,
     ) -> tuple[bool, float]:
         """从当前 pre-grasp 位下降到 point_3d。
 
         Args:
             point_3d: 目标 3D 点 (世界系)
             target_label: 用于查找对应 body 做接触检测; None 时仅 z 收敛
+            margin_m: 自适应深度余量, 目标 z 额外下降此距离以补偿估计误差
         Returns:
             (descended_ok, z_actual)
         """
         target = np.asarray(point_3d, dtype=np.float32)
+        if margin_m > 0:
+            target[2] -= margin_m
+            logger.info(f"[descend] depth margin={margin_m:.3f}m, adjusted z={target[2]:.3f}")
         target_body: Optional[str] = None
         if target_label:
             try:

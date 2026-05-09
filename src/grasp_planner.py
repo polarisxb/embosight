@@ -97,10 +97,10 @@ class GraspPlanner:
     # ──────────────────────────────────────
 
     _STRATEGY_PARAMS: dict[str, dict] = {
-        "top_down":      {"approach_dir": [0, 0, -1.0], "finger_width": 0.04, "score": 0.75},
-        "gentle_side":   {"approach_dir": [1, 0,  0.0], "finger_width": 0.06, "score": 0.70},
-        "handle_grasp":  {"approach_dir": [1, 0,  0.0], "finger_width": 0.03, "score": 0.70},
-        "scoop_under":   {"approach_dir": [0, 0, -0.3], "finger_width": 0.08, "score": 0.65},
+        "top_down":      {"approach_dir": [0, 0, -1.0], "finger_width": 0.04, "score": 0.75, "depth_margin": 0.015},
+        "gentle_side":   {"approach_dir": [1, 0,  0.0], "finger_width": 0.06, "score": 0.70, "depth_margin": 0.010},
+        "handle_grasp":  {"approach_dir": [1, 0,  0.0], "finger_width": 0.03, "score": 0.70, "depth_margin": 0.015},
+        "scoop_under":   {"approach_dir": [0, 0, -0.3], "finger_width": 0.08, "score": 0.65, "depth_margin": 0.020},
     }
 
     def plan(self, hyp: Hypothesis, env=None) -> list[GraspCandidate]:
