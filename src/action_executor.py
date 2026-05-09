@@ -78,7 +78,9 @@ class ActionExecutor:
 
         # 2. descend
         z_target = float(candidate.point_3d[2])
-        descend_ok, z_actual = env.descend(candidate.point_3d)
+        descend_ok, z_actual = env.descend(
+            candidate.point_3d, target_label=getattr(target, "label", None),
+        )
         if not descend_ok:
             return self._failed_result(
                 candidate, "hit_z_floor",
@@ -88,7 +90,7 @@ class ActionExecutor:
             )
 
         # 3. close gripper
-        env.close_gripper()
+        env.close_gripper(target_label=getattr(target, "label", None))
 
         # 4. lift
         lift_ok, final_z = env.lift()

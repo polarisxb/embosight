@@ -1274,6 +1274,103 @@ class EnvWrapper:
             purpose="抓取后视觉验证",
         )
 
+    # ------------------------------------------------------------------
+    # v1 ActionExecutor / GraspPlanner 适配接口 (Phase 8.5 真 sim 集成)
+    # ------------------------------------------------------------------
+
+    def is_reachable(self, point_3d, approach_dir) -> bool:
+        """简化 IK 可达性判断: sim 里始终返 True, 由 move_arm_to 失败时捕获。"""
+        return True
+
+    def move_to_pre_grasp(self, candidate, height_m: float = 0.10) -> bool:
+        """移动到 candidate 上方 height_m 处 (pre-grasp 高度)。"""
+        pre_pos = (
+            np.asarray(candidate.point_3d, dtype=np.float32)
+            + np.array([0.0, 0.0, height_m], dtype=np.float32)
+        )
+        # 张开夹爪 (避免 close 状态去 pre-grasp)
+        try:
+            self._gripper_action(-1.0, n_steps=8)
+        except Exception:
+            pass
+        return self.move_arm_to(pre_pos, threshold_m=0.03)
+
+    def descend(
+        self, point_3d, target_label: Optional[str] = None,
+        step_z: float = 0.01, max_steps: int = 25,
+    ) -> tuple[bool, float]:
+        """从当前 pre-grasp 位下降到 point_3d。
+
+        Args:
+            point_3d: 目标 3D 点 (世界系)
+            target_label: 用于查找对应 body 做接触检测; None 时仅 z 收敛
+        Returns:
+            (descended_ok, z_actual)
+        """
+        target = np.asarray(point_3d, dtype=np.float32)
+        target_body: Optional[str] = None
+        if target_label:
+            try:
+                type_map = self._get_obj_type_map()
+                # 反查: 找 cat 对应的 body
+                for body, cat in type_map.items():
+                    if cat == target_label:
+                        target_body = body
+                        break
+            except Exception as e:
+                logger.debug(f"[descend] type_map lookup failed: {e}")
+
+        if target_body:
+            return self._descend_until_contact(
+                target, target_body, step_z=step_z, max_steps=max_steps,
+            )
+        # fallback: 无 label, 直接 move_arm_to z=target[2]
+        ok = self.move_arm_to(target, threshold_m=0.01, max_steps=200)
+        return bool(ok), float(self.get_eef_pos()[2])
+
+    def close_gripper(self, target_label: Optional[str] = None) -> bool:
+        """关爪。有 target_label 时走力闭环 (检测物体接触)。"""
+        if target_label:
+            try:
+                type_map = self._get_obj_type_map()
+                target_body = next(
+                    (b for b, c in type_map.items() if c == target_label),
+                    None,
+                )
+                if target_body:
+                    return self._close_gripper_until_grasp(
+                        target_body, max_steps=30, min_close_steps=6,
+                    )
+            except Exception as e:
+                logger.debug(f"[close_gripper] type_map lookup failed: {e}")
+        # fallback: 简单关爪
+        self._gripper_action(1.0, n_steps=15)
+        return True
+
+    def open_gripper(self) -> None:
+        """开爪。"""
+        self._gripper_action(-1.0, n_steps=10)
+
+    def lift(self, height_m: float = 0.10) -> tuple[bool, float]:
+        """从当前位置抬升 height_m (通常 5-10cm)。"""
+        try:
+            curr = self.get_eef_pos()
+            target = (
+                np.asarray(curr, dtype=np.float32)
+                + np.array([0.0, 0.0, height_m], dtype=np.float32)
+            )
+            ok = self.move_arm_to(target, threshold_m=0.02, max_steps=200)
+            return bool(ok), float(self.get_eef_pos()[2])
+        except Exception as e:
+            logger.warning(f"[lift] failed: {e}")
+            return False, 0.0
+
+    def viewpoint_intrinsics(self, viewpoint):
+        """v1 perception 用的相机内参占位。RoboCasa 内参由 mujoco 算出, 此处返 None
+        让 perception 走 fallback (单视角 prior pos)。
+        """
+        return None
+
     def close(self) -> None:
         """清理资源"""
         if self._env is not None:

@@ -60,10 +60,10 @@ def _make_full_agent(decompose_response, vlm_responses, safety_response,
         def move_to_pre_grasp(self, c):
             return True
 
-        def descend(self, p):
+        def descend(self, p, target_label=None):
             return True, float(p[2])
 
-        def close_gripper(self):
+        def close_gripper(self, target_label=None):
             return True
 
         def open_gripper(self):

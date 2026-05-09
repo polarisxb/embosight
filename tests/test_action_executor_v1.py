@@ -36,13 +36,13 @@ class FakeEnv:
         self.calls.append("move_to_pre_grasp")
         return self.ik_ok
 
-    def descend(self, point_3d):
+    def descend(self, point_3d, target_label=None):
         self.calls.append("descend")
         if self.descend_ok:
             return True, point_3d[2]
         return False, point_3d[2] + 0.03   # 卡住
 
-    def close_gripper(self) -> bool:
+    def close_gripper(self, target_label=None) -> bool:
         self.calls.append("close")
         self._gripper_open = False
         return True
