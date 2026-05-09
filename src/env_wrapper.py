@@ -105,6 +105,8 @@ class EnvWrapper:
                 kwargs["layout_ids"] = int(self.config.layout_ids)
             if self.config.style_ids is not None:
                 kwargs["style_ids"] = int(self.config.style_ids)
+            if self.config.seed is not None:
+                kwargs["seed"] = int(self.config.seed)
 
             logger.info(f"创建仿真环境 {self.config.env_name}...")
             self._env = suite.make(**kwargs)

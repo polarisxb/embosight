@@ -105,7 +105,7 @@ def test_reset_applies_seed_before_backend_reset(monkeypatch, tmp_path) -> None:
             return {}
 
     def make(**kwargs):
-        events.append(("make", kwargs["env_name"]))
+        events.append(("make", kwargs["seed"]))
         return FakeBackend()
 
     monkeypatch.setitem(sys.modules, "robocasa", SimpleNamespace())
@@ -116,7 +116,7 @@ def test_reset_applies_seed_before_backend_reset(monkeypatch, tmp_path) -> None:
     env.reset()
 
     assert events == [
-        ("make", "PickPlaceCounterToCabinet"),
+        ("make", 42),
         ("seed", 42),
         ("reset", None),
     ]

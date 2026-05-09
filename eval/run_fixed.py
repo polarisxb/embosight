@@ -71,6 +71,10 @@ def reset_until_expected(
         )
         if expected_object is None or _label_key(actual_object or "") == _label_key(expected_object):
             return actual_object, attempt
+        if attempt < attempts:
+            close_fn = getattr(env, "close", None)
+            if callable(close_fn):
+                close_fn()
     return actual_object, attempts
 
 

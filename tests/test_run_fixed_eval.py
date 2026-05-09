@@ -71,6 +71,9 @@ def test_reset_until_expected_seeds_each_attempt_deterministically():
         def reset(self):
             self.calls.append(("reset", None))
 
+        def close(self):
+            self.calls.append(("close", None))
+
         def _get_obj_type_map(self):
             return {"obj_main": self.objects.pop(0)}
 
@@ -88,6 +91,7 @@ def test_reset_until_expected_seeds_each_attempt_deterministically():
     assert env.calls == [
         ("seed", 42),
         ("reset", None),
+        ("close", None),
         ("seed", 43),
         ("reset", None),
     ]
