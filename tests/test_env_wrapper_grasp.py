@@ -9,6 +9,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from src.env_wrapper import EnvWrapper  # noqa: E402
+from src.world_belief import GraspCandidate  # noqa: E402
 
 
 class PregraspFailEnv(EnvWrapper):
@@ -60,3 +61,32 @@ def test_grasp_at_aborts_when_pre_grasp_move_fails() -> None:
     assert env.move_calls == 1
     assert env.descend_calls == 0
     assert env.close_calls == 0
+
+
+class PregraspThresholdEnv(EnvWrapper):
+    def __init__(self) -> None:
+        self.move_calls = []
+        self.gripper_calls = 0
+
+    def get_eef_pos(self) -> np.ndarray:
+        return np.array([0.0, 0.0, 0.9], dtype=np.float32)
+
+    def move_arm_to(self, target_pos_m, max_steps: int = 800, threshold_m: float = 0.02) -> bool:
+        self.move_calls.append((np.asarray(target_pos_m), max_steps, threshold_m))
+        return True
+
+    def _gripper_action(self, gripper_value: float, n_steps: int = 10) -> None:
+        self.gripper_calls += 1
+
+
+def test_move_to_pre_grasp_accepts_six_cm_boundary() -> None:
+    env = PregraspThresholdEnv()
+    candidate = GraspCandidate(
+        point_3d=np.array([0.5, 0.2, 0.9], dtype=np.float32),
+        approach_dir=np.array([0.0, 0.0, -1.0], dtype=np.float32),
+        finger_width_m=0.04,
+        score=0.8,
+    )
+
+    assert env.move_to_pre_grasp(candidate) is True
+    assert env.move_calls[-1][2] >= 0.06

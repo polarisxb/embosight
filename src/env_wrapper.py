@@ -1309,7 +1309,7 @@ class EnvWrapper:
             self._gripper_action(-1.0, n_steps=8)
         except Exception:
             pass
-        return self.move_arm_to(pre_pos, threshold_m=0.05)
+        return self.move_arm_to(pre_pos, threshold_m=0.06)
 
     def descend(
         self, point_3d, target_label: Optional[str] = None,
