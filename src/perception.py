@@ -184,6 +184,19 @@ class QueryAwareGrounder:
                 label = str(obj.get("label", "unknown"))
                 alts_raw = obj.get("alternatives", [[label, 1.0]])
                 alts = [(str(lbl), float(p)) for lbl, p in alts_raw]
+                # VLM 经常返 alternatives 不含 label 自己 (只给 top-K 备选)。
+                # 此时 label_alternatives 里找不到 primary label, belief.target()
+                # 就返 None → agent 死循环 ask_user。兜底: 若缺, 把 label 按
+                # (1 - sum(alts)) 填入, 保证 label 在分布里。
+                alts_labels = {lbl for lbl, _ in alts}
+                if label not in alts_labels:
+                    alts_sum = sum(p for _, p in alts)
+                    label_prob = max(0.5, 1.0 - alts_sum) if alts_sum < 1.0 else 0.5
+                    # 若插入后总和 > 1, 把 alts 按比例压缩到 1 - label_prob
+                    remaining = 1.0 - label_prob
+                    if alts_sum > 0:
+                        alts = [(lbl, p * remaining / alts_sum) for lbl, p in alts]
+                    alts = [(label, label_prob)] + alts
                 # 温度缩放 + 归一化
                 alts_scaled = _temperature_scale(alts, self.label_temperature)
                 entropy = _shannon([p for _, p in alts_scaled])

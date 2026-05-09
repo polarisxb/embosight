@@ -9,8 +9,10 @@ Your task:
 2. For each object, output:
    - bbox_2d: [x1, y1, x2, y2] in pixels, image is {img_w}x{img_h}
    - label: your best name
-   - alternatives: top 3 (label, probability) tuples summing to <= 1.0
-       Example: [["colander", 0.6], ["strainer", 0.3], ["basket", 0.1]]
+   - alternatives: top 3 (label, probability) tuples summing to ~1.0.
+       **IMPORTANT: alternatives MUST include your primary `label` itself** as the
+       first/highest-probability entry, followed by 1-2 runner-ups.
+       Example (label="tomato"): [["tomato", 0.6], ["peach", 0.25], ["apple", 0.15]]
 
        BE CONSERVATIVE with probabilities — if multiple labels look possible, distribute
        probability mass; do NOT give 0.95 unless the object is unmistakable. When in
