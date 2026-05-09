@@ -115,11 +115,36 @@ def main() -> int:
         config_path=top_cfg.get("viewpoints_path", "configs/viewpoints.yaml"),
     )
 
+    # 必须先 env.reset() 才能读到真实 ep_meta (fake_from_robocasa 依赖)
+    # 否则 _get_obj_type_map 返空 dict, intent 退化为 "我想要那个 unknown"
+    env.reset()
+
+    # fake_from_robocasa 模式: 读 sim 实际物体, 用它替换 query 中的物体名,
+    # 避免 "query说要 apple, sim 里是 lettuce" 的失配。
+    query = args.query
+    if args.user_mode == "fake_from_robocasa":
+        try:
+            tmap = env._get_obj_type_map()
+            real_obj = tmap.get("obj_main")
+            if real_obj and real_obj != "unknown":
+                import logging as _lg
+                _lg.getLogger(__name__).info(
+                    f"[run_agent] sim real target={real_obj!r}, "
+                    f"rewriting query to match (was: {query!r})"
+                )
+                query = f"pick up the {real_obj}"
+        except Exception as e:
+            import logging as _lg
+            _lg.getLogger(__name__).warning(
+                f"[run_agent] failed to read sim obj_type: {e}; "
+                f"using original query {query!r}"
+            )
+
     # User channel
     if args.user_mode == "fake_from_robocasa":
         user_channel = FakeUserChannel.from_robocasa(llm, env)
     elif args.user_mode == "fake_from_query":
-        user_channel = FakeUserChannel.from_query(llm, args.query)
+        user_channel = FakeUserChannel.from_query(llm, query)
     else:
         user_channel = CLIUserChannel()
 
