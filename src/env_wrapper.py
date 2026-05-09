@@ -1283,12 +1283,28 @@ class EnvWrapper:
         return True
 
     def move_to_pre_grasp(self, candidate, height_m: float = 0.05) -> bool:
-        """移动到 candidate 上方 height_m 处 (pre-grasp 高度)。"""
-        pre_pos = (
-            np.asarray(candidate.point_3d, dtype=np.float32)
-            + np.array([0.0, 0.0, height_m], dtype=np.float32)
-        )
-        # 张开夹爪 (避免 close 状态去 pre-grasp)
+        """移动到 candidate 上方 height_m 处 (pre-grasp 高度)。
+
+        先移动底座靠近物体 (xy 平面), 再伸臂。避免物体在臂工作空间外。
+        """
+        target_xy = np.asarray(candidate.point_3d[:2], dtype=np.float32)
+        # 底座先移到物体前方 0.4m (留臂展空间)
+        try:
+            eef = self.get_eef_pos()
+            base_target = np.array([
+                target_xy[0] - 0.4,  # 底座在物体前方
+                target_xy[1],
+                float(eef[2]),
+            ], dtype=np.float32)
+            self.move_arm_to(base_target, threshold_m=0.15, max_steps=600)
+        except Exception as e:
+            logger.debug(f"[pre_grasp] base approach failed: {e}")
+
+        pre_pos = np.array([
+            target_xy[0],
+            target_xy[1],
+            float(candidate.point_3d[2]) + height_m,
+        ], dtype=np.float32)
         try:
             self._gripper_action(-1.0, n_steps=8)
         except Exception:
