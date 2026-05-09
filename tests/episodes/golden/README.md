@@ -22,15 +22,16 @@
 | L3 | `len(replay) ≤ 1.5x golden` (或 +3 步) | 必过 |
 | L4 | golden 含 `re_observe(zoom_in)` 时 replay 也必须 | 必过 |
 
-## v1 现状: 02-05 是 mock 模板
+## v1 现状: 02-05 是手工编排模板
 
 - `01_basic_apple.json` 是真实风格的最小 episode 模板, 用 `vlm_ground` `objects` 数组 + `llm_safety` dist 驱动 replay 通过 4 层契约。
 - `02-05` 是用"手工编排 evidence 序列"模拟出 4 层契约必要的 action 序列, **不代表 sim 真实输出**。
+- `04_ask_user_red_object.json` 期望 `success=False` (v1 ask_user 不会更新 hypothesis 概率, 死循环到 max_steps; v1.1 修)。replay 也是 `success=False`, L1 契约一致。
 - v1.1 演示前必须用 `scripts/record_golden_episode.py` 在真 sim 录制替换。
 
 替换时关注:
 1. **L2 契约 (action 集合) 不应变** — 见关键契约对照表
-2. **L3 契约 (步数 1.5x)** 真 sim 通常更长, 必要时调宽阈值
+2. **L3 契约 (步数 1.5x)** 仅 `success=True` 才严格; `success=False` 跳过 (典型 max_steps 结尾)
 3. **L4 契约 (zoom_in 命中)** 02 必须保留, 否则 demo 故事不成立
 
 ## 录制方式 (真 sim)

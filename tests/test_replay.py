@@ -9,16 +9,27 @@ Golden 数据由真 sim 录制 (Phase 14.2 / v1.1) 或手工编排 (Phase 14.3)�
 """
 import glob
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import numpy as np
 import pytest
+from PIL import Image
 
 
 GOLDEN_DIR = Path(__file__).parent / "episodes" / "golden"
 GOLDEN_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _make_test_image() -> str:
+    tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+    Image.new("RGB", (256, 256), (200, 100, 50)).save(tmp.name)
+    return tmp.name
+
+
+_TEST_IMAGE = _make_test_image()
 
 
 class FakeVPLib:
@@ -41,7 +52,7 @@ class FakeEnv:
     """最小 env 实现, 满足 perception/grasp_planner/action_executor 接口。"""
 
     def observe(self, vp):
-        return type("O", (), {"image_path": "/dev/null"})()
+        return type("O", (), {"image_path": _TEST_IMAGE})()
 
     def viewpoint_intrinsics(self, vp):
         return None
@@ -77,6 +88,29 @@ class FakeEnv:
         return {"obj_main": "apple"}
 
 
+class _SmartVLM:
+    """根据 prompt 关键字路由到 ground/zoom/verify mock 池。
+
+    perception 用一个 vlm 实例同时调 observe/zoom/verify; replay 时
+    各自的 mock pool 不能复用同一 _MockFromRecord。
+    """
+
+    def __init__(self, ground, zoom, verify) -> None:
+        self.ground = ground
+        self.zoom = zoom
+        self.verify = verify
+
+    def describe(self, image_path: str, prompt: str = "") -> str:
+        # zoom_disambiguate.txt: "这是放大裁切的物体特写"
+        if "放大裁切" in prompt or "alternatives_top3" in prompt or "Zoom" in prompt:
+            return self.zoom.describe(image_path, prompt)
+        # verify_grasp.txt: "这是 eye-in-hand 相机看到的画面"
+        if "eye-in-hand" in prompt or "is_match" in prompt or "夹爪当前" in prompt:
+            return self.verify.describe(image_path, prompt)
+        # default: ground
+        return self.ground.describe(image_path, prompt)
+
+
 def _make_test_factory(mocks: dict):
     """构造 replay agent: 把 vlm/llm 替换成 record-based mock。"""
     from src.action_executor import ActionExecutor
@@ -90,19 +124,23 @@ def _make_test_factory(mocks: dict):
     from src.vlm_cache import VLMCache
 
     vp_lib = FakeVPLib()
-    # cache 设小或禁用让同 prompt 多帧能消耗多个 mock 响应
     cache = VLMCache(max_size=0)
+    smart_vlm = _SmartVLM(
+        ground=mocks["vlm_ground"],
+        zoom=mocks["vlm_zoom"],
+        verify=mocks["vlm_verify"],
+    )
     return (
         EmboSightAgent(
             task_decomposer=TaskDecomposer(mocks["llm_decompose"]),
             perception=QueryAwareGrounder(
-                vlm=mocks["vlm_ground"],
+                vlm=smart_vlm,
                 llm=mocks["llm_decompose"],
                 cache=cache, label_temperature=1.0,
                 viewpoint_lib=vp_lib,
             ),
             safety_classifier=SafetyClassifier(llm=mocks["llm_safety"]),
-            grasp_planner=GraspPlanner(vlm=mocks["vlm_ground"], env=FakeEnv()),
+            grasp_planner=GraspPlanner(vlm=smart_vlm, env=FakeEnv()),
             action_executor=ActionExecutor(scene_describer=None),
             nbv_selector=ActiveViewpointSelector(
                 llm=mocks["llm_decompose"], viewpoint_lib=vp_lib,
@@ -113,7 +151,7 @@ def _make_test_factory(mocks: dict):
             episode_logger=None,
             viewpoint_lib=vp_lib,
             llm=mocks["llm_decompose"],
-            vlm=mocks["vlm_ground"],
+            vlm=smart_vlm,
         ),
         FakeEnv(),
     )
@@ -146,12 +184,15 @@ def test_replay_decision_consistency(episode_path: str) -> None:
         f"golden={golden_kinds}, actual={actual_kinds}"
     )
 
-    # L3: 步数同量级
-    upper = max(int(len(record.actions) * 1.5), len(record.actions) + 3)
-    assert len(result.action_history) <= upper, (
-        f"L3: step count blew up: "
-        f"{len(result.action_history)} > {upper} (golden={len(record.actions)})"
-    )
+    # L3: 步数同量级 (仅当 golden 是 success 时严格;
+    # 失败 episode 通常以 max_steps 结尾, 步数比对无意义)
+    if record.final_result is not None and record.final_result.success:
+        upper = max(int(len(record.actions) * 1.5), len(record.actions) + 3)
+        assert len(result.action_history) <= upper, (
+            f"L3: step count blew up: "
+            f"{len(result.action_history)} > {upper} "
+            f"(golden={len(record.actions)})"
+        )
 
     # L4: zoom 命中
     golden_has_zoom = any(

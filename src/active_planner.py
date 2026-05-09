@@ -144,7 +144,8 @@ class ActiveViewpointSelector:
 
         m = re.search(r"-?\d+", raw)
         if not m:
-            return None
+            # LLM 返回不合规, 退化到 candidates[0] (best effort, 见 §6.2)
+            return candidates[0][1]
         idx = int(m.group())
         if idx == -1:
             return None

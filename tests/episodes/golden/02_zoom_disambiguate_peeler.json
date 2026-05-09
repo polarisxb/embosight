@@ -1,0 +1,54 @@
+{
+  "query": "我要那个削皮器",
+  "start_time": 1715200000.0,
+  "snapshots": [
+    {"step": 0, "timestamp": 1715200000.0, "n_hypotheses": 0,
+     "target_summary": null, "most_uncertain_axis": "label",
+     "overall_uncertainty": 1.0, "n_evidence": 0, "open_questions_count": 0}
+  ],
+  "actions": [
+    {"kind": "observe", "strategy": null, "question": null, "metadata": {}},
+    {"kind": "re_observe", "strategy": "zoom_in", "question": null, "metadata": {}},
+    {"kind": "classify_safety", "strategy": null, "question": null, "metadata": {}},
+    {"kind": "plan_grasp_candidates", "strategy": null, "question": null, "metadata": {}},
+    {"kind": "grasp", "strategy": null, "question": null, "metadata": {}}
+  ],
+  "evidence": [
+    {"source": "llm_decompose", "timestamp": 1715200000.1,
+     "raw_payload": {"primary_target": "peeler", "constraints": []},
+     "consumed_by": []},
+    {"source": "vlm_ground", "timestamp": 1715200001.0,
+     "raw_payload": {
+       "objects": [{
+         "bbox_2d": [60, 70, 110, 130], "label": "peeler",
+         "alternatives": [["peeler", 0.5], ["knife", 0.4], ["spoon", 0.1]],
+         "confidence": 0.6, "visible_features": "细长金属"
+       }]
+     },
+     "consumed_by": []},
+    {"source": "vlm_zoom", "timestamp": 1715200002.5,
+     "raw_payload": {
+       "label": "peeler",
+       "alternatives": [["peeler", 0.92], ["knife", 0.08]],
+       "visible_features": "刀刃边带凹槽 (削皮器特征)"
+     },
+     "consumed_by": []},
+    {"source": "llm_safety", "timestamp": 1715200003.0,
+     "raw_payload": {"dist": {"safe": 0.6, "sharp": 0.4}, "entropy": 0.20,
+                     "reasoning": "刃口锋利但用户主动要求"},
+     "consumed_by": []},
+    {"source": "depth_projection", "timestamp": 1715200003.5,
+     "raw_payload": {"n_candidates": 1}, "consumed_by": []},
+    {"source": "grasp_attempt", "timestamp": 1715200004.5,
+     "raw_payload": {"success": true,
+                     "attempt": {"failure_mode": "success",
+                                 "diagnostic": {"z_target": 0.9, "z_actual": 0.9},
+                                 "candidate_source": "geometric_centroid"}},
+     "consumed_by": []}
+  ],
+  "user_qa": [],
+  "final_result": {
+    "success": true, "speech": "已为您拿到 peeler",
+    "n_steps": 5, "elapsed_seconds": 4.5, "failure_reason": null
+  }
+}

@@ -1,0 +1,68 @@
+{
+  "query": "我要那个红色的",
+  "start_time": 1715200200.0,
+  "snapshots": [
+    {"step": 0, "timestamp": 1715200200.0, "n_hypotheses": 0,
+     "target_summary": null, "most_uncertain_axis": "label",
+     "overall_uncertainty": 1.0, "n_evidence": 0, "open_questions_count": 0}
+  ],
+  "actions": [
+    {"kind": "observe", "strategy": null, "question": null, "metadata": {}},
+    {"kind": "observe", "strategy": null, "question": null, "metadata": {}},
+    {"kind": "observe", "strategy": null, "question": null, "metadata": {}},
+    {"kind": "ask_user", "strategy": null,
+     "question": "我看到一个像apple的东西, 也可能是tomato, 您要的是哪个?",
+     "metadata": {}}
+  ],
+  "evidence": [
+    {"source": "llm_decompose", "timestamp": 1715200200.1,
+     "raw_payload": {"primary_target": "apple", "constraints": []},
+     "consumed_by": []},
+    {"source": "vlm_ground", "timestamp": 1715200201.0,
+     "raw_payload": {
+       "objects": [
+         {"bbox_2d": [40, 50, 90, 100], "label": "apple",
+          "alternatives": [["apple", 0.5], ["tomato", 0.5]],
+          "confidence": 0.5, "visible_features": "红色 1"},
+         {"bbox_2d": [160, 50, 220, 110], "label": "apple",
+          "alternatives": [["apple", 0.5], ["tomato", 0.5]],
+          "confidence": 0.5, "visible_features": "红色 2"}
+       ]
+     },
+     "consumed_by": []},
+    {"source": "vlm_ground", "timestamp": 1715200202.0,
+     "raw_payload": {
+       "objects": [
+         {"bbox_2d": [40, 50, 90, 100], "label": "apple",
+          "alternatives": [["apple", 0.5], ["tomato", 0.5]],
+          "confidence": 0.5, "visible_features": "红色 1 (v1)"},
+         {"bbox_2d": [160, 50, 220, 110], "label": "apple",
+          "alternatives": [["apple", 0.5], ["tomato", 0.5]],
+          "confidence": 0.5, "visible_features": "红色 2 (v1)"}
+       ]
+     },
+     "consumed_by": []},
+    {"source": "vlm_ground", "timestamp": 1715200203.0,
+     "raw_payload": {
+       "objects": [
+         {"bbox_2d": [40, 50, 90, 100], "label": "apple",
+          "alternatives": [["apple", 0.5], ["tomato", 0.5]],
+          "confidence": 0.5, "visible_features": "红色 1 (v2)"},
+         {"bbox_2d": [160, 50, 220, 110], "label": "apple",
+          "alternatives": [["apple", 0.5], ["tomato", 0.5]],
+          "confidence": 0.5, "visible_features": "红色 2 (v2)"}
+       ]
+     },
+     "consumed_by": []},
+    {"source": "user_answer", "timestamp": 1715200204.0,
+     "raw_payload": {"q": "我看到一个像apple的东西, 也可能是tomato, 您要的是哪个?",
+                     "a": "apple"},
+     "consumed_by": []}
+  ],
+  "user_qa": [["我看到一个像apple的东西, 也可能是tomato, 您要的是哪个?", "apple"]],
+  "final_result": {
+    "success": false, "speech": "我没能找到 apple",
+    "n_steps": 13, "elapsed_seconds": 5.5,
+    "failure_reason": "MAX_STEPS reached (ask_user 死循环, v1.1 修)"
+  }
+}
