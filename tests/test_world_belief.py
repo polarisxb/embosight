@@ -402,6 +402,23 @@ class TestPrune:
         assert n == 0
         assert b.hypotheses == [h]
 
+    def test_re_observed_hypothesis_not_pruned_as_phantom(self):
+        """re_observe 过的 hypothesis 不是幻觉，即使只有 1 view + 高 entropy。"""
+        b = WorldBelief(user_query="pick up the tupperware")
+        b.decomposed = DecomposedTask(primary_target="tupperware")
+        h = _basic_hyp(label="tupperware", label_e=0.98,
+                       alternatives=[("tupperware", 0.5), ("box", 0.3)])
+        h.observed_in_views = ["v0"]
+        h.times_re_observed = 1  # 被 zoom re-observe 过
+        b.hypotheses = [h]
+        for _ in range(4):
+            b.action_history.append(Action(kind="observe"))
+
+        n = b.prune_phantom_hypotheses()
+
+        assert n == 0
+        assert b.hypotheses == [h]
+
 
 class TestSnapshot:
     def test_snapshot_basic(self):
