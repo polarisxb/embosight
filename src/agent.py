@@ -223,13 +223,9 @@ class EmboSightAgent:
             self._merge_hypotheses_from_evidence(belief, ev)
 
         elif action.kind == "re_observe":
-            try:
-                ev = self.perception.re_observe(
-                    action.target_hypothesis, action.strategy, env, belief,
-                )
-            except NotImplementedError:
-                # Phase 12 之前: re_observe 占位, 退化成 observe
-                ev = self.perception.observe(self.vp_lib[0], env, belief)
+            ev = self.perception.re_observe(
+                action.target_hypothesis, action.strategy, env, belief,
+            )
             action.target_hypothesis.times_re_observed += 1
             belief.evidence.append(ev)
             self._update_hypothesis_from_evidence(action.target_hypothesis, ev)

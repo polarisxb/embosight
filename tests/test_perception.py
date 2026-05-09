@@ -213,3 +213,158 @@ class TestObserve:
         ev = g.observe(FakeVP(), FakeEnv(), belief)
         assert ev.source == "vlm_failed"
         assert "error" in ev.raw_payload
+
+
+class TestReObserve:
+    def test_zoom_in_uses_zoom_prompt(self, tmp_image):
+        import numpy as np
+        from src.perception import QueryAwareGrounder
+        from src.vlm_cache import VLMCache
+        from src.world_belief import (
+            DecomposedTask, Hypothesis, WorldBelief,
+        )
+        vlm = MockVLM(responses=[json.dumps({
+            "label": "apple",
+            "alternatives": [["apple", 0.9], ["pear", 0.1]],
+            "visible_features": "shiny red",
+        })])
+
+        class FakeVP:
+            name = "v0"
+        vp_lib = [FakeVP()]
+        g = QueryAwareGrounder(
+            vlm=vlm, llm=MockLLM([]),
+            cache=VLMCache(), label_temperature=1.0,
+            viewpoint_lib=vp_lib,
+        )
+        h = Hypothesis(
+            object_id="o0", label="apple",
+            label_alternatives=[("apple", 0.5), ("kiwi", 0.5)],
+            label_entropy=0.69,
+            position_3d=np.array([0.5, 0, 0.9]), position_std_m=0.05,
+            bbox_per_view={"v0": (50, 50, 100, 100)},
+            observed_in_views=["v0"],
+        )
+
+        class FakeEnv:
+            def observe(self, vp):
+                return type("O", (), {"image_path": tmp_image})()
+            def viewpoint_intrinsics(self, vp): return None
+        belief = WorldBelief(user_query="x")
+        belief.decomposed = DecomposedTask(primary_target="apple")
+        ev = g.re_observe(h, "zoom_in", FakeEnv(), belief)
+        assert ev.source == "vlm_zoom"
+        assert ev.raw_payload.get("hypotheses"), "zoom 应该返回更新后的 hypothesis dict"
+        new_alts = ev.raw_payload["hypotheses"][0]["label_alternatives"]
+        # alts 来自 vlm 重新评估
+        labels = [lbl for lbl, _ in new_alts]
+        assert "apple" in labels
+
+    def test_parallax_view_returns_evidence(self, tmp_image):
+        import numpy as np
+        from src.perception import QueryAwareGrounder
+        from src.vlm_cache import VLMCache
+        from src.world_belief import (
+            DecomposedTask, Hypothesis, WorldBelief,
+        )
+        vlm = MockVLM(responses=[json.dumps({
+            "bbox_2d": [60, 60, 110, 110], "confidence": 0.85,
+        })])
+
+        class FakeVP0:
+            name = "v0"
+
+        class FakeVP1:
+            name = "v1"
+        vp_lib = [FakeVP0(), FakeVP1()]
+        g = QueryAwareGrounder(
+            vlm=vlm, llm=MockLLM([]),
+            cache=VLMCache(), viewpoint_lib=vp_lib,
+        )
+        h = Hypothesis(
+            object_id="o0", label="apple",
+            label_alternatives=[("apple", 0.95)],
+            label_entropy=0.1,
+            position_3d=np.array([0.5, 0, 0.9]), position_std_m=0.20,
+            observed_in_views=["v0"],
+        )
+
+        class FakeEnv:
+            def observe(self, vp):
+                return type("O", (), {"image_path": tmp_image})()
+            def viewpoint_intrinsics(self, vp): return None
+        belief = WorldBelief(user_query="x")
+        belief.decomposed = DecomposedTask(primary_target="apple")
+        ev = g.re_observe(h, "parallax_view", FakeEnv(), belief)
+        assert ev.source == "vlm_zoom"
+        assert ev.raw_payload.get("viewpoint") == "v1"
+
+    def test_unknown_strategy_raises(self):
+        import numpy as np
+        from src.perception import QueryAwareGrounder
+        from src.vlm_cache import VLMCache
+        from src.world_belief import (
+            DecomposedTask, Hypothesis, WorldBelief,
+        )
+        g = QueryAwareGrounder(vlm=MockVLM([]), llm=MockLLM([]),
+                               cache=VLMCache())
+        h = Hypothesis(
+            object_id="o0", label="x",
+            label_alternatives=[("x", 1.0)], label_entropy=0.0,
+            position_3d=np.zeros(3), position_std_m=0.05,
+        )
+        belief = WorldBelief(user_query="x")
+        belief.decomposed = DecomposedTask(primary_target="x")
+        with pytest.raises(ValueError):
+            g.re_observe(h, "unknown_strategy", env=None, belief=belief)
+
+
+class TestVerifyGrasp:
+    def test_verify_match(self, tmp_image):
+        import numpy as np
+        from src.perception import QueryAwareGrounder
+        from src.vlm_cache import VLMCache
+        from src.world_belief import Hypothesis
+        vlm = MockVLM(responses=[json.dumps({
+            "is_match": True, "confidence": 0.9, "actual_guess": "",
+        })])
+        g = QueryAwareGrounder(vlm=vlm, llm=MockLLM([]),
+                               cache=VLMCache())
+        h = Hypothesis(
+            object_id="o0", label="apple",
+            label_alternatives=[("apple", 0.95)], label_entropy=0.1,
+            position_3d=np.zeros(3), position_std_m=0.05,
+        )
+
+        class FakeEnv:
+            def observe(self, vp):
+                return type("O", (), {"image_path": tmp_image})()
+            def eye_in_hand_viewpoint(self):
+                return type("VP", (), {"name": "eye_in_hand"})()
+        ok, conf = g.verify_grasp(h, FakeEnv())
+        assert ok is True
+        assert conf == pytest.approx(0.9)
+
+    def test_verify_mismatch(self, tmp_image):
+        import numpy as np
+        from src.perception import QueryAwareGrounder
+        from src.vlm_cache import VLMCache
+        from src.world_belief import Hypothesis
+        vlm = MockVLM(responses=[json.dumps({
+            "is_match": False, "confidence": 0.7, "actual_guess": "pear",
+        })])
+        g = QueryAwareGrounder(vlm=vlm, llm=MockLLM([]),
+                               cache=VLMCache())
+        h = Hypothesis(
+            object_id="o0", label="apple",
+            label_alternatives=[("apple", 0.95)], label_entropy=0.1,
+            position_3d=np.zeros(3), position_std_m=0.05,
+        )
+
+        class FakeEnv:
+            def observe(self, vp):
+                return type("O", (), {"image_path": tmp_image})()
+            def eye_in_hand_viewpoint(self):
+                return type("VP", (), {"name": "eye_in_hand"})()
+        ok, conf = g.verify_grasp(h, FakeEnv())
+        assert ok is False

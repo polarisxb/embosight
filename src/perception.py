@@ -68,18 +68,21 @@ class QueryAwareGrounder:
         ground_prompt_path: str = _DEFAULT_GROUND_PROMPT,
         zoom_prompt_path: str = "prompts/perception/zoom_disambiguate.txt",
         parallax_prompt_path: str = "prompts/perception/parallax_localize.txt",
+        pose_prompt_path: str = "prompts/perception/pose_estimation.txt",
         verify_prompt_path: str = "prompts/perception/verify_grasp.txt",
         label_temperature: float = 1.5,
+        viewpoint_lib=None,
     ):
         self.vlm = vlm
         self.llm = llm
         self.cache = cache
         self.label_temperature = label_temperature
         self._ground_template = self._load(ground_prompt_path)
-        # zoom/parallax/verify prompts: Phase 12 用; 此处仅记路径
         self._zoom_path = zoom_prompt_path
         self._parallax_path = parallax_prompt_path
+        self._pose_path = pose_prompt_path
         self._verify_path = verify_prompt_path
+        self._vp_lib = viewpoint_lib
         self._next_obj_id = 0
 
     @staticmethod
@@ -240,11 +243,210 @@ class QueryAwareGrounder:
         }
 
     # ──────────────────────────────────────
-    # re_observe / verify_grasp - Phase 12 实现
+    # re_observe (zoom / parallax / parallax_for_pose)
     # ──────────────────────────────────────
 
-    def re_observe(self, target: Hypothesis, strategy: str, env, belief: WorldBelief) -> Evidence:
-        raise NotImplementedError("re_observe implemented in Phase 12")
+    def re_observe(
+        self, target: Hypothesis, strategy: str, env, belief: WorldBelief,
+    ) -> Evidence:
+        if strategy == "zoom_in":
+            return self._zoom_observe(target, env, belief)
+        if strategy == "parallax_view":
+            return self._parallax_observe(target, env, belief, for_pose=False)
+        if strategy == "parallax_for_pose":
+            return self._parallax_observe(target, env, belief, for_pose=True)
+        raise ValueError(f"unknown re_observe strategy: {strategy}")
+
+    def _zoom_observe(
+        self, target: Hypothesis, env, belief: WorldBelief,
+    ) -> Evidence:
+        vp_name = target.observed_in_views[0] if target.observed_in_views else "v0"
+        vp = self._vp_by_name(vp_name)
+        bbox = target.bbox_per_view.get(vp_name)
+        try:
+            obs = env.observe(vp)
+        except Exception as e:
+            return Evidence(source="vlm_failed", timestamp=time.time(),
+                            raw_payload={"error": str(e), "stage": "zoom_observe"})
+        # bbox 缺失 → 退化成全图 (但仍走 zoom prompt)
+        if bbox is None:
+            image_path = getattr(obs, "image_path", str(obs))
+        else:
+            try:
+                image_path = self._crop_image(
+                    getattr(obs, "image_path", str(obs)), bbox, padding=10,
+                )
+            except Exception as e:
+                return Evidence(
+                    source="vlm_failed", timestamp=time.time(),
+                    raw_payload={"error": str(e), "stage": "crop"},
+                )
+        zoom_template = self._load(self._zoom_path) or "Zoom prompt missing"
+        prompt = (
+            zoom_template
+            .replace("{label}", target.label)
+            .replace(
+                "{alternatives_top3}",
+                ", ".join(
+                    f"{lbl}({p:.2f})" for lbl, p in target.label_alternatives[:3]
+                ),
+            )
+        )
+        try:
+            raw = self.vlm.describe(image_path, prompt=prompt)
+        except Exception as e:
+            return Evidence(source="vlm_failed", timestamp=time.time(),
+                            raw_payload={"error": str(e), "stage": "vlm_call"})
+        data = self._extract_json(raw)
+        if data is None:
+            return Evidence(
+                source="vlm_zoom", timestamp=time.time(),
+                raw_payload={"parse_failed": True, "raw": raw[:500]},
+            )
+        new_alts_raw = data.get("alternatives", [])
+        new_alts = [(str(lbl), float(p)) for lbl, p in new_alts_raw]
+        new_alts = _temperature_scale(new_alts, self.label_temperature)
+        new_alts = sorted(new_alts, key=lambda x: x[1], reverse=True)
+        return Evidence(
+            source="vlm_zoom", timestamp=time.time(),
+            raw_payload={
+                "hypotheses": [{
+                    "object_id": target.object_id,
+                    "label": new_alts[0][0] if new_alts else target.label,
+                    "label_alternatives": new_alts,
+                    "label_entropy": _shannon([p for _, p in new_alts]),
+                    "position_3d": target.position_3d.tolist(),
+                    "position_std_m": target.position_std_m,
+                    "bbox_per_view": {
+                        k: list(v) for k, v in target.bbox_per_view.items()
+                    },
+                    "observed_in_views": list(target.observed_in_views),
+                    "visible_features": data.get("visible_features", ""),
+                }],
+            },
+        )
+
+    def _parallax_observe(
+        self, target: Hypothesis, env, belief: WorldBelief, for_pose: bool,
+    ) -> Evidence:
+        used = set(target.observed_in_views)
+        next_vp = None
+        if self._vp_lib:
+            for i in range(len(self._vp_lib)):
+                vp = self._vp_lib[i]
+                if getattr(vp, "name", str(vp)) not in used:
+                    next_vp = vp
+                    break
+        if next_vp is None:
+            return Evidence(
+                source="vlm_failed", timestamp=time.time(),
+                raw_payload={"reason": "no parallax viewpoint available"},
+            )
+        try:
+            obs = env.observe(next_vp)
+        except Exception as e:
+            return Evidence(
+                source="vlm_failed", timestamp=time.time(),
+                raw_payload={"error": str(e), "stage": "parallax_observe"},
+            )
+        image_path = getattr(obs, "image_path", str(obs))
+        img_w, img_h = 256, 256
+        try:
+            from PIL import Image
+            with Image.open(image_path) as im:
+                img_w, img_h = im.size
+        except Exception:
+            pass
+        vp_name = getattr(next_vp, "name", str(next_vp))
+        if for_pose:
+            template = self._load(self._pose_path) or ""
+            prompt = (
+                template
+                .replace("{viewpoint_name}", vp_name)
+                .replace("{label}", target.label)
+            )
+        else:
+            template = self._load(self._parallax_path) or ""
+            prompt = (
+                template
+                .replace("{viewpoint_name}", vp_name)
+                .replace("{label}", target.label)
+                .replace("{pos_x}", f"{target.position_3d[0]:.2f}")
+                .replace("{pos_y}", f"{target.position_3d[1]:.2f}")
+                .replace("{pos_z}", f"{target.position_3d[2]:.2f}")
+                .replace("{pos_std}", f"{target.position_std_m:.2f}")
+                .replace("{img_w}", str(img_w))
+                .replace("{img_h}", str(img_h))
+            )
+        try:
+            raw = self.vlm.describe(image_path, prompt=prompt)
+        except Exception as e:
+            return Evidence(
+                source="vlm_failed", timestamp=time.time(),
+                raw_payload={"error": str(e), "stage": "vlm_call"},
+            )
+        return Evidence(
+            source="vlm_zoom", timestamp=time.time(),
+            raw_payload={
+                "viewpoint": vp_name,
+                "raw_vlm_text": raw[:500],
+                "for_pose": for_pose,
+            },
+        )
 
     def verify_grasp(self, target: Hypothesis, env) -> tuple[bool, float]:
-        raise NotImplementedError("verify_grasp implemented in Phase 12")
+        try:
+            obs = env.observe(env.eye_in_hand_viewpoint())
+        except Exception:
+            return True, 1.0
+        image_path = getattr(obs, "image_path", str(obs))
+        template = self._load(self._verify_path) or ""
+        alts = ", ".join(
+            f"{lbl}({p:.2f})" for lbl, p in target.label_alternatives[:3]
+        )
+        prompt = (
+            template
+            .replace("{expected_label}", target.label, 1)
+            .replace("{expected_label}", target.label)
+            .replace("{alternatives}", alts)
+        )
+        try:
+            raw = self.vlm.describe(image_path, prompt=prompt)
+        except Exception:
+            return True, 1.0
+        data = self._extract_json(raw)
+        if data is None:
+            return True, 1.0
+        return bool(data.get("is_match", True)), float(data.get("confidence", 1.0))
+
+    # ──────────────────────────────────────
+    # helpers (zoom 用)
+    # ──────────────────────────────────────
+
+    def _vp_by_name(self, name: str):
+        if not self._vp_lib:
+            return None
+        for vp in self._vp_lib:
+            if getattr(vp, "name", str(vp)) == name:
+                return vp
+        try:
+            return self._vp_lib[0]
+        except (IndexError, TypeError):
+            return None
+
+    @staticmethod
+    def _crop_image(
+        image_path: str, bbox: tuple[int, int, int, int], padding: int = 10,
+    ) -> str:
+        from PIL import Image
+        import tempfile
+        with Image.open(image_path) as im:
+            x1, y1, x2, y2 = bbox
+            x1 = max(0, x1 - padding)
+            y1 = max(0, y1 - padding)
+            x2 = min(im.width, x2 + padding)
+            y2 = min(im.height, y2 + padding)
+            crop = im.crop((x1, y1, x2, y2))
+        tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+        crop.save(tmp.name)
+        return tmp.name
