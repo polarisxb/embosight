@@ -311,21 +311,15 @@ class WorldBelief:
                 or target_key in _label_key(h.label)
             )
             prob = 0.0
+            # 搜索 ALL alternatives (zoom 可能改变 top label)
             if h.label_alternatives:
-                top_label, top_prob = max(h.label_alternatives, key=lambda item: item[1])
-                top_matches = (
-                    target_word in top_label.lower()
-                    or target_key in _label_key(top_label)
-                )
-                if top_matches:
-                    prob = top_prob
+                for lbl, p in h.label_alternatives:
+                    if p >= 0.20 and (
+                        target_word in lbl.lower() or target_key in _label_key(lbl)
+                    ):
+                        prob = max(prob, p)
             if label_matches:
-                alt_prob = next(
-                    (p for lbl, p in h.label_alternatives
-                     if target_word in lbl.lower() or target_key in _label_key(lbl)),
-                    0.0,
-                )
-                prob = max(prob, alt_prob, 0.5)
+                prob = max(prob, 0.5)
             if prob > 0:
                 prob = max(prob, 0.5)
                 scored.append((prob, h))

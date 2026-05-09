@@ -369,10 +369,25 @@ class EmboSightAgent:
             d = ev.raw_payload["hypotheses"][0]
             new_alts = [(lbl, p) for lbl, p in d.get("label_alternatives", [])]
             if new_alts:
-                h.label_alternatives = new_alts
-                h.label = new_alts[0][0]
+                # Merge with existing alternatives (zoom may drop original labels)
+                new_dict = dict(new_alts)
+                merged: dict[str, float] = {}
+                for lbl, p in h.label_alternatives:
+                    if lbl in new_dict:
+                        merged[lbl] = (p + new_dict[lbl]) / 2
+                    else:
+                        merged[lbl] = p / 2  # not confirmed by zoom
+                for lbl, p in new_alts:
+                    if lbl not in merged:
+                        merged[lbl] = p / 2  # new from zoom
+                total = sum(merged.values()) or 1.0
+                h.label_alternatives = sorted(
+                    ((lbl, p / total) for lbl, p in merged.items()),
+                    key=lambda x: x[1], reverse=True,
+                )
+                h.label = h.label_alternatives[0][0]
                 from src.perception import _shannon
-                h.label_entropy = _shannon([p for _, p in new_alts])
+                h.label_entropy = _shannon([p for _, p in h.label_alternatives])
 
     def _latest_grasp_succeeded(self, belief: WorldBelief) -> bool:
         h = belief.target()
