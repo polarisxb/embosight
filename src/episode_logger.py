@@ -138,5 +138,48 @@ class EpisodeLogger:
     
     @classmethod
     def replay(cls, json_path: str, agent_factory) -> EpisodeResult:
-        """Phase 14 实现完整 mock 重放; v1 仅占位。"""
-        raise NotImplementedError("replay implemented in Phase 14")
+        """从 golden episode 回放 → 跑 agent.run, 返回新 result。
+
+        agent_factory: callable(mocks: dict) -> (EmboSightAgent, env)。
+        mocks 字典含 'vlm_ground' / 'vlm_zoom' / 'vlm_verify' /
+        'llm_safety' / 'llm_decompose' / 'user_answer' 6 个 record-driven mock。
+        """
+        record = cls.load(json_path)
+        mocks = {
+            "vlm_ground": _MockFromRecord(record, "vlm_ground"),
+            "vlm_zoom":   _MockFromRecord(record, "vlm_zoom"),
+            "vlm_verify": _MockFromRecord(record, "vlm_verify"),
+            "llm_safety": _MockFromRecord(record, "llm_safety"),
+            "llm_decompose": _MockFromRecord(record, "llm_decompose"),
+            "user_answer": _MockFromRecord(record, "user_answer"),
+        }
+        agent, env = agent_factory(mocks)
+        return agent.run(record.query, env)
+
+
+class _MockFromRecord:
+    """从 EpisodeRecord 的 evidence 序列回放某 source 的输出。"""
+
+    def __init__(self, record: EpisodeRecord, source: str) -> None:
+        self._responses: list[str] = []
+        for ev in record.evidence:
+            if ev.source == source:
+                self._responses.append(
+                    json.dumps(ev.raw_payload, ensure_ascii=False)
+                )
+        # user_answer 特殊: 直接取 raw_payload['a']
+        if source == "user_answer":
+            self._responses = []
+            for ev in record.evidence:
+                if ev.source == "user_answer":
+                    self._responses.append(str(ev.raw_payload.get("a", "")))
+
+    def describe(self, image_path: str, prompt: str = "") -> str:
+        if not self._responses:
+            return '{"objects": []}'
+        return self._responses.pop(0)
+
+    def generate(self, prompt: str, system: str = "", **kw) -> str:
+        if not self._responses:
+            return "{}"
+        return self._responses.pop(0)
