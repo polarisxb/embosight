@@ -216,6 +216,7 @@ class EmboSightAgent:
             self.logger.log_action_start(
                 action, belief.snapshot(len(belief.action_history)),
             )
+        _ev_pre = len(belief.evidence)
 
         if action.kind == "observe":
             ev = self.perception.observe(action.viewpoint, env, belief)
@@ -306,6 +307,14 @@ class EmboSightAgent:
 
         # prune phantom 每轮 (Edge 9.2)
         belief.prune_phantom_hypotheses()
+
+        # 把本轮新增的 evidence 同步给 logger (Phase 14 replay 依赖)
+        if self.logger:
+            for _ev in belief.evidence[_ev_pre:]:
+                try:
+                    self.logger.log_evidence(_ev)
+                except Exception as e:
+                    logger.warning(f"[agent] log_evidence failed: {e}")
 
         if self.logger:
             self.logger.log_action_end(
