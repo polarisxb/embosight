@@ -46,12 +46,16 @@ def _shannon(probs: list[float]) -> float:
     return h
 
 
-def _temperature_scale(alts: list[tuple[str, float]], tau: float) -> list[tuple[str, float]]:
-    if tau <= 0:
-        tau = 1.0
-    vals = [(lbl, max(p, 1e-9) ** (1.0 / tau)) for lbl, p in alts]
-    s = sum(p for _, p in vals)
-    return [(lbl, p / s) for lbl, p in vals]
+def _temperature_scale(probs: list[tuple[str, float]],
+                       tau: float) -> list[tuple[str, float]]:
+    """温度缩放 (F3): p_i' = p_i^(1/τ) / Σ p_j^(1/τ)。τ=1.0 即归一化但不重塑。"""
+    if tau == 1.0:
+        total = sum(p for _, p in probs) or 1.0
+        return [(lbl, p / total) for lbl, p in probs]
+    inv = 1.0 / tau
+    raised = [(lbl, p ** inv if p > 0 else 0.0) for lbl, p in probs]
+    s = sum(p for _, p in raised) or 1.0
+    return [(lbl, p / s) for lbl, p in raised]
 
 
 def _label_key(text: str) -> str:
