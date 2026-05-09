@@ -374,6 +374,34 @@ class TestPrune:
         n = b.prune_phantom_hypotheses()
         assert n == 0
 
+    def test_successfully_grasped_target_not_pruned_as_phantom(self):
+        b = WorldBelief(user_query="pick up the tupperware")
+        b.decomposed = DecomposedTask(primary_target="tupperware")
+        c = GraspCandidate(point_3d=np.array([0.5,0,0.9]),
+                           approach_dir=np.array([0,0,-1]),
+                           finger_width_m=0.04, score=0.75,
+                           source="vlm_top_grasp")
+        h = _basic_hyp(label="tupperware", label_e=0.98,
+                       candidates=[c],
+                       alternatives=[("tupperware", 0.5), ("box", 0.3)])
+        h.observed_in_views = ["v1"]
+        h.grasp_attempts = [
+            GraspAttempt(
+                timestamp=1.0,
+                candidate=c,
+                failure_mode="success",
+                end_effector_pose_reached=(0.0,) * 6,
+            ),
+        ]
+        b.hypotheses = [h]
+        for _ in range(4):
+            b.action_history.append(Action(kind="observe"))
+
+        n = b.prune_phantom_hypotheses()
+
+        assert n == 0
+        assert b.hypotheses == [h]
+
 
 class TestSnapshot:
     def test_snapshot_basic(self):

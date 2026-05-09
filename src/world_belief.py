@@ -496,6 +496,7 @@ class WorldBelief:
             if not (
                 len(h.observed_in_views) <= 1
                 and h.label_entropy > self.PRUNE_PHANTOM_ENTROPY
+                and not h.grasp_attempts
             )
         ]
         return before - len(self.hypotheses)
