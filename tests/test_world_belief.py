@@ -162,6 +162,14 @@ class TestWorldBeliefTarget:
         b.hypotheses = [h]
         assert b.target() is h
     
+    def test_target_matches_underscore_and_space_variants(self):
+        b = WorldBelief(user_query="pick up the sugar_cube")
+        b.decomposed = DecomposedTask(primary_target="sugar_cube")
+        h = _basic_hyp(label="sugar cube",
+                       alternatives=[("sugar cube", 0.85), ("button", 0.05)])
+        b.hypotheses = [h]
+        assert b.target() is h
+    
     def test_top1_top2_close_returns_none(self):
         """top1 概率与 top2 差 < 0.2 → 模糊 (9.12)。"""
         b = WorldBelief(user_query="拿苹果")

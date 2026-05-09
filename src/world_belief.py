@@ -29,6 +29,10 @@ def _shannon(probs: list[float]) -> float:
     return h
 
 
+def _label_key(text: str) -> str:
+    return "".join(ch for ch in text.lower() if ch.isalnum())
+
+
 # ============================================================
 # 4.1 Pose / GraspCandidate / GraspAttempt
 # ============================================================
@@ -296,14 +300,15 @@ class WorldBelief:
         if not self.hypotheses or not self.decomposed:
             return None
         target_word = self.decomposed.primary_target.lower()
+        target_key = _label_key(target_word)
         scored: list[tuple[float, Hypothesis]] = []
         for h in self.hypotheses:
             prob = next(
                 (p for lbl, p in h.label_alternatives
-                 if target_word in lbl.lower()),
+                 if target_word in lbl.lower() or target_key in _label_key(lbl)),
                 0.0,
             )
-            if target_word in h.label.lower():
+            if target_word in h.label.lower() or target_key in _label_key(h.label):
                 prob = max(prob, 0.5)
             if prob > 0:
                 scored.append((prob, h))
