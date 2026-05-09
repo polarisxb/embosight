@@ -324,13 +324,13 @@ class TestEdgeCases:
                            finger_width_m=0.04, score=0.9)
         h = _basic_hyp(label="peeler",
                        alternatives=[("peeler", 0.85)])
-        h.label_entropy = 0.20    # 普通模式 < 0.30 confident, high-risk 模式 > 0.15 不 confident
+        h.label_entropy = 0.60    # 普通 < 0.80 confident, high-risk > 0.50 不 confident
         h.position_std_m = 0.02
         h.safety_dist = {"sharp": 0.7, "safe": 0.3}
         h.safety_entropy = 0.10
         h.grasp_candidates = [c]
         b.hypotheses = [h]
-        # high_risk 阈值收紧 label=0.15, label_entropy=0.20 > 0.15 → 不 confident
+        # high_risk 阈值收紧 label=0.50, label_entropy=0.60 > 0.50 → 不 confident
         assert b.is_confident_to_act() is False
     
     def test_merge_distance_boundary(self):

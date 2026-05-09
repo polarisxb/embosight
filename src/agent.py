@@ -122,9 +122,10 @@ class EmboSightAgent:
         axis = belief.most_uncertain_axis()
 
         # 兜底: label/pos/safety 都 confident 但 grasp 没 plan
-        if (target.label_entropy < 0.30
-                and target.position_std_m < 0.05
-                and target.safety_entropy < 0.30
+        # 阈值与 WorldBelief.DEFAULT_THRESHOLDS 对齐 (真 VLM 在 sim 上的典型输出)
+        if (target.label_entropy < 0.80
+                and target.position_std_m < 0.10
+                and target.safety_entropy < 0.50
                 and target.grasp_uncertainty is None):
             return Action(kind="plan_grasp_candidates", target_hypothesis=target)
 

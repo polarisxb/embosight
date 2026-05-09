@@ -271,11 +271,15 @@ class WorldBelief:
     user_constraints: list[str] = field(default_factory=list)
     
     # ──── 默认阈值 (可被 _dynamic_thresholds 覆盖) ────
+    # label/safety 按 nat-base entropy 设定:
+    #   label=0.80 对应 top-1 ~0.60 (VLM 对 sim 图像典型输出)
+    #   safety=0.50 对应 safety_dist 4 类分布的中等确信
+    # 旧值 0.30 要求 top-1 > 0.94, 对 VLM 在 sim 上不现实
     DEFAULT_THRESHOLDS = {
-        "label": 0.30, "position": 0.05, "safety": 0.30, "grasp": 0.30,
+        "label": 0.80, "position": 0.10, "safety": 0.50, "grasp": 0.40,
     }
     HIGH_RISK_THRESHOLDS = {
-        "label": 0.15, "position": 0.03, "safety": 0.15, "grasp": 0.20,
+        "label": 0.50, "position": 0.05, "safety": 0.30, "grasp": 0.25,
     }
     AMBIGUITY_PROB_GAP = 0.20      # top1/top2 概率差 < 此值 → 模糊
     

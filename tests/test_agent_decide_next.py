@@ -99,8 +99,8 @@ class TestDecideNext:
         agent = _make_agent()
         h = Hypothesis(
             object_id="o0", label="apple",
-            label_alternatives=[("apple", 0.5), ("kiwi", 0.5)],
-            label_entropy=0.69,
+            label_alternatives=[("apple", 0.35), ("kiwi", 0.35), ("pear", 0.30)],
+            label_entropy=1.10,   # > 0.80 阈值, 触发 zoom 而非兜底
             position_3d=np.array([0.5, 0, 0.9]), position_std_m=0.02,
             safety_entropy=0.1,
         )
