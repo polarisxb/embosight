@@ -263,10 +263,27 @@ class EmboSightAgent:
                 if not verify_ok:
                     result.attempt.failure_mode = "verify_mismatch"
                     result.attempt.diagnostic["verify_confidence"] = conf
-                    action.target_hypothesis.label_entropy = max(
-                        action.target_hypothesis.label_entropy, 0.6,
-                    )
-                    action.target_hypothesis.times_re_observed += 1
+                    # 推平 alternatives 让 entropy 持久化 (否则下次 merge 会
+                    # 从 alternatives 重算 entropy, 抹掉这里的设置)
+                    h = action.target_hypothesis
+                    if h.label_alternatives and h.label_alternatives[0][1] > 0.5:
+                        new_alts = [(h.label_alternatives[0][0], 0.5)]
+                        rest_total = sum(
+                            p for _, p in h.label_alternatives[1:]
+                        )
+                        if rest_total > 0:
+                            scale = 0.5 / rest_total
+                            new_alts.extend(
+                                (lbl, p * scale)
+                                for lbl, p in h.label_alternatives[1:]
+                            )
+                        else:
+                            new_alts.append(("not_" + h.label, 0.5))
+                        h.label_alternatives = new_alts
+                        from src.perception import _shannon
+                        h.label_entropy = _shannon([p for _, p in new_alts])
+                    h.label_entropy = max(h.label_entropy, 0.6)
+                    h.times_re_observed += 1
                     self.executor.release_and_retreat(env)
             belief.evidence.append(Evidence(
                 source="grasp_attempt", timestamp=time.time(),

@@ -222,9 +222,10 @@ class QueryAwareGrounder:
     ) -> tuple[np.ndarray, float]:
         """粗略 position 估计: 单视角先用 prior。
 
-        真实多视角投影在 Phase 12 通过 src/projection.py 实现。
+        v1 mock-friendly: std=0.03m (低于 thr.position=0.05); 真实 single-view
+        depth 估计 ~10cm, 真实多视角投影在 Phase 12 通过 src/projection.py 实现。
         """
-        return np.array([0.0, 0.0, 0.9], dtype=np.float32), 0.10
+        return np.array([0.0, 0.0, 0.9], dtype=np.float32), 0.03
 
     @staticmethod
     def _hyp_to_dict(h: Hypothesis) -> dict[str, Any]:

@@ -114,8 +114,13 @@ class Hypothesis:
     
     @property
     def grasp_feasibility(self) -> float:
-        """剩余可用候选中分数最高者。失败过的不重复试。"""
-        used = {self._cand_key(a.candidate) for a in self.grasp_attempts}
+        """剩余可用候选中分数最高者。物理失败过的不重复试; verify_mismatch
+        是身份识别错而非物理失败, 同 candidate 物理上仍可用, 不计入 used。
+        """
+        used = {
+            self._cand_key(a.candidate) for a in self.grasp_attempts
+            if a.failure_mode != "verify_mismatch"
+        }
         unused = [c for c in self.grasp_candidates
                   if self._cand_key(c) not in used]
         return max((c.score for c in unused), default=0.0)
@@ -128,12 +133,14 @@ class Hypothesis:
         不参与 most_uncertain_axis 排序, 也不阻止 is_confident_to_act 的非 grasp 轴
         confident 判定; 避免 episode 初期 4 轴默认 1.0 时 grasp 占 max 而过早 plan_grasp。
         
-        一旦 plan 过 (即使空 candidates) 或有过 attempt: 失败 ≥2 次强制 1.0; 否则 1-feasibility。
+        一旦 plan 过 (即使空 candidates) 或有过 attempt: 物理失败 ≥2 次强制 1.0; 否则
+        1-feasibility。verify_mismatch 不算物理失败 (物体认错而非抓不住)。
         """
         if not self.grasp_candidates and not self.grasp_attempts:
             return None
         n_fail = sum(
-            1 for a in self.grasp_attempts if a.failure_mode != "success"
+            1 for a in self.grasp_attempts
+            if a.failure_mode not in {"success", "verify_mismatch"}
         )
         if n_fail >= 2:
             return 1.0
