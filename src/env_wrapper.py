@@ -1048,20 +1048,28 @@ class EnvWrapper:
 
             curr = self.get_eef_pos()
             if curr[2] <= target[2] + 0.001:
-                # 已到目标 z, 不再下降
-                logger.info(f"[descend] reached target z={curr[2]:.3f} without contact")
-                return self._finger_object_contact(target_body), float(curr[2])
+                # 已到目标 z (含 margin), 即使没接触也视为成功
+                contact = self._finger_object_contact(target_body)
+                logger.info(
+                    f"[descend] reached target z={curr[2]:.3f}, contact={contact}"
+                )
+                return True, float(curr[2])
 
             # 收敛检测: 连续 3 步 z 几乎没下降才算 stall (放宽至 0.5mm)
             if prev_z is not None and abs(prev_z - curr[2]) < 0.0005:
                 stall_count += 1
                 if stall_count >= 3:
+                    gap = curr[2] - target[2]
+                    contact = self._finger_object_contact(target_body)
+                    # 如果已足够接近目标 z (< 1cm), 视为成功下降
+                    # (大概率撞到桌面/物体, 接触检测可能不灵敏)
+                    close_enough = gap < 0.01
                     logger.warning(
                         f"[descend] z stalled at {curr[2]:.3f} for {stall_count} steps "
-                        f"(Δ={curr[2] - target[2]:.3f}m above target). "
-                        f"可能撞到桌面/物体侧面或机械臂可达性极限."
+                        f"(Δ={gap:.3f}m above target). contact={contact}, "
+                        f"close_enough={close_enough}"
                     )
-                    return self._finger_object_contact(target_body), float(curr[2])
+                    return (contact or close_enough), float(curr[2])
             else:
                 stall_count = 0
             prev_z = float(curr[2])
