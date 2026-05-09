@@ -61,8 +61,8 @@
   ],
   "user_qa": [["我看到一个像apple的东西, 也可能是tomato, 您要的是哪个?", "apple"]],
   "final_result": {
-    "success": false, "speech": "我没能找到 apple",
-    "n_steps": 13, "elapsed_seconds": 5.5,
-    "failure_reason": "MAX_STEPS reached (ask_user 死循环, v1.1 修)"
+    "success": true, "speech": "已为您拿到 apple",
+    "n_steps": 5, "elapsed_seconds": 5.5,
+    "failure_reason": null
   }
 }

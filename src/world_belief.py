@@ -291,13 +291,14 @@ class WorldBelief:
     
     # ──── 查询接口 ──────────────────────────
     
-    def target(self) -> Optional[Hypothesis]:
+    def target(self, *, ignore_ambiguity: bool = False) -> Optional[Hypothesis]:
         """返回最匹配 user_query 的 hypothesis。
         
         - 如无 decomposed 或无 hypotheses, None
         - 取 label_alternatives 里 primary_target 的概率最大者
         - 副分: 当前 label 文本含 primary_target 也算 0.5
         - top1 与 top2 的概率差 < 0.2 → 视为模糊, 返回 None (Edge case 9.12)
+        - ignore_ambiguity=True 跳过模糊检查 (用于 consume_user_answer)
         """
         if not self.hypotheses or not self.decomposed:
             return None
@@ -331,8 +332,9 @@ class WorldBelief:
         if not scored:
             return None
         scored.sort(key=lambda t: t[0], reverse=True)
-        if len(scored) >= 2 and (scored[0][0] - scored[1][0]) < self.AMBIGUITY_PROB_GAP:
-            return None
+        if not ignore_ambiguity:
+            if len(scored) >= 2 and (scored[0][0] - scored[1][0]) < self.AMBIGUITY_PROB_GAP:
+                return None
         return scored[0][1]
     
     def is_confident_to_act(
@@ -547,7 +549,9 @@ class WorldBelief:
             return
         h = self.target()
         if h is None:
-            return
+            h = self.target(ignore_ambiguity=True)
+            if h is None:
+                return
         if any(a.failure_mode == "verify_mismatch" for a in h.grasp_attempts):
             return
         if not self._answer_confirms_target(answer, h):

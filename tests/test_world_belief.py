@@ -541,3 +541,38 @@ class TestEdgeCases:
         b.consume_user_answer("您要的是哪个?", "都不是", llm=None)
 
         assert h.label_entropy == 0.95  # unchanged
+
+    def test_consume_user_answer_works_despite_ambiguous_hypotheses(self):
+        """两个 hypothesis 都匹配 target 导致 target() 返回 None 时,
+        consume_user_answer 应 fallback 到 ignore_ambiguity 模式。"""
+        b = WorldBelief(user_query="pick up the tupperware")
+        b.decomposed = DecomposedTask(primary_target="tupperware")
+        h1 = _basic_hyp(
+            label="tupperware",
+            label_e=0.95,
+            safe_e=0.2,
+            alternatives=[("tupperware", 0.50), ("box", 0.30), ("container", 0.20)],
+        )
+        h1.position_3d = np.array([0.3, -3.2, 0.9])
+        h2 = _basic_hyp(
+            label="tupperware",
+            label_e=0.95,
+            safe_e=0.2,
+            alternatives=[("tupperware", 0.50), ("plastic_box", 0.30), ("lid", 0.20)],
+        )
+        h2.position_3d = np.array([0.5, -3.0, 0.9])  # >0.15m away, won't merge
+        b.hypotheses = [h1, h2]
+
+        # Confirm target() normally returns None (ambiguity)
+        assert b.target() is None
+
+        b.consume_user_answer(
+            "我没在场景里看到tupperware, 是不是被挡住了?",
+            "就在台面上",
+            llm=None,
+        )
+
+        # Should have reduced entropy on h1 (first match) despite ambiguity
+        assert h1.label_entropy < 0.80
+        # And now target() should resolve to h1
+        assert b.target() is h1
