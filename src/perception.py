@@ -223,14 +223,26 @@ class QueryAwareGrounder:
 
     @staticmethod
     def _extract_json(raw: str) -> Optional[dict]:
-        # 容忍 markdown fence; 用 greedy 抓最外层 {...}
+        """兼容 {obj} 和 [...] 两种 VLM 输出; 数组格式包装为 {"objects": arr}。"""
+        # 先试 {obj} 格式 (容忍 markdown fence)
         m = re.search(r"\{.*\}", raw, re.DOTALL)
-        if not m:
-            return None
-        try:
-            return json.loads(m.group())
-        except json.JSONDecodeError:
-            return None
+        if m:
+            try:
+                data = json.loads(m.group())
+                if isinstance(data, dict):
+                    return data
+            except json.JSONDecodeError:
+                pass
+        # fallback: [...] 纯数组格式 (VLM 有时直接吐列表)
+        m = re.search(r"\[.*\]", raw, re.DOTALL)
+        if m:
+            try:
+                arr = json.loads(m.group())
+                if isinstance(arr, list):
+                    return {"objects": arr}
+            except json.JSONDecodeError:
+                pass
+        return None
 
     @staticmethod
     def _estimate_position(
