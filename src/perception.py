@@ -46,16 +46,16 @@ def _shannon(probs: list[float]) -> float:
     return h
 
 
-def _temperature_scale(probs: list[tuple[str, float]],
-                       tau: float) -> list[tuple[str, float]]:
-    """温度缩放 (F3): p_i' = p_i^(1/τ) / Σ p_j^(1/τ)。τ=1.0 即归一化但不重塑。"""
-    if tau == 1.0:
-        total = sum(p for _, p in probs) or 1.0
-        return [(lbl, p / total) for lbl, p in probs]
-    inv = 1.0 / tau
-    raised = [(lbl, p ** inv if p > 0 else 0.0) for lbl, p in probs]
-    s = sum(p for _, p in raised) or 1.0
-    return [(lbl, p / s) for lbl, p in raised]
+def _temperature_scale(alts: list[tuple[str, float]], tau: float) -> list[tuple[str, float]]:
+    if tau <= 0:
+        tau = 1.0
+    vals = [(lbl, max(p, 1e-9) ** (1.0 / tau)) for lbl, p in alts]
+    s = sum(p for _, p in vals)
+    return [(lbl, p / s) for lbl, p in vals]
+
+
+def _label_key(text: str) -> str:
+    return "".join(ch for ch in text.lower() if ch.isalnum())
 
 
 class QueryAwareGrounder:
@@ -202,7 +202,7 @@ class QueryAwareGrounder:
                 entropy = _shannon([p for _, p in alts_scaled])
 
                 # position 投影 (粗略: 取 bbox 中心 + 估深度; 真实投影在 Phase 12)
-                pos_3d, pos_std = self._estimate_position(bbox, viewpoint, env)
+                pos_3d, pos_std = self._estimate_position(bbox, viewpoint, env, label)
 
                 vp_name = getattr(viewpoint, "name", str(viewpoint)) if viewpoint else "v0"
                 h = Hypothesis(
@@ -246,7 +246,7 @@ class QueryAwareGrounder:
 
     @staticmethod
     def _estimate_position(
-        bbox: tuple[int, int, int, int], viewpoint, env,
+        bbox: tuple[int, int, int, int], viewpoint, env, label: str = "",
     ) -> tuple[np.ndarray, float]:
         """粗略 position 估计: 优先用 sim ground truth, 否则 bbox 中心偏移。
 
@@ -255,7 +255,12 @@ class QueryAwareGrounder:
         # 尝试从 sim 拿真实物体位置 (RoboCasa ep_meta)
         try:
             tmap = env._get_obj_type_map()
-            obj_body = tmap.get("obj_main")
+            label_key = _label_key(label)
+            obj_body = next(
+                (body for body, cat in tmap.items()
+                 if label_key and label_key in _label_key(str(cat))),
+                "obj_main" if "obj_main" in tmap else None,
+            )
             if obj_body:
                 real_pos = env._get_body_pos(obj_body)
                 if real_pos is not None:

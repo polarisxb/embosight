@@ -109,6 +109,31 @@ class TestParse:
         labels = {h.label for h in hyps}
         assert labels == {"apple", "knife"}
 
+    def test_sim_position_uses_matching_body_for_label(self):
+        g = _make_grounder()
+        raw = _make_vlm_json([
+            {"bbox_2d": [600, 300, 700, 400], "label": "shaker",
+             "alternatives": [["shaker", 0.85]],
+             "confidence": 0.9, "visible_features": "metal"},
+        ])
+
+        class FakeEnv:
+            body_requested = None
+
+            def _get_obj_type_map(self):
+                return {"obj_main": "shaker"}
+
+            def _get_body_pos(self, body_name):
+                self.body_requested = body_name
+                if body_name == "obj_main":
+                    return [0.4, 0.2, 0.85]
+                return None
+
+        env = FakeEnv()
+        hyps = g._parse_to_hypotheses(raw, viewpoint=None, env=env)
+        assert env.body_requested == "obj_main"
+        assert hyps[0].position_3d.tolist() == pytest.approx([0.4, 0.2, 0.85])
+
 
 class TestPromptBuild:
     def test_inject_target_and_constraints(self):
