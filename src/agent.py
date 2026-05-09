@@ -125,7 +125,7 @@ class EmboSightAgent:
         # 阈值与 WorldBelief.DEFAULT_THRESHOLDS 对齐 (真 VLM 在 sim 上的典型输出)
         if (belief.is_label_confident(target)
                 and target.position_std_m < 0.10
-                and target.safety_entropy < 0.50
+                and belief.is_safety_confident(target)
                 and target.grasp_uncertainty is None):
             return Action(kind="plan_grasp_candidates", target_hypothesis=target)
 

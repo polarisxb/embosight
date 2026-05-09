@@ -240,6 +240,44 @@ class TestIsConfidentToAct:
         b.hypotheses = [h]
         assert b.is_confident_to_act() is True
 
+    def test_low_hazard_safe_fragile_uncertainty_is_confident(self):
+        c = GraspCandidate(point_3d=np.array([0.5,0,0.9]),
+                           approach_dir=np.array([0,0,-1]),
+                           finger_width_m=0.04, score=0.8)
+        b = WorldBelief(user_query="pick up tupperware")
+        b.decomposed = DecomposedTask(primary_target="tupperware")
+        h = _basic_hyp(label="tupperware", label_e=0.1, pos_std=0.02,
+                       safe_e=0.52, candidates=[c],
+                       alternatives=[("tupperware", 0.9)])
+        h.safety_dist = {
+            "safe": 0.60,
+            "fragile": 0.38,
+            "sharp": 0.01,
+            "hot": 0.01,
+            "chemical": 0.0,
+        }
+        b.hypotheses = [h]
+        assert b.is_confident_to_act() is True
+
+    def test_high_hazard_uncertainty_is_not_confident(self):
+        c = GraspCandidate(point_3d=np.array([0.5,0,0.9]),
+                           approach_dir=np.array([0,0,-1]),
+                           finger_width_m=0.04, score=0.8)
+        b = WorldBelief(user_query="pick up knife")
+        b.decomposed = DecomposedTask(primary_target="knife")
+        h = _basic_hyp(label="knife", label_e=0.1, pos_std=0.02,
+                       safe_e=0.52, candidates=[c],
+                       alternatives=[("knife", 0.9)])
+        h.safety_dist = {
+            "safe": 0.48,
+            "fragile": 0.0,
+            "sharp": 0.50,
+            "hot": 0.01,
+            "chemical": 0.01,
+        }
+        b.hypotheses = [h]
+        assert b.is_confident_to_act() is False
+
 
 class TestMostUncertainAxis:
     def test_no_target_returns_label(self):
@@ -406,3 +444,19 @@ class TestEdgeCases:
         b.consume_user_answer("您要的是哪个?", "圆形的", llm=None)
         assert len(b.user_constraints) == 1
         assert "圆形的" in b.user_constraints[0]
+
+    def test_consume_user_answer_confirming_target_reduces_label_entropy(self):
+        b = WorldBelief(user_query="pick up the tupperware")
+        b.decomposed = DecomposedTask(primary_target="tupperware")
+        h = _basic_hyp(
+            label="tupperware",
+            label_e=0.95,
+            safe_e=0.2,
+            alternatives=[("tupperware", 0.50), ("box", 0.30), ("container", 0.20)],
+        )
+        b.hypotheses = [h]
+
+        b.consume_user_answer("您要的是哪个?", "就是那个 tupperware", llm=None)
+
+        assert h.label_entropy < WorldBelief.DEFAULT_THRESHOLDS["label"]
+        assert h.label_alternatives[0] == ("tupperware", 0.90)

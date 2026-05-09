@@ -127,3 +127,48 @@ def test_summarize_episode_reports_planning_blockers(tmp_path):
     assert summary.selected_target_label_entropy == 0.95
     assert summary.dominant_uncertainty_axis == "label"
     assert summary.planning_blockers == ["label_entropy>=0.80"]
+
+
+def test_summarize_episode_does_not_report_low_hazard_safety_blocker(tmp_path):
+    from src.eval_oracle import summarize_episode
+
+    episode = {
+        "query": "pick up the tupperware",
+        "snapshots": [
+            {
+                "step": 3,
+                "most_uncertain_axis": "safety",
+                "target_summary": {
+                    "label": "tupperware",
+                    "label_entropy": 0.1,
+                    "position_3d": [0.35, -3.19, 0.94],
+                    "position_std_m": 0.02,
+                    "safety_entropy": 0.52,
+                    "safety_dist": {
+                        "safe": 0.60,
+                        "fragile": 0.38,
+                        "sharp": 0.01,
+                        "hot": 0.01,
+                        "chemical": 0.0,
+                    },
+                    "grasp_uncertainty": None,
+                },
+            },
+        ],
+        "actions": [
+            {"kind": "observe"},
+            {"kind": "classify_safety"},
+            {"kind": "ask_user"},
+        ],
+        "evidence": [],
+        "final_result": {
+            "success": False,
+            "failure_reason": "MAX_STEPS reached",
+        },
+    }
+    path = tmp_path / "episode.json"
+    path.write_text(json.dumps(episode), encoding="utf-8")
+
+    summary = summarize_episode(path)
+
+    assert summary.planning_blockers == []

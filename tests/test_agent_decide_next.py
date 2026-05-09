@@ -164,6 +164,31 @@ class TestDecideNext:
         action = agent.decide_next(belief)
         assert action.kind == "plan_grasp_candidates"
 
+    def test_low_hazard_safety_uncertainty_without_candidates_plans(self):
+        from src.world_belief import Evidence, Hypothesis
+        agent = _make_agent()
+        h = Hypothesis(
+            object_id="o0", label="tupperware",
+            label_alternatives=[("tupperware", 0.95)],
+            label_entropy=0.1,
+            position_3d=np.array([0.5, 0, 0.9]), position_std_m=0.02,
+            safety_dist={
+                "safe": 0.60,
+                "fragile": 0.38,
+                "sharp": 0.01,
+                "hot": 0.01,
+                "chemical": 0.0,
+            },
+            safety_entropy=0.52,
+        )
+        belief = _make_belief(
+            target_word="tupperware",
+            hyps=[h],
+            evidence=[Evidence(source="vlm_ground", timestamp=0, raw_payload={})],
+        )
+        action = agent.decide_next(belief)
+        assert action.kind == "plan_grasp_candidates"
+
     def test_all_confident_returns_grasp(self):
         from src.world_belief import Evidence
         agent = _make_agent()

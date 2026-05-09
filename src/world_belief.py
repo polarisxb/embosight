@@ -351,7 +351,7 @@ class WorldBelief:
         return (
             self.is_label_confident(h, thr["label"])
             and h.position_std_m < thr["position"]
-            and h.safety_entropy < thr["safety"]
+            and self.is_safety_confident(h, thr["safety"])
             and gu                < thr["grasp"]
         )
 
@@ -372,6 +372,19 @@ class WorldBelief:
             and top_prob >= self.LABEL_CONFIDENT_PROB_MIN
             and (top_prob - second_prob) >= self.LABEL_CONFIDENT_PROB_GAP
         )
+
+    def is_safety_confident(self, h: Hypothesis, safety_thr: Optional[float] = None) -> bool:
+        thr = self.DEFAULT_THRESHOLDS["safety"] if safety_thr is None else safety_thr
+        if h.safety_entropy < thr:
+            return True
+        if not h.safety_dist:
+            return False
+        hazard_prob = (
+            h.safety_dist.get("sharp", 0.0)
+            + h.safety_dist.get("hot", 0.0)
+            + h.safety_dist.get("chemical", 0.0)
+        )
+        return hazard_prob < 0.05
     
     def most_uncertain_axis(self) -> Literal["label", "position", "safety", "grasp"]:
         """最不确定的轴; grasp_uncertainty=None 时跳过。"""
@@ -497,6 +510,7 @@ class WorldBelief:
                 "label_entropy": h.label_entropy,
                 "position_3d": h.position_3d.tolist(),
                 "position_std_m": h.position_std_m,
+                "safety_dist": h.safety_dist,
                 "safety_entropy": h.safety_entropy,
                 "grasp_uncertainty": h.grasp_uncertainty,
             }
@@ -528,6 +542,23 @@ class WorldBelief:
         """
         _ = llm  # v1 未使用; v1.1 接入 LLM 解析时启用
         self.user_constraints.append(f"Q: {question} | A: {answer}")
+        if not self.decomposed:
+            return
+        target_key = _label_key(self.decomposed.primary_target)
+        if target_key not in _label_key(answer):
+            return
+        h = self.target()
+        if h is None:
+            return
+        if any(a.failure_mode == "verify_mismatch" for a in h.grasp_attempts):
+            return
+        labels = [lbl for lbl, _ in h.label_alternatives if _label_key(lbl) != target_key]
+        h.label_alternatives = [(self.decomposed.primary_target, 0.90)]
+        if labels:
+            share = 0.10 / len(labels)
+            h.label_alternatives.extend((lbl, share) for lbl in labels)
+        h.label = self.decomposed.primary_target
+        h.label_entropy = _shannon([p for _, p in h.label_alternatives])
     
     def compose_clarification(self) -> str:
         """构造给用户的澄清问题。"""

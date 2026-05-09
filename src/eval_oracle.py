@@ -128,9 +128,21 @@ def _planning_blockers(
         blockers.append("label_entropy>=0.80")
     if position_std is not None and position_std >= 0.10:
         blockers.append("position_std_m>=0.10")
-    if safety_entropy is not None and safety_entropy >= 0.50:
+    if safety_entropy is not None and safety_entropy >= 0.50 and not _is_low_hazard(target):
         blockers.append("safety_entropy>=0.50")
     return blockers
+
+
+def _is_low_hazard(target: dict[str, Any]) -> bool:
+    safety_dist = target.get("safety_dist") or {}
+    if not safety_dist:
+        return False
+    hazard_prob = (
+        float(safety_dist.get("sharp", 0.0))
+        + float(safety_dist.get("hot", 0.0))
+        + float(safety_dist.get("chemical", 0.0))
+    )
+    return hazard_prob < 0.05
 
 
 def _float_or_none(value: Any) -> float | None:
