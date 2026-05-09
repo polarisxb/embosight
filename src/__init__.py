@@ -18,3 +18,48 @@ via Active Perception and Multimodal Large Models.
 __version__ = "0.1.0"
 __author__ = "EmboSight Author"
 __license__ = "MIT"
+
+
+# ============================================================
+# v1 公开 API (设计稿 §15 Appendix B)
+# ============================================================
+# 主入口
+from src.agent import EmboSightAgent
+
+# 数据结构 (供脚本/外部测试 import 使用)
+from src.world_belief import (
+    Action,
+    BeliefSnapshot,
+    Constraint,
+    DecomposedTask,
+    EpisodeResult,
+    Evidence,
+    GraspAttempt,
+    GraspCandidate,
+    Hypothesis,
+    Pose,
+    WorldBelief,
+)
+
+# 辅助
+from src.episode_logger import EpisodeLogger
+from src.user_channel import (
+    CLIUserChannel,
+    FakeUserChannel,
+    UserChannel,
+    VoiceUserChannel,
+)
+from src.vlm_cache import VLMCache
+
+__all__ = [
+    # 主入口
+    "EmboSightAgent",
+    # 数据结构
+    "Action", "BeliefSnapshot", "Constraint", "DecomposedTask",
+    "EpisodeResult", "Evidence", "GraspAttempt", "GraspCandidate",
+    "Hypothesis", "Pose", "WorldBelief",
+    # 辅助
+    "EpisodeLogger",
+    "CLIUserChannel", "FakeUserChannel", "UserChannel", "VoiceUserChannel",
+    "VLMCache",
+]
