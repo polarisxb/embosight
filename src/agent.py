@@ -123,7 +123,7 @@ class EmboSightAgent:
 
         # 兜底: label/pos/safety 都 confident 但 grasp 没 plan
         # 阈值与 WorldBelief.DEFAULT_THRESHOLDS 对齐 (真 VLM 在 sim 上的典型输出)
-        if (target.label_entropy < 0.80
+        if (belief.is_label_confident(target)
                 and target.position_std_m < 0.10
                 and target.safety_entropy < 0.50
                 and target.grasp_uncertainty is None):

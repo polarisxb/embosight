@@ -210,6 +210,24 @@ class TestIsConfidentToAct:
         b.hypotheses = [h]
         assert b.is_confident_to_act() is True
 
+    def test_top1_target_with_margin_confident_despite_high_entropy(self):
+        b = WorldBelief(user_query="pick up banana")
+        b.decomposed = DecomposedTask(primary_target="banana")
+        c = GraspCandidate(point_3d=np.array([0.5,0,0.9]),
+                           approach_dir=np.array([0,0,-1]),
+                           finger_width_m=0.04, score=0.8)
+        h = _basic_hyp(label="banana",
+                       label_e=0.95,
+                       safe_e=0.2,
+                       candidates=[c],
+                       alternatives=[
+                           ("banana", 0.586),
+                           ("peach", 0.254),
+                           ("apple", 0.160),
+                       ])
+        b.hypotheses = [h]
+        assert b.is_confident_to_act() is True
+
 
 class TestMostUncertainAxis:
     def test_no_target_returns_label(self):

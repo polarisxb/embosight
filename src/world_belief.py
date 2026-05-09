@@ -286,6 +286,8 @@ class WorldBelief:
         "label": 0.50, "position": 0.05, "safety": 0.30, "grasp": 0.25,
     }
     AMBIGUITY_PROB_GAP = 0.20      # top1/top2 概率差 < 此值 → 模糊
+    LABEL_CONFIDENT_PROB_MIN = 0.55
+    LABEL_CONFIDENT_PROB_GAP = 0.30
     
     # ──── 查询接口 ──────────────────────────
     
@@ -333,10 +335,28 @@ class WorldBelief:
         thr = self._dynamic_thresholds(h, label_thr, pos_thr_m, safety_thr, grasp_thr)
         gu = h.grasp_uncertainty if h.grasp_uncertainty is not None else 1.0
         return (
-            h.label_entropy   < thr["label"]
+            self.is_label_confident(h, thr["label"])
             and h.position_std_m < thr["position"]
             and h.safety_entropy < thr["safety"]
             and gu                < thr["grasp"]
+        )
+
+    def is_label_confident(self, h: Hypothesis, label_thr: Optional[float] = None) -> bool:
+        thr = self.DEFAULT_THRESHOLDS["label"] if label_thr is None else label_thr
+        if h.label_entropy < thr:
+            return True
+        if thr < self.DEFAULT_THRESHOLDS["label"]:
+            return False
+        if not self.decomposed or not h.label_alternatives:
+            return False
+        target_key = _label_key(self.decomposed.primary_target)
+        ranked = sorted(h.label_alternatives, key=lambda item: item[1], reverse=True)
+        top_label, top_prob = ranked[0]
+        second_prob = ranked[1][1] if len(ranked) > 1 else 0.0
+        return (
+            target_key in _label_key(top_label)
+            and top_prob >= self.LABEL_CONFIDENT_PROB_MIN
+            and (top_prob - second_prob) >= self.LABEL_CONFIDENT_PROB_GAP
         )
     
     def most_uncertain_axis(self) -> Literal["label", "position", "safety", "grasp"]:
