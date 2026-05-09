@@ -1,32 +1,20 @@
-"""创新点②: 零样本主动视角规划器（LLM-NBV）
+"""主动视角选择 v1: ViewpointLibrary + ActiveViewpointSelector。
 
-将经典 Next-Best-View 问题转化为 LLM 选择问题。
-设计离散视角库 + LLM 决策的新范式。
-
-核心设计:
-    1. 离散视角库（12 个标准视角）回避连续动作空间
-    2. LLM 任务驱动决策（而非几何驱动）
-    3. LLM 自评估早停机制
-
-使用示例:
-    >>> from src.active_planner import ActivePlanner, ViewpointLibrary
-    >>> from src.llm_backend import LLMBackend
-    >>> llm = LLMBackend()
-    >>> vp_lib = ViewpointLibrary("configs/viewpoints.yaml")
-    >>> planner = ActivePlanner(llm_client=llm, viewpoint_lib=vp_lib)
-    >>> observations = planner.plan(subtasks, env)
+老 ActivePlanner / Observation / plan / plan_with_grounding 已删除 (Phase 15)。
+v1 用 EmboSightAgent.decide_next 直接调度 ActiveViewpointSelector。
 """
 
 from __future__ import annotations
 
-import json
 import logging
-import time
-from dataclasses import dataclass, field
+import re
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Literal, Optional
 
 import yaml
+
+from src.world_belief import WorldBelief
 
 logger = logging.getLogger(__name__)
 
@@ -37,45 +25,17 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class Viewpoint:
-    """单个视角
-
-    Attributes:
-        name: 视角名称（例 "top_view"）
-        position: 末端位置 (x, y, z) 单位 cm
-        orientation: 末端朝向 (roll, pitch, yaw) 单位度
-        purpose: 该视角的用途说明
-    """
-
+    """单个视角 (位置 + 朝向 + 用途)。"""
     name: str
     position: tuple[float, float, float]
     orientation: tuple[float, float, float]
     purpose: str = ""
 
     def to_pose(self) -> tuple[float, float, float, float, float, float]:
-        """转换为 6D 位姿"""
         return (*self.position, *self.orientation)
 
     def __repr__(self) -> str:
         return f"Viewpoint(name='{self.name}', purpose='{self.purpose}')"
-
-
-@dataclass
-class Observation:
-    """单次视角下的观察结果
-
-    Attributes:
-        viewpoint: 当前视角
-        image_path: 渲染图像保存路径
-        depth_map_path: 深度图保存路径（可选）
-        description: VLM 描述结果
-        timestamp: 观察时间戳
-    """
-
-    viewpoint: Viewpoint
-    image_path: str
-    depth_map_path: Optional[str] = None
-    description: str = ""
-    timestamp: float = field(default_factory=time.time)
 
 
 # ============================================================
@@ -83,10 +43,7 @@ class Observation:
 # ============================================================
 
 class ViewpointLibrary:
-    """离散视角库
-
-    管理 12 个标准视角，从 YAML 配置加载。
-    """
+    """从 YAML 加载视角库; 文件不存在时使用内置默认。"""
 
     def __init__(self, config_path: str = "configs/viewpoints.yaml") -> None:
         self.config_path = Path(config_path)
@@ -94,9 +51,8 @@ class ViewpointLibrary:
         self._load()
 
     def _load(self) -> None:
-        """从 YAML 加载视角库"""
         if not self.config_path.exists():
-            logger.warning(f"视角配置不存在: {self.config_path}，使用内置默认")
+            logger.warning(f"视角配置不存在: {self.config_path}, 使用内置默认")
             self._builtin_viewpoints()
             return
 
@@ -115,14 +71,20 @@ class ViewpointLibrary:
         logger.info(f"加载视角库: {len(self.viewpoints)} 个视角")
 
     def _builtin_viewpoints(self) -> None:
-        """内置最小视角集（保证系统能跑，对应 RoboCasa 实际摄像头名）"""
+        """内置最小视角集 (对应 RoboCasa 默认 6 摄像头)。"""
         self.viewpoints = [
-            Viewpoint("robot0_agentview_center", (0, 0, 60), (0, -45, 0), "全景中央视角，用于场景概览"),
-            Viewpoint("robot0_agentview_left", (-60, 0, 60), (0, -45, 45), "左侧全景视角，用于左半区观察"),
-            Viewpoint("robot0_agentview_right", (60, 0, 60), (0, -45, -45), "右侧全景视角，用于右半区观察"),
-            Viewpoint("robot0_frontview", (0, -60, 30), (0, -30, 0), "正面视图，用于近距识别"),
-            Viewpoint("robot0_robotview", (0, 30, 60), (0, -45, 180), "机器人视角，用于操作区域观察"),
-            Viewpoint("robot0_eye_in_hand", (0, 0, 30), (0, -90, 0), "机械臂末端视角，用于物体特写"),
+            Viewpoint("robot0_agentview_center", (0, 0, 60), (0, -45, 0),
+                      "全景中央视角, 用于场景概览"),
+            Viewpoint("robot0_agentview_left", (-60, 0, 60), (0, -45, 45),
+                      "左侧全景视角, 用于左半区观察"),
+            Viewpoint("robot0_agentview_right", (60, 0, 60), (0, -45, -45),
+                      "右侧全景视角, 用于右半区观察"),
+            Viewpoint("robot0_frontview", (0, -60, 30), (0, -30, 0),
+                      "正面视图, 用于近距识别"),
+            Viewpoint("robot0_robotview", (0, 30, 60), (0, -45, 180),
+                      "机器人视角, 用于操作区域观察"),
+            Viewpoint("robot0_eye_in_hand", (0, 0, 30), (0, -90, 0),
+                      "机械臂末端视角, 用于物体特写"),
         ]
 
     def __len__(self) -> int:
@@ -131,579 +93,19 @@ class ViewpointLibrary:
     def __getitem__(self, idx: int) -> Viewpoint:
         return self.viewpoints[idx]
 
+    def __iter__(self):
+        return iter(self.viewpoints)
+
     def list_for_prompt(self) -> str:
-        """生成用于 LLM Prompt 的视角列表字符串"""
-        lines = []
-        for i, vp in enumerate(self.viewpoints):
-            lines.append(f"  {i}: {vp.name} - {vp.purpose}")
-        return "\n".join(lines)
-
-
-# ============================================================
-# 核心类: ActivePlanner
-# ============================================================
-
-class ActivePlanner:
-    """LLM-NBV 主动视角规划器
-
-    核心循环:
-        1. 初始全景视角观察
-        2. LLM 选择下一个最优视角
-        3. 机械臂执行 + VLM 描述
-        4. LLM 自评估是否信息足够
-        5. 重复 2-4 直到信息足够或达到上限
-    """
-
-    def __init__(
-        self,
-        llm_client,
-        viewpoint_lib: ViewpointLibrary,
-        max_viewpoints: int = 6,
-        coverage_threshold: float = 0.85,
-        prompt_path: str = "prompts/active_planner.txt",
-        grounding_prompt_path: str = "prompts/active_planner_grounding_aware.txt",
-        grounding_confidence_threshold: float = 0.8,
-    ) -> None:
-        """
-        Args:
-            llm_client: LLM 客户端
-            viewpoint_lib: 离散视角库
-            max_viewpoints: 最大视角数（防死循环）
-            coverage_threshold: 任务覆盖率阈值
-            prompt_path: 系统 Prompt 模板路径
-            grounding_prompt_path: Grounding-Aware Prompt 模板路径
-            grounding_confidence_threshold: grounding 早停置信度阈值
-        """
-        self.llm = llm_client
-        self.vp_lib = viewpoint_lib
-        self.max_vp = max_viewpoints
-        self.coverage_threshold = coverage_threshold
-        self.grounding_conf_threshold = grounding_confidence_threshold
-        self.system_prompt = self._load_prompt(prompt_path)
-        self.grounding_system_prompt = self._load_prompt(grounding_prompt_path)
-
-    def _load_prompt(self, prompt_path: str) -> str:
-        path = Path(prompt_path)
-        if not path.exists():
-            logger.warning(f"Prompt 文件不存在: {path}")
-            return ""
-        with open(path, "r", encoding="utf-8") as f:
-            return f.read()
-
-    # ==========================================================
-    # 主入口
-    # ==========================================================
-
-    def plan(self, subtasks: list, env) -> list[Observation]:
-        """主入口: 执行完整主动视角规划循环
-
-        核心创新 (LLM-NBV):
-            1. 初始全景视角观察
-            2. 更新子任务覆盖状态 (coverage_status)
-            3. 计算覆盖率，若 >= 阈值则早停
-            4. LLM 综合"未覆盖维度"选择信息增益最大的下一个视角
-            5. 重复直到覆盖率足够 或 LLM 输出 -1 或 达到上限
-
-        Args:
-            subtasks: 子任务列表（来自 TaskDecomposer）
-            env: 仿真环境对象（来自 src/env_wrapper.py）
-
-        Returns:
-            观察列表
-        """
-        observations: list[Observation] = []
-        used_indices: set[int] = set()
-
-        # ---- 初始全景视角 ----
-        init_idx = 0
-        init_vp = self.vp_lib[init_idx]
-        # 视角是固定摄像头，不需要移动手臂
-        init_obs = env.observe(init_vp)
-        observations.append(init_obs)
-        used_indices.add(init_idx)
-        logger.info(f"初始视角: {init_vp.name}")
-
-        while len(observations) < self.max_vp:
-            # ---- 更新覆盖率 ----
-            coverage = self._update_coverage(subtasks, observations)
-            logger.info(f"当前覆盖率: {coverage:.0%} (阈值 {self.coverage_threshold:.0%})")
-
-            if coverage >= self.coverage_threshold:
-                logger.info(f"覆盖率达标，早停 ({len(observations)} 个视角)")
-                break
-
-            # ---- LLM 充分性评估（双重早停保障）----
-            if self._is_sufficient(subtasks, observations):
-                logger.info(f"LLM 判断信息足够，早停 ({len(observations)} 个视角)")
-                break
-
-            # ---- LLM-NBV: 选择信息增益最大的下一个视角 ----
-            next_idx = self.select_next_viewpoint(subtasks, observations, used_indices)
-            if next_idx < 0 or next_idx >= len(self.vp_lib):
-                logger.info(f"LLM 输出 -1（早停信号）")
-                break
-
-            next_vp = self.vp_lib[next_idx]
-            # 视角是固定摄像头，不需要移动手臂
-            new_obs = env.observe(next_vp)
-            observations.append(new_obs)
-            used_indices.add(next_idx)
-            logger.info(f"视角 {len(observations)}: {next_vp.name}")
-
-        # ---- 最终覆盖率统计 ----
-        final_coverage = self._update_coverage(subtasks, observations)
-        logger.info(f"规划完成: {len(observations)} 个视角, 最终覆盖率 {final_coverage:.0%}")
-        return observations
-
-    # ==========================================================
-    # Phase 6: Grounding-Aware 规划
-    # ==========================================================
-
-    def plan_with_grounding(
-        self,
-        subtasks: list,
-        env,
-        user_query: str,
-        scene_describer=None,
-    ) -> tuple[list["Observation"], Optional[Any]]:
-        """主入口 (Phase 6): 带 VLM grounding 早停的主动视角规划.
-
-        每拍一个视角就运行 VLM grounding, 如果目标已被发现且置信度足够,
-        则早停不再拍更多视角 — 节省 VLM 调用次数.
-
-        Args:
-            subtasks: 子任务列表
-            env: EnvWrapper
-            user_query: 用户原始查询
-            scene_describer: SceneDescriber (含 grounder + safety_gate)
-
-        Returns:
-            (observations, scene_model) — scene_model 可能为 None
-        """
-        from .scene_model import SceneModel
-
-        observations: list[Observation] = []
-        used_indices: set[int] = set()
-        scene_model = SceneModel() if scene_describer else None
-
-        # ---- 初始视角 ----
-        init_idx = 0
-        init_vp = self.vp_lib[init_idx]
-        init_obs = env.observe(init_vp)
-        observations.append(init_obs)
-        used_indices.add(init_idx)
-        logger.info(f"初始视角: {init_vp.name}")
-
-        # 立即运行 grounding
-        if scene_describer and scene_model is not None:
-            self._run_grounding_step(
-                init_obs, user_query, scene_describer, scene_model, env
-            )
-
-        while len(observations) < self.max_vp:
-            # ---- 检查 grounding 早停 ----
-            if scene_model is not None:
-                best = scene_model.get_best_match()
-                if best and best.query_match_score >= self.grounding_conf_threshold:
-                    # 同时检查覆盖率
-                    coverage = self._update_coverage(subtasks, observations)
-                    if coverage >= self.coverage_threshold:
-                        logger.info(
-                            f"[grounding_plan] 早停: target grounded "
-                            f"(score={best.query_match_score:.2f}) + "
-                            f"coverage={coverage:.0%} ({len(observations)} views)"
-                        )
-                        break
-
-            # ---- 覆盖率早停 ----
-            coverage = self._update_coverage(subtasks, observations)
-            if coverage >= self.coverage_threshold:
-                # 即使覆盖率达标, 如果 target 未 grounding 到足够置信度则继续
-                grounded_enough = (
-                    scene_model is None
-                    or scene_model.get_best_match(min_score=self.grounding_conf_threshold) is not None
-                )
-                if grounded_enough:
-                    logger.info(f"覆盖率达标，早停 ({len(observations)} views)")
-                    break
-
-            # ---- LLM 选视角 (grounding-aware prompt) ----
-            next_idx = self._select_next_grounding_aware(
-                subtasks, observations, used_indices,
-                user_query, scene_model
-            )
-            if next_idx < 0 or next_idx >= len(self.vp_lib):
-                logger.info(f"LLM 输出 -1（早停信号）")
-                break
-
-            next_vp = self.vp_lib[next_idx]
-            new_obs = env.observe(next_vp)
-            observations.append(new_obs)
-            used_indices.add(next_idx)
-            logger.info(f"视角 {len(observations)}: {next_vp.name}")
-
-            # 每拍一个视角就立即 grounding
-            if scene_describer and scene_model is not None:
-                self._run_grounding_step(
-                    new_obs, user_query, scene_describer, scene_model, env
-                )
-
-        final_coverage = self._update_coverage(subtasks, observations)
-        grounding_status = "N/A"
-        if scene_model:
-            best = scene_model.get_best_match()
-            grounding_status = f"{best.label}({best.query_match_score:.2f})" if best else "NOT_FOUND"
-        logger.info(
-            f"规划完成: {len(observations)} views, "
-            f"coverage={final_coverage:.0%}, grounding={grounding_status}"
-        )
-        return observations, scene_model
-
-    def _run_grounding_step(
-        self,
-        obs: Observation,
-        user_query: str,
-        scene_describer,
-        scene_model,
-        env,
-    ) -> None:
-        """对单个视角运行 VLM grounding 并加入 SceneModel."""
-        try:
-            camera_name = obs.viewpoint.name
-            candidates = scene_describer.grounder.ground(obs.image_path)
-
-            gt_categories = None
-            if env and hasattr(env, '_get_obj_type_map'):
-                try:
-                    gt_categories = env._get_obj_type_map()
-                except Exception:
-                    pass
-
-            candidates = scene_describer.grounder.match_query(
-                candidates, user_query, gt_categories
-            )
-
-            projector = None
-            if env and hasattr(env, 'make_projector'):
-                try:
-                    projector = env.make_projector(camera_name)
-                except Exception:
-                    pass
-
-            scene_model.add_view(camera_name, candidates, projector)
-
-            # 安全注入
-            for obj_item in scene_model.objects:
-                scene_describer.safety_gate.update_object_safety(obj_item)
-
-        except Exception as e:
-            logger.warning(f"[grounding_plan] grounding step failed for {obs.viewpoint.name}: {e}")
-
-    def _select_next_grounding_aware(
-        self,
-        subtasks: list,
-        observations: list[Observation],
-        used_indices: set[int],
-        user_query: str,
-        scene_model,
-    ) -> int:
-        """用 grounding-aware prompt 让 LLM 选视角."""
-        prompt = self._build_grounding_nbv_prompt(
-            subtasks, observations, used_indices, user_query, scene_model
-        )
-        try:
-            response = self.llm.generate(
-                user_message=prompt,
-                system=self.grounding_system_prompt,
-                json_mode=True,
-            )
-            data = json.loads(response)
-            idx = int(data.get("viewpoint_idx", -1))
-            reason = data.get("reason", "")
-            logger.debug(f"NBV-GA 决策: idx={idx}, reason={reason}")
-            return idx
-        except Exception as e:
-            logger.warning(f"NBV-GA 决策失败: {e}, fallback")
-            for i in range(len(self.vp_lib)):
-                if i not in used_indices:
-                    return i
-            return -1
-
-    def _build_grounding_nbv_prompt(
-        self,
-        subtasks: list,
-        observations: list[Observation],
-        used_indices: set[int],
-        user_query: str,
-        scene_model,
-    ) -> str:
-        """构建 Grounding-Aware NBV Prompt."""
-        lines = [f"## 用户查询: {user_query}"]
-
-        # Grounding 状态
-        lines.append("\n## Grounding 状态")
-        if scene_model and len(scene_model) > 0:
-            best = scene_model.get_best_match()
-            if best:
-                lines.append(
-                    f"  ★ 最佳匹配: '{best.label}' "
-                    f"(score={best.query_match_score:.2f}, risk={best.safety_risk})"
-                )
-                if best.query_match_score >= self.grounding_conf_threshold:
-                    lines.append("  → 目标已被高置信度 grounding, 考虑早停")
-            lines.append(f"  场景中共 {len(scene_model)} 个物体:")
-            for obj in scene_model.objects:
-                lines.append(
-                    f"    - {obj.label}: score={obj.query_match_score:.2f} "
-                    f"risk={obj.safety_risk} views={obj.observed_in_views}"
-                )
-        else:
-            lines.append("  ✗ 目标物体尚未被发现, 需要更多视角")
-
-        # 未覆盖维度
-        uncovered_dims: set[str] = set()
-        lines.append("\n## 子任务覆盖状态")
-        for i, t in enumerate(subtasks, 1):
-            status = "✓" if t.coverage_status else "✗"
-            dim_val = t.blind_dimension.value if hasattr(t.blind_dimension, 'value') else str(t.blind_dimension)
-            lines.append(f"  {i}. [{status}] {t.target} (dim={dim_val})")
-            if not t.coverage_status:
-                uncovered_dims.add(dim_val)
-
-        if uncovered_dims:
-            lines.append(f"\n## 未覆盖维度: {sorted(uncovered_dims)}")
-
-        # 已有观察
-        lines.append("\n## 已有观察")
-        for i, obs in enumerate(observations, 1):
-            desc = obs.description[:80] if obs.description else "（暂无描述）"
-            lines.append(f"  视角 {i} [{obs.viewpoint.name}]: {desc}")
-
-        # 视角库
-        lines.append("\n## 视角库")
-        for i, vp in enumerate(self.vp_lib.viewpoints):
-            mark = " [已用]" if i in used_indices else ""
-            lines.append(f"  {i}: {vp.name} - {vp.purpose}{mark}")
-
-        lines.append(
-            "\n请选择下一个视角索引。"
-            "优先级: grounding 目标 > 安全确认 > 维度覆盖。"
-            "如果目标已 grounding 且关键维度已覆盖, 输出 -1。"
-        )
-
-        return "\n".join(lines)
-
-    # ==========================================================
-    # 覆盖率追踪（创新点）
-    # ==========================================================
-
-    def _update_coverage(self, subtasks: list, observations: list[Observation]) -> float:
-        """更新子任务覆盖状态并返回覆盖率
-
-        基于视角用途与子任务维度的匹配关系，判断哪些子任务已被覆盖：
-            - 全景视角 → 覆盖 position / safety
-            - 正面/侧面视角 → 覆盖 distance / tactile
-            - 末端视角 → 覆盖 tactile / action
-            - 多视角叠加提升覆盖置信度
-
-        Returns:
-            覆盖率 [0, 1]
-        """
-        if not subtasks:
-            return 1.0
-
-        VIEWPOINT_DIM_MAP: dict[str, set[str]] = {
-            "robot0_agentview_center": {"position", "safety"},
-            "robot0_agentview_left": {"position", "safety"},
-            "robot0_agentview_right": {"position", "safety"},
-            "robot0_frontview": {"distance", "tactile", "position"},
-            "robot0_robotview": {"distance", "action"},
-            "robot0_eye_in_hand": {"tactile", "action", "distance"},
-        }
-
-        observed_dims: set[str] = set()
-        for obs in observations:
-            cam_dims = VIEWPOINT_DIM_MAP.get(obs.viewpoint.name, set())
-            observed_dims |= cam_dims
-
-        covered = 0
-        for t in subtasks:
-            dim_val = t.blind_dimension.value if hasattr(t.blind_dimension, 'value') else str(t.blind_dimension)
-            if dim_val in observed_dims:
-                t.coverage_status = True
-                covered += 1
-            else:
-                t.coverage_status = False
-
-        return covered / len(subtasks)
-
-    # ==========================================================
-    # 视角选择
-    # ==========================================================
-
-    def select_next_viewpoint(
-        self,
-        subtasks: list,
-        observations: list[Observation],
-        used_indices: set[int],
-    ) -> int:
-        """让 LLM 选择下一个最优视角
-
-        Args:
-            subtasks: 子任务列表
-            observations: 已有观察
-            used_indices: 已使用的视角索引（避免重复）
-
-        Returns:
-            视角库中的索引；-1 表示早停
-        """
-        prompt = self._build_nbv_prompt(subtasks, observations, used_indices)
-
-        try:
-            response = self.llm.generate(
-                user_message=prompt,
-                system=self.system_prompt,
-                json_mode=True,
-            )
-            data = json.loads(response)
-            idx = int(data.get("viewpoint_idx", -1))
-            reason = data.get("reason", "")
-            logger.debug(f"NBV 决策: idx={idx}, reason={reason}")
-            return idx
-        except Exception as e:
-            logger.warning(f"NBV 决策失败: {e}, fallback 到第一个未使用视角")
-            for i in range(len(self.vp_lib)):
-                if i not in used_indices:
-                    return i
-            return -1
-
-    def _build_nbv_prompt(
-        self,
-        subtasks: list,
-        observations: list[Observation],
-        used_indices: set[int],
-    ) -> str:
-        """构建 NBV 决策 Prompt（含信息增益推理）"""
-
-        # ---- 未覆盖维度汇总（帮助 LLM 做信息增益推理）----
-        uncovered_dims: set[str] = set()
-        lines = ["## 未完成子任务（按优先级排序）"]
-        for i, t in enumerate(subtasks, 1):
-            status = "✓" if t.coverage_status else "✗"
-            dim_val = t.blind_dimension.value if hasattr(t.blind_dimension, 'value') else str(t.blind_dimension)
-            lines.append(
-                f"  {i}. [{status}] [{t.type.value}] {t.target} (priority={t.priority}, dim={dim_val})"
-            )
-            if not t.coverage_status:
-                uncovered_dims.add(dim_val)
-
-        if uncovered_dims:
-            lines.append(f"\n## 未覆盖的视障维度: {sorted(uncovered_dims)}")
-            lines.append("你需要选择最能覆盖以上缺失维度的视角。")
-        else:
-            lines.append("\n## 所有维度已覆盖，建议早停 (viewpoint_idx = -1)")
-
-        lines.append("\n## 当前已有观察")
-        for i, obs in enumerate(observations, 1):
-            desc = obs.description[:100] if obs.description else "（暂无描述）"
-            lines.append(f"  视角 {i} [{obs.viewpoint.name}]: {desc}")
-
-        lines.append("\n## 离散视角库（已用视角已标注）")
-        for i, vp in enumerate(self.vp_lib.viewpoints):
-            mark = " [已用]" if i in used_indices else ""
-            lines.append(f"  {i}: {vp.name} - {vp.purpose}{mark}")
-
-        lines.append(
-            "\n请选择信息增益最大的下一个视角索引。\n"
-            "决策要点：优先覆盖 safety > position > distance > tactile > action。\n"
-            "若所有维度已覆盖或当前观察已足够，输出 viewpoint_idx = -1。"
-        )
-
-        return "\n".join(lines)
-
-    # ==========================================================
-    # 早停判断
-    # ==========================================================
-
-    def _is_sufficient(
-        self,
-        subtasks: list,
-        observations: list[Observation],
-    ) -> bool:
-        """结构化充分性评估
-
-        创新点：不仅问 LLM "够不够"，还传入每个子任务的覆盖状态，
-        让 LLM 基于结构化信息做判断，而非纯凭文本猜测。
-        """
-        if not observations:
-            return False
-
-        covered = sum(1 for t in subtasks if t.coverage_status)
-        total = len(subtasks)
-
-        if total > 0 and covered / total >= self.coverage_threshold:
-            return True
-
-        prompt = self._build_sufficiency_prompt(subtasks, observations)
-        try:
-            response = self.llm.generate(prompt)
-            return any(kw in response.lower() for kw in ["yes", "sufficient", "足够", "已够"])
-        except Exception as e:
-            logger.warning(f"早停判断失败: {e}")
-            return False
-
-    def _build_sufficiency_prompt(
-        self,
-        subtasks: list,
-        observations: list[Observation],
-    ) -> str:
-        """构建结构化早停判断 Prompt"""
-        sub_lines = []
-        for t in subtasks:
-            status = "已覆盖" if t.coverage_status else "未覆盖"
-            dim_val = t.blind_dimension.value if hasattr(t.blind_dimension, 'value') else str(t.blind_dimension)
-            sub_lines.append(f"  - [{status}] [{t.type.value}] {t.target} (dim={dim_val})")
-        sub_text = "\n".join(sub_lines)
-
-        obs_lines = []
-        for i, o in enumerate(observations):
-            desc = o.description[:80] if o.description else "（暂无描述）"
-            obs_lines.append(f"  视角{i+1} [{o.viewpoint.name}]: {desc}")
-        obs_text = "\n".join(obs_lines)
-
-        covered = sum(1 for t in subtasks if t.coverage_status)
-        total = len(subtasks)
-
-        return (
-            f"## 子任务覆盖状态 ({covered}/{total})\n{sub_text}\n\n"
-            f"## 已有观察 ({len(observations)} 个视角)\n{obs_text}\n\n"
-            f"基于以上覆盖状态和观察内容，所有子任务的信息是否已经足够？\n"
-            f"请回答 'yes' 或 'no'。"
+        return "\n".join(
+            f"  {i}: {vp.name} - {vp.purpose}"
+            for i, vp in enumerate(self.viewpoints)
         )
 
 
 # ============================================================
-# Module Test
+# v1: ActiveViewpointSelector (LLM-NBV with 4 preference)
 # ============================================================
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-
-    print("[ActivePlanner] 模块加载测试")
-    vp_lib = ViewpointLibrary()
-    print(f"  视角库大小: {len(vp_lib)}")
-    print(f"  视角列表预览:\n{vp_lib.list_for_prompt()}")
-
-
-# ============================================================
-# v1 新接口: ActiveViewpointSelector (LLM-based, replace ActivePlanner.plan)
-# ============================================================
-
-import re as _re  # noqa: E402
-from pathlib import Path as _Path  # noqa: E402
-from typing import Literal as _Literal, Optional as _Optional  # noqa: E402
-
-from src.world_belief import WorldBelief as _WorldBelief  # noqa: E402
 
 _NBV_PROMPT_PATH = "prompts/agent/nbv_select.txt"
 
@@ -714,18 +116,18 @@ class ActiveViewpointSelector:
     def __init__(self, llm, viewpoint_lib, prompt_path: str = _NBV_PROMPT_PATH):
         self.llm = llm
         self.vp_lib = viewpoint_lib
-        p = _Path(prompt_path)
+        p = Path(prompt_path)
         self._template = p.read_text(encoding="utf-8") if p.exists() else None
 
     def select(
         self,
-        belief: _WorldBelief,
+        belief: WorldBelief,
         exclude: set[str],
-        preference: _Literal[
+        preference: Literal[
             "search_target", "disambiguate_label",
             "parallax_position", "grasp_pose",
         ] = "search_target",
-    ) -> _Optional[object]:
+    ) -> Optional[Viewpoint]:
         candidates = [
             (i, vp) for i, vp in enumerate(self.vp_lib)
             if vp.name not in exclude
@@ -740,7 +142,7 @@ class ActiveViewpointSelector:
             logger.warning(f"[viewpoint_selector] LLM failed: {e}")
             return candidates[0][1]
 
-        m = _re.search(r"-?\d+", raw)
+        m = re.search(r"-?\d+", raw)
         if not m:
             return None
         idx = int(m.group())
@@ -754,7 +156,7 @@ class ActiveViewpointSelector:
         return vp
 
     def _build_prompt(
-        self, belief: _WorldBelief, exclude: set[str], preference: str,
+        self, belief: WorldBelief, exclude: set[str], preference: str,
     ) -> str:
         if self._template is None:
             return f"Pick a viewpoint index for {preference}, skip {exclude}."

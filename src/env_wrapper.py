@@ -18,6 +18,15 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class Observation:
+    """单次视角下的观察结果 (env.observe 返回)。"""
+    viewpoint: Any
+    image_path: str
+    depth_map_path: Optional[str] = None
+    description: str = ""
+
+
+@dataclass
 class EnvConfig:
     """环境配置"""
 
@@ -194,7 +203,7 @@ class EnvWrapper:
         extent, znear, zfar = self.get_depth_params()
         img_size = self.config.image_width
 
-        from .scene_model import project_bbox_to_world
+        from .projection import project_bbox_to_world
 
         def _projector(bbox_2d: tuple) -> Optional[np.ndarray]:
             return project_bbox_to_world(
@@ -829,17 +838,15 @@ class EnvWrapper:
     # 观察 (Phase 1)
     # ------------------------------------------------------------------
 
-    def observe(self, viewpoint) -> "Observation":
+    def observe(self, viewpoint) -> Observation:
         """采集指定视角的 RGB 图像
 
         Args:
-            viewpoint: Viewpoint 对象（来自 active_planner）
+            viewpoint: Viewpoint 对象 (来自 active_planner)
 
         Returns:
-            Observation 对象（含图像路径和元数据）
+            Observation 对象 (含图像路径和元数据)
         """
-        from .active_planner import Observation
-
         if not self._latest_obs:
             self.reset()
 

@@ -25,23 +25,8 @@ vlm:
 # 视角库
 viewpoints_path: "configs/viewpoints.yaml"
 
-# 主动规划器
-active_planner:
-  max_viewpoints: 6
-  coverage_threshold: 0.85
-  prompt_path: "prompts/active_planner.txt"
-
-# Prompt 路径
-prompts:
-  task_decompose: "prompts/task_decompose.txt"
-  active_planner: "prompts/active_planner.txt"
-  scene_describer: "prompts/scene_describer.txt"
-
-# 行动执行器 (创新点⑥ 双闭环语义验证)
-action_executor:
-  no_go_radius_m: 0.15
-  match_threshold: 0.5
-  enable_pre_verify: true   # 设为 false 可做消融实验 (仅事后验证)
+# v1 agent 主配置见 configs/agent.yaml
+# (老的 active_planner / action_executor / prompts 段已在 Phase 15 清理)
 
 # 仿真环境
 simulator:

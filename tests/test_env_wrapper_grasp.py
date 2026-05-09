@@ -8,7 +8,7 @@ import numpy as np
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from src.env_wrapper import EnvWrapper
+from src.env_wrapper import EnvWrapper  # noqa: E402
 
 
 class PregraspFailEnv(EnvWrapper):
