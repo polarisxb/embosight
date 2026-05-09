@@ -28,19 +28,19 @@ from src.utils import load_dotenv
 # 优先加载项目根 .env (含 DEEPSEEK_API_KEY 等)
 load_dotenv(str(Path(__file__).parent.parent / ".env"))
 
-from src.action_executor import ActionExecutor
-from src.active_planner import ActiveViewpointSelector, ViewpointLibrary
-from src.agent import EmboSightAgent
-from src.env_wrapper import EnvConfig, EnvWrapper
-from src.episode_logger import EpisodeLogger
-from src.grasp_planner import GraspPlanner
-from src.llm_backend import LLMBackend
-from src.perception import QueryAwareGrounder
-from src.safety_gate import SafetyClassifier
-from src.task_decomposer import TaskDecomposer
-from src.user_channel import CLIUserChannel, FakeUserChannel
-from src.vlm_backend import VLMBackend
-from src.vlm_cache import VLMCache
+from src.action_executor import ActionExecutor  # noqa: E402
+from src.active_planner import ActiveViewpointSelector, ViewpointLibrary  # noqa: E402
+from src.agent import EmboSightAgent  # noqa: E402
+from src.env_wrapper import EnvConfig, EnvWrapper  # noqa: E402
+from src.episode_logger import EpisodeLogger  # noqa: E402
+from src.grasp_planner import GraspPlanner  # noqa: E402
+from src.llm_backend import LLMBackend  # noqa: E402
+from src.perception import QueryAwareGrounder  # noqa: E402
+from src.safety_gate import SafetyClassifier  # noqa: E402
+from src.task_decomposer import TaskDecomposer  # noqa: E402
+from src.user_channel import CLIUserChannel, FakeUserChannel  # noqa: E402
+from src.vlm_backend import VLMBackend  # noqa: E402
+from src.vlm_cache import VLMCache  # noqa: E402
 
 
 def _build_llm(cfg: dict) -> LLMBackend:
