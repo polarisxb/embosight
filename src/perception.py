@@ -222,6 +222,7 @@ class QueryAwareGrounder:
                     position_3d=pos_3d,
                     position_std_m=pos_std,
                     bbox_per_view={vp_name: bbox},
+                    visible_features=str(obj.get("visible_features", "")),
                     observed_in_views=[vp_name],
                 )
                 hyps.append(h)

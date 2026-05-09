@@ -17,7 +17,7 @@ from typing import Optional
 
 import numpy as np
 
-from src.world_belief import GraspAttempt, GraspCandidate, Hypothesis
+from src.world_belief import GraspAttempt, GraspCandidate, GraspStrategy, Hypothesis
 
 logger = logging.getLogger(__name__)
 
@@ -25,42 +25,126 @@ logger = logging.getLogger(__name__)
 _DEFAULT_PROMPT = "prompts/grasp/suggest_top_grasp.txt"
 
 
+_DEFAULT_STRATEGY_PROMPT = "prompts/grasp/select_strategy.txt"
+
+
 class GraspPlanner:
 
-    def __init__(self, vlm, env, prompt_path: str = _DEFAULT_PROMPT):
+    def __init__(self, vlm, env, llm=None,
+                 prompt_path: str = _DEFAULT_PROMPT,
+                 strategy_prompt_path: str = _DEFAULT_STRATEGY_PROMPT):
         self.vlm = vlm
         self.env = env
+        self.llm = llm
         p = Path(prompt_path)
         self._template = p.read_text(encoding="utf-8") if p.exists() else None
+        sp = Path(strategy_prompt_path)
+        self._strategy_template = sp.read_text(encoding="utf-8") if sp.exists() else None
 
     # ──────────────────────────────────────
     # plan / regenerate_after_failure
     # ──────────────────────────────────────
 
+    # ──────────────────────────────────────
+    # LLM 策略选择
+    # ──────────────────────────────────────
+
+    def select_strategy(self, hyp: Hypothesis) -> GraspStrategy:
+        """让 LLM 根据物体外观 + 安全属性选择抓取策略。"""
+        if not self.llm or not self._strategy_template:
+            return GraspStrategy(strategy="top_down", reasoning="no LLM",
+                                 speech=f"我来拿{hyp.label}")
+
+        safety_text = ", ".join(
+            f"{k}={v:.2f}" for k, v in sorted(
+                hyp.safety_dist.items(), key=lambda x: x[1], reverse=True,
+            )
+        ) if hyp.safety_dist else "unknown"
+        pose_text = (
+            "upright" if (hyp.pose_estimate is None or hyp.pose_estimate.upright)
+            else "side/tilted"
+        )
+        prompt = (
+            self._strategy_template
+            .replace("{label}", hyp.label)
+            .replace("{visible_features}", hyp.visible_features or "(no description)")
+            .replace("{safety_dist}", safety_text)
+            .replace("{pose}", pose_text)
+        )
+
+        try:
+            raw = self.llm.generate(prompt, system="")
+            data = self._extract_json(raw)
+            if data and "strategy" in data:
+                strat = str(data["strategy"]).lower()
+                valid = {"top_down", "gentle_side", "handle_grasp", "scoop_under", "refuse"}
+                if strat not in valid:
+                    strat = "top_down"
+                return GraspStrategy(
+                    strategy=strat,
+                    approach_axis=str(data.get("approach_axis", "z")),
+                    reasoning=str(data.get("reasoning", "")),
+                    speech=str(data.get("speech", f"我来拿{hyp.label}")),
+                )
+        except Exception as e:
+            logger.warning("[grasp_planner] strategy selection failed: %s", e)
+
+        return GraspStrategy(strategy="top_down", reasoning="fallback",
+                             speech=f"我来拿{hyp.label}")
+
+    # ──────────────────────────────────────
+    # 策略驱动的候选生成
+    # ──────────────────────────────────────
+
+    _STRATEGY_PARAMS: dict[str, dict] = {
+        "top_down":      {"approach_dir": [0, 0, -1.0], "finger_width": 0.04, "score": 0.75},
+        "gentle_side":   {"approach_dir": [1, 0,  0.0], "finger_width": 0.06, "score": 0.70},
+        "handle_grasp":  {"approach_dir": [1, 0,  0.0], "finger_width": 0.03, "score": 0.70},
+        "scoop_under":   {"approach_dir": [0, 0, -0.3], "finger_width": 0.08, "score": 0.65},
+    }
+
     def plan(self, hyp: Hypothesis, env=None) -> list[GraspCandidate]:
         env = env or self.env
         cands: list[GraspCandidate] = []
 
-        # 1. geometric_centroid
+        # 如果有 LLM 选定的策略, 优先用策略生成候选
+        strategy = hyp.grasp_strategy
+        if strategy and strategy.strategy != "refuse":
+            params = self._STRATEGY_PARAMS.get(
+                strategy.strategy, self._STRATEGY_PARAMS["top_down"],
+            )
+            cands.append(GraspCandidate(
+                point_3d=hyp.position_3d.copy(),
+                approach_dir=np.array(params["approach_dir"]),
+                finger_width_m=params["finger_width"],
+                score=params["score"],
+                source=f"strategy_{strategy.strategy}",
+            ))
+            logger.info(
+                "[grasp_planner] strategy=%s → approach=%s width=%.2fm",
+                strategy.strategy, params["approach_dir"], params["finger_width"],
+            )
+
+        # 兜底: geometric_centroid (总是加, 分数低于策略候选)
         cands.append(GraspCandidate(
             point_3d=hyp.position_3d.copy(),
             approach_dir=np.array([0, 0, -1.0]),
             finger_width_m=0.04,
-            score=0.7,
+            score=0.50,
             source="geometric_centroid",
         ))
 
-        # 2. axis_aligned_side (pose 横放时)
+        # axis_aligned_side (pose 横放时)
         if hyp.pose_estimate is not None and not hyp.pose_estimate.upright:
             cands.append(GraspCandidate(
                 point_3d=hyp.position_3d.copy(),
                 approach_dir=np.array([1.0, 0, 0]),
                 finger_width_m=0.04,
-                score=0.65,
+                score=0.45,
                 source="axis_aligned_side",
             ))
 
-        # 3. vlm_top_grasp (eye_in_hand)
+        # vlm_top_grasp (eye_in_hand)
         try:
             v = self._vlm_grasp(hyp, env)
             if v is not None:
@@ -139,3 +223,13 @@ class GraspPlanner:
             finger_width_m=0.04, score=0.75,
             source="vlm_top_grasp",
         )
+
+    @staticmethod
+    def _extract_json(raw: str) -> Optional[dict]:
+        m = re.search(r"\{.*\}", raw, re.DOTALL)
+        if not m:
+            return None
+        try:
+            return json.loads(m.group())
+        except json.JSONDecodeError:
+            return None

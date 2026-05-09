@@ -55,6 +55,8 @@ class GraspCandidate:
     source: Literal[
         "vlm_top_grasp", "geometric_centroid",
         "axis_aligned_side", "user_corrected",
+        "strategy_top_down", "strategy_gentle_side",
+        "strategy_handle_grasp", "strategy_scoop_under",
     ] = "geometric_centroid"
 
 
@@ -74,6 +76,17 @@ class GraspAttempt:
     ]
     end_effector_pose_reached: tuple[float, ...]  # (x, y, z, roll, pitch, yaw)
     diagnostic: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class GraspStrategy:
+    """LLM 选择的抓取策略 (基于安全分类 + 视觉外观)。"""
+    strategy: Literal[
+        "top_down", "gentle_side", "handle_grasp", "scoop_under", "refuse",
+    ]
+    approach_axis: str = "z"       # 'z'=从上, 'x'/'y'=从侧面
+    reasoning: str = ""            # LLM 推理过程
+    speech: str = ""               # 对视障用户的播报
 
 
 # ============================================================
@@ -104,10 +117,12 @@ class Hypothesis:
     # ──── 4. 抓取轴 ────
     pose_estimate: Optional[Pose] = None
     pose_uncertainty: float = 1.0
+    grasp_strategy: Optional[GraspStrategy] = None   # LLM 选择的策略
     grasp_candidates: list[GraspCandidate] = field(default_factory=list)
     grasp_attempts: list[GraspAttempt] = field(default_factory=list)
     
     # ──── 元信息 ────
+    visible_features: str = ""                        # VLM 观察到的外观描述
     observed_in_views: list[str] = field(default_factory=list)
     times_re_observed: int = 0
     last_action_failed: Optional[str] = None

@@ -342,18 +342,39 @@ class EmboSightAgent:
             action.target_hypothesis.safety_entropy = ev.raw_payload.get("entropy", 1.0)
 
         elif action.kind == "plan_grasp_candidates":
-            cands = self.grasp_planner.plan(action.target_hypothesis, env)
+            hyp = action.target_hypothesis
+            # LLM 策略选择: 根据外观 + 安全属性决定抓取方式
+            strategy = self.grasp_planner.select_strategy(hyp)
+            hyp.grasp_strategy = strategy
+            logger.info(
+                "[agent] grasp strategy: %s | reason: %s | speech: %s",
+                strategy.strategy, strategy.reasoning, strategy.speech,
+            )
+            # refuse → 拒绝抓取, 向用户警告
+            if strategy.strategy == "refuse":
+                belief.evidence.append(Evidence(
+                    source="grasp_strategy", timestamp=time.time(),
+                    raw_payload={"strategy": "refuse", "speech": strategy.speech},
+                ))
+                return  # 不生成候选, 下轮 decide_next 会 ask_user
+            cands = self.grasp_planner.plan(hyp, env)
             # 必须更新 belief.hypotheses 里的 hypothesis (不是 action 上的引用)
-            target_id = action.target_hypothesis.object_id
+            target_id = hyp.object_id
             for h in belief.hypotheses:
                 if h.object_id == target_id:
                     h.grasp_candidates = cands
+                    h.grasp_strategy = strategy
                     break
             else:
-                action.target_hypothesis.grasp_candidates = cands
+                hyp.grasp_candidates = cands
             belief.evidence.append(Evidence(
-                source="depth_projection", timestamp=time.time(),
-                raw_payload={"n_candidates": len(cands)},
+                source="grasp_strategy", timestamp=time.time(),
+                raw_payload={
+                    "strategy": strategy.strategy,
+                    "reasoning": strategy.reasoning,
+                    "speech": strategy.speech,
+                    "n_candidates": len(cands),
+                },
             ))
 
         elif action.kind == "grasp":
