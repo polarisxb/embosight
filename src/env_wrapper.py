@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import random
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -46,6 +47,7 @@ class EnvConfig:
     )
     layout_ids: Optional[int] = None
     style_ids: Optional[int] = None
+    seed: Optional[int] = None
     has_renderer: bool = False
     has_offscreen_renderer: bool = True
 
@@ -107,6 +109,8 @@ class EnvWrapper:
             logger.info(f"创建仿真环境 {self.config.env_name}...")
             self._env = suite.make(**kwargs)
 
+        if self.config.seed is not None:
+            self._apply_seed(self.config.seed)
         self._latest_obs = self._env.reset()
         self._step = 0
         # 清除上一 episode 的物体类型缓存 (新 episode 可能随机出不同物体)
@@ -114,6 +118,19 @@ class EnvWrapper:
             self._obj_type_cache = {}
         logger.info(f"环境重置完成 (cameras={list(self.config.camera_names)})")
         return self._latest_obs
+
+    def seed(self, seed: int) -> None:
+        self.config.seed = int(seed)
+        self._apply_seed(self.config.seed)
+
+    def _apply_seed(self, seed: int) -> None:
+        random.seed(seed)
+        np.random.seed(seed)
+        if self._env is None:
+            return
+        seed_fn = getattr(self._env, "seed", None)
+        if callable(seed_fn):
+            seed_fn(seed)
 
     # ------------------------------------------------------------------
     # 深度图 + 相机参数 (Phase 3: 3D 投影)

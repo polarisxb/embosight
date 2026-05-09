@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from types import SimpleNamespace
 from pathlib import Path
 
 import numpy as np
@@ -8,7 +9,7 @@ import numpy as np
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from src.env_wrapper import EnvWrapper  # noqa: E402
+from src.env_wrapper import EnvConfig, EnvWrapper  # noqa: E402
 from src.world_belief import GraspCandidate  # noqa: E402
 
 
@@ -90,3 +91,32 @@ def test_move_to_pre_grasp_accepts_six_cm_boundary() -> None:
 
     assert env.move_to_pre_grasp(candidate) is True
     assert env.move_calls[-1][2] >= 0.06
+
+
+def test_reset_applies_seed_before_backend_reset(monkeypatch, tmp_path) -> None:
+    events = []
+
+    class FakeBackend:
+        def seed(self, seed: int) -> None:
+            events.append(("seed", seed))
+
+        def reset(self):
+            events.append(("reset", None))
+            return {}
+
+    def make(**kwargs):
+        events.append(("make", kwargs["env_name"]))
+        return FakeBackend()
+
+    monkeypatch.setitem(sys.modules, "robocasa", SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "robosuite", SimpleNamespace(make=make))
+    env = EnvWrapper(EnvConfig(output_dir=str(tmp_path)))
+
+    env.seed(42)
+    env.reset()
+
+    assert events == [
+        ("make", "PickPlaceCounterToCabinet"),
+        ("seed", 42),
+        ("reset", None),
+    ]

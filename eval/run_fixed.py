@@ -53,22 +53,33 @@ def reset_until_expected(
     seed: int | None,
     max_resets: int,
 ) -> tuple[str | None, int]:
-    set_global_seed(seed)
     actual_object = None
     attempts = max(1, int(max_resets))
     for attempt in range(1, attempts + 1):
+        attempt_seed = seed + attempt - 1 if seed is not None else None
+        set_global_seed(attempt_seed)
+        seed_env(env, attempt_seed)
         env.reset()
         actual_object = get_actual_object(env)
         logger.info(
-            "[fixed_eval] reset %d/%d actual obj_main=%r expected=%r",
+            "[fixed_eval] reset %d/%d seed=%r actual obj_main=%r expected=%r",
             attempt,
             attempts,
+            attempt_seed,
             actual_object,
             expected_object,
         )
         if expected_object is None or _label_key(actual_object or "") == _label_key(expected_object):
             return actual_object, attempt
     return actual_object, attempts
+
+
+def seed_env(env, seed: int | None) -> None:
+    if seed is None:
+        return
+    seed_fn = getattr(env, "seed", None)
+    if callable(seed_fn):
+        seed_fn(seed)
 
 
 def get_actual_object(env) -> str | None:

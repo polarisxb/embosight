@@ -55,3 +55,39 @@ def test_load_scenario_missing_id_raises(tmp_path):
 
     with pytest.raises(KeyError):
         module.load_scenario(path, "missing")
+
+
+def test_reset_until_expected_seeds_each_attempt_deterministically():
+    module = _load_module()
+
+    class FakeEnv:
+        def __init__(self):
+            self.calls = []
+            self.objects = ["banana", "apple"]
+
+        def seed(self, seed):
+            self.calls.append(("seed", seed))
+
+        def reset(self):
+            self.calls.append(("reset", None))
+
+        def _get_obj_type_map(self):
+            return {"obj_main": self.objects.pop(0)}
+
+    env = FakeEnv()
+
+    actual_object, resets_used = module.reset_until_expected(
+        env,
+        expected_object="apple",
+        seed=42,
+        max_resets=2,
+    )
+
+    assert actual_object == "apple"
+    assert resets_used == 2
+    assert env.calls == [
+        ("seed", 42),
+        ("reset", None),
+        ("seed", 43),
+        ("reset", None),
+    ]
