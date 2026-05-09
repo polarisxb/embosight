@@ -76,6 +76,7 @@ class QueryAwareGrounder:
         verify_prompt_path: str = "prompts/perception/verify_grasp.txt",
         label_temperature: float = 1.5,
         viewpoint_lib=None,
+        clip_scorer=None,
     ):
         self.vlm = vlm
         self.llm = llm
@@ -87,6 +88,7 @@ class QueryAwareGrounder:
         self._pose_path = pose_prompt_path
         self._verify_path = verify_prompt_path
         self._vp_lib = viewpoint_lib
+        self._clip_scorer = clip_scorer
         self._next_obj_id = 0
 
     @staticmethod
@@ -136,6 +138,9 @@ class QueryAwareGrounder:
                 )
 
         hyps = self._parse_to_hypotheses(raw, viewpoint, env)
+        # CLIP semantic injection: 当 VLM 标签不含 target 时，用视觉相似度补救
+        if self._clip_scorer and primary and hyps:
+            self._inject_clip_scores(hyps, image_path, primary)
         return Evidence(
             source="vlm_ground", timestamp=time.time(),
             raw_payload={
@@ -224,6 +229,45 @@ class QueryAwareGrounder:
             except (ValueError, TypeError, KeyError) as e:
                 logger.warning(f"[perception] skip malformed object: {e}; obj={obj}")
         return hyps
+
+    def _inject_clip_scores(
+        self, hyps: list[Hypothesis], image_path: str, primary_target: str,
+    ) -> None:
+        """用 CLIP 视觉相似度将 primary_target 注入 VLM 未识别的 hypothesis。
+
+        只在 VLM 标签不含 target 时注入, 避免重复。
+        """
+        target_key = _label_key(primary_target)
+        # 是否已有 hypothesis 的标签匹配 target
+        already_found = any(
+            target_key in _label_key(h.label)
+            or any(target_key in _label_key(lbl) for lbl, _ in h.label_alternatives)
+            for h in hyps
+        )
+        if already_found:
+            return  # VLM 已识别, 无需 CLIP 补救
+
+        vp_name = hyps[0].observed_in_views[0] if hyps[0].observed_in_views else "v0"
+        bboxes = [h.bbox_per_view.get(vp_name, (0, 0, 0, 0)) for h in hyps]
+        scores = self._clip_scorer.score_crops(image_path, bboxes, primary_target)
+
+        from src.clip_scorer import CLIPScorer
+        for h, score in zip(hyps, scores):
+            if score < CLIPScorer.INJECT_THRESHOLD:
+                continue
+            # 注入 primary_target 到 alternatives
+            h.label_alternatives.append((primary_target, float(score)))
+            # 重新归一化
+            total = sum(p for _, p in h.label_alternatives) or 1.0
+            h.label_alternatives = sorted(
+                ((lbl, p / total) for lbl, p in h.label_alternatives),
+                key=lambda x: x[1], reverse=True,
+            )
+            h.label_entropy = _shannon([p for _, p in h.label_alternatives])
+            logger.info(
+                "[clip] injected '%s' (sim=%.3f) into %s (label='%s')",
+                primary_target, score, h.object_id, h.label,
+            )
 
     @staticmethod
     def _extract_json(raw: str) -> Optional[dict]:

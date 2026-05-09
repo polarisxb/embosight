@@ -119,10 +119,12 @@ def build_agent(top_cfg: dict[str, Any], agent_cfg: dict[str, Any], env, user_mo
     from src.task_decomposer import TaskDecomposer
     from src.user_channel import CLIUserChannel, FakeUserChannel
     from src.vlm_cache import VLMCache
+    from src.clip_scorer import CLIPScorer
 
     llm = _build_llm(top_cfg)
     vlm = _build_vlm(top_cfg)
     cache = VLMCache(max_size=agent_cfg["cache"]["max_size"])
+    clip_scorer = CLIPScorer(device="cpu")
     vp_lib = ViewpointLibrary(
         config_path=top_cfg.get("viewpoints_path", "configs/viewpoints.yaml"),
     )
@@ -145,6 +147,7 @@ def build_agent(top_cfg: dict[str, Any], agent_cfg: dict[str, Any], env, user_mo
             pose_prompt_path=agent_cfg["perception"]["pose_prompt"],
             verify_prompt_path=agent_cfg["perception"]["verify_prompt"],
             viewpoint_lib=vp_lib,
+            clip_scorer=clip_scorer,
         ),
         safety_classifier=SafetyClassifier(llm=llm),
         grasp_planner=GraspPlanner(vlm=vlm, env=env),

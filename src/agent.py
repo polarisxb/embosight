@@ -106,6 +106,12 @@ class EmboSightAgent:
                 preference="search_target",
             )
             if next_vp is None:
+                # LLM semantic fallback: 用 LLM 判断现有 hypothesis 是否语义匹配
+                if belief.hypotheses and self._llm_semantic_fallback(belief):
+                    target = belief.target()
+                    if target is not None:
+                        # 成功桥接, 跳过 ask_user, 进入正常决策
+                        return self._decide_with_target(belief, target)
                 primary = (belief.decomposed.primary_target
                            if belief.decomposed else "目标")
                 return Action(
@@ -164,6 +170,103 @@ class EmboSightAgent:
     @staticmethod
     def _has_zoomed(h: Hypothesis) -> bool:
         return h.times_re_observed > 0
+
+    def _decide_with_target(self, belief: WorldBelief, target: Hypothesis) -> Action:
+        """target 已确定时的决策 (阶段 C-E), 避免代码重复。"""
+        if target.times_re_observed >= self.MAX_RE_OBSERVE:
+            return Action(kind="ask_user", question=belief.compose_clarification())
+        axis = belief.most_uncertain_axis()
+        if (belief.is_label_confident(target)
+                and target.position_std_m < 0.10
+                and belief.is_safety_confident(target)
+                and target.grasp_uncertainty is None):
+            return Action(kind="plan_grasp_candidates", target_hypothesis=target)
+        if axis == "label":
+            if not self._has_zoomed(target):
+                return Action(kind="re_observe", target_hypothesis=target,
+                              strategy="zoom_in")
+            alt2 = (target.label_alternatives[1][0]
+                    if len(target.label_alternatives) > 1 else "别的")
+            return Action(
+                kind="ask_user",
+                question=f"我看到一个{target.label}样的东西, 也可能是{alt2}, 您要的是哪个?",
+            )
+        if axis == "position":
+            return Action(kind="re_observe", target_hypothesis=target,
+                          strategy="parallax_view")
+        if axis == "safety":
+            return Action(kind="classify_safety", target_hypothesis=target)
+        if axis == "grasp":
+            if not target.grasp_candidates:
+                return Action(kind="plan_grasp_candidates", target_hypothesis=target)
+            if target.pose_uncertainty > 0.5:
+                return Action(kind="re_observe", target_hypothesis=target,
+                              strategy="parallax_for_pose")
+            return Action(
+                kind="ask_user",
+                question=f"我没法抓到{target.label}, 它现在是横放还是竖放?",
+            )
+        return Action(kind="give_up",
+                      metadata={"reason": "unreachable decision branch"})
+
+    def _llm_semantic_fallback(self, belief: WorldBelief) -> bool:
+        """LLM 判断现有 hypothesis 中哪个语义等价于 primary_target。
+
+        如果找到匹配, 将 primary_target 注入该 hypothesis 的 alternatives, 返回 True。
+        """
+        primary = belief.decomposed.primary_target if belief.decomposed else ""
+        if not primary:
+            return False
+
+        labels = list({h.label for h in belief.hypotheses})
+        if not labels:
+            return False
+
+        prompt = (
+            f"The user wants to pick up '{primary}'. "
+            f"A vision model detected these objects in the scene: {labels}. "
+            f"Which ONE of these detected objects is most likely to be '{primary}' "
+            f"(considering synonyms, visual similarity, or category overlap)? "
+            f"Reply with ONLY the object name from the list, or 'none' if no match."
+        )
+        try:
+            answer = self.llm.generate(prompt).strip().lower()
+        except Exception as e:
+            logger.warning("[semantic_fallback] LLM call failed: %s", e)
+            return False
+
+        if not answer or answer == "none":
+            return False
+
+        # 找到匹配的 hypothesis
+        from src.perception import _label_key, _shannon
+        answer_key = _label_key(answer)
+        matched_h = None
+        for h in belief.hypotheses:
+            if _label_key(h.label) == answer_key or answer_key in _label_key(h.label):
+                matched_h = h
+                break
+        if matched_h is None:
+            return False
+
+        # 注入 primary_target
+        primary_key = _label_key(primary)
+        already = any(primary_key in _label_key(lbl) for lbl, _ in matched_h.label_alternatives)
+        if already:
+            return True  # 已存在
+
+        matched_h.label_alternatives.append((primary, 0.40))
+        total = sum(p for _, p in matched_h.label_alternatives) or 1.0
+        matched_h.label_alternatives = sorted(
+            ((lbl, p / total) for lbl, p in matched_h.label_alternatives),
+            key=lambda x: x[1], reverse=True,
+        )
+        matched_h.label_entropy = _shannon([p for _, p in matched_h.label_alternatives])
+        logger.info(
+            "[semantic_fallback] LLM matched '%s' → '%s' (injected into %s)",
+            primary, answer, matched_h.object_id,
+        )
+        return True
 
     # ──────────────────────────────────────
     # run (主循环, §5.1)

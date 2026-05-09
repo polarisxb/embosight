@@ -36,6 +36,7 @@ from src.episode_logger import EpisodeLogger  # noqa: E402
 from src.grasp_planner import GraspPlanner  # noqa: E402
 from src.llm_backend import LLMBackend  # noqa: E402
 from src.perception import QueryAwareGrounder  # noqa: E402
+from src.clip_scorer import CLIPScorer  # noqa: E402
 from src.safety_gate import SafetyClassifier  # noqa: E402
 from src.task_decomposer import TaskDecomposer  # noqa: E402
 from src.user_channel import CLIUserChannel, FakeUserChannel  # noqa: E402
@@ -148,6 +149,7 @@ def main() -> int:
     else:
         user_channel = CLIUserChannel()
 
+    clip_scorer = CLIPScorer(device="cpu")
     agent = EmboSightAgent(
         task_decomposer=TaskDecomposer(llm),
         perception=QueryAwareGrounder(
@@ -159,6 +161,7 @@ def main() -> int:
             pose_prompt_path=agent_cfg["perception"]["pose_prompt"],
             verify_prompt_path=agent_cfg["perception"]["verify_prompt"],
             viewpoint_lib=vp_lib,
+            clip_scorer=clip_scorer,
         ),
         safety_classifier=SafetyClassifier(llm=llm),
         grasp_planner=GraspPlanner(vlm=vlm, env=env),
