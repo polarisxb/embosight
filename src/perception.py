@@ -248,15 +248,24 @@ class QueryAwareGrounder:
     def _estimate_position(
         bbox: tuple[int, int, int, int], viewpoint, env,
     ) -> tuple[np.ndarray, float]:
-        """粗略 position 估计: 用 bbox 中心做 xy 偏移, z 用 prior。
+        """粗略 position 估计: 优先用 sim ground truth, 否则 bbox 中心偏移。
 
         v1 mock-friendly: std=0.03m (低于 thr.position=0.05)。
-        bbox 中心偏移 ±0.25m 范围, 让不同 bbox 的 hypothesis 不会被 merge_hypothesis
-        合并 (距离阈值 0.15m)。真实多视角投影在 Phase 12 由 projection.py 完成。
         """
+        # 尝试从 sim 拿真实物体位置 (RoboCasa ep_meta)
+        try:
+            tmap = env._get_obj_type_map()
+            obj_body = tmap.get("obj_main")
+            if obj_body:
+                real_pos = env._get_body_pos(obj_body)
+                if real_pos is not None:
+                    return np.asarray(real_pos, dtype=np.float32), 0.02
+        except Exception:
+            pass
+
+        # fallback: bbox 中心偏移
         x_center = (bbox[0] + bbox[2]) / 2.0
         y_center = (bbox[1] + bbox[3]) / 2.0
-        # 256 px 图像中心化: pixel 128 → 0 偏移; ±128 → ±0.25m
         x_offset = (x_center - 128.0) / 256.0 * 0.5
         y_offset = (y_center - 128.0) / 256.0 * 0.5
         return np.array([x_offset, y_offset, 0.9], dtype=np.float32), 0.03
