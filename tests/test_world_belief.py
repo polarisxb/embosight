@@ -275,9 +275,9 @@ class TestMerge:
 
 class TestPrune:
     def test_phantom_pruned(self):
-        """1 视角 + entropy>0.7 + 步数>3 → 删。"""
+        """1 视角 + entropy>0.95 + 步数>3 → 删。"""
         b = WorldBelief(user_query="x")
-        h_ghost = _basic_hyp(label="ghost", label_e=0.85,
+        h_ghost = _basic_hyp(label="ghost", label_e=0.98,
                              alternatives=[("ghost", 0.4), ("blob", 0.4)])
         h_ghost.observed_in_views = ["v1"]
         b.hypotheses = [h_ghost]
