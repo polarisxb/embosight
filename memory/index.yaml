@@ -1,0 +1,5 @@
+version: 1
+last_updated: "2026-05-11"
+domains:
+  grasp: memory/grasp_experience.yaml
+  recognition: memory/recognition_hints.yaml
