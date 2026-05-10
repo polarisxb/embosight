@@ -400,6 +400,12 @@ class EmboSightAgent:
                 if self._latest_grasp_succeeded(belief):
                     self._consolidate_memory(belief, success=True)
                     return self._success_result(belief, start)
+                # Grasp failed → clear candidates so decide_next re-plans
+                # with memory advice (avoids repeating same bad strategy)
+                h = belief.target()
+                if h is not None:
+                    h.grasp_candidates = []
+                    h.grasp_strategy = None
                 continue
 
             action = self.decide_next(belief)
