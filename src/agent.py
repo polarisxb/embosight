@@ -28,6 +28,7 @@ class EmboSightAgent:
 
     MAX_STEPS = 12
     MAX_RE_OBSERVE = 3
+    MAX_ASK_USER = 3
 
     def __init__(
         self,
@@ -89,6 +90,15 @@ class EmboSightAgent:
     # ──────────────────────────────────────
 
     def decide_next(self, belief: WorldBelief) -> Action:
+        # ask_user 次数统计
+        ask_count = sum(1 for a in belief.action_history if a.kind == "ask_user")
+
+        # 降级: ask_user 超限 → 强制选最佳 hypothesis 直接抓
+        if ask_count >= self.MAX_ASK_USER:
+            fallback = self._force_best_hypothesis(belief)
+            if fallback is not None:
+                return fallback
+
         # 阶段 0: 已 confident → grasp
         if belief.is_confident_to_act():
             return Action(kind="grasp", target_hypothesis=belief.target())
@@ -208,6 +218,69 @@ class EmboSightAgent:
             )
         return Action(kind="give_up",
                       metadata={"reason": "unreachable decision branch"})
+
+    def _force_best_hypothesis(self, belief: WorldBelief) -> Optional[Action]:
+        """ask_user 超限后降级: 选置信度最高的 hypothesis 强制推进。
+
+        逻辑:
+        1. 取 target() (忽略 ambiguity); 若无, 取 label_alternatives[0] 概率最高的 hyp
+        2. 强制注入 primary_target 到该 hyp (让 target() 能返回它)
+        3. 按缺失阶段返回下一步 action (safety → plan → grasp)
+        """
+        best = belief.target(ignore_ambiguity=True)
+        if best is None and belief.hypotheses:
+            # 概率排序选最高置信 hypothesis
+            best = max(
+                belief.hypotheses,
+                key=lambda h: h.label_alternatives[0][1] if h.label_alternatives else 0,
+            )
+        if best is None:
+            return None
+
+        primary = (belief.decomposed.primary_target
+                   if belief.decomposed else best.label)
+        logger.warning(
+            "[agent] ask_user limit reached — forcing best hypothesis: "
+            "%s (label='%s') as '%s'",
+            best.object_id, best.label, primary,
+        )
+
+        # 强制注入 primary_target, 让 target() 能找到它
+        from src.perception import _label_key, _shannon
+        primary_key = _label_key(primary)
+        already = any(
+            primary_key in _label_key(lbl)
+            for lbl, _ in best.label_alternatives
+        )
+        if not already:
+            best.label_alternatives.append((primary, 0.50))
+            total = sum(p for _, p in best.label_alternatives) or 1.0
+            best.label_alternatives = sorted(
+                ((lbl, p / total) for lbl, p in best.label_alternatives),
+                key=lambda x: x[1], reverse=True,
+            )
+            best.label_entropy = _shannon([p for _, p in best.label_alternatives])
+        else:
+            # 已有但概率可能不够 — 强制提升到 0.50
+            new_alts = []
+            for lbl, p in best.label_alternatives:
+                if primary_key in _label_key(lbl):
+                    new_alts.append((lbl, max(p, 0.50)))
+                else:
+                    new_alts.append((lbl, p))
+            total = sum(p for _, p in new_alts) or 1.0
+            best.label_alternatives = sorted(
+                ((lbl, p / total) for lbl, p in new_alts),
+                key=lambda x: x[1], reverse=True,
+            )
+            best.label_entropy = _shannon([p for _, p in best.label_alternatives])
+
+        # 按缺失阶段推进
+        if not belief.is_safety_confident(best):
+            return Action(kind="classify_safety", target_hypothesis=best)
+        if not best.grasp_candidates:
+            return Action(kind="plan_grasp_candidates", target_hypothesis=best)
+        return Action(kind="grasp", target_hypothesis=best)
 
     def _llm_semantic_fallback(self, belief: WorldBelief) -> bool:
         """LLM 判断现有 hypothesis 中哪个语义等价于 primary_target。

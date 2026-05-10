@@ -196,6 +196,31 @@ class TestRun:
         assert len(result.action_history) <= agent.MAX_STEPS + 2
 
 
+class TestAskUserFallback:
+    """ask_user 超过 MAX_ASK_USER 次后降级抓最高置信物体。"""
+
+    def test_fallback_grabs_best_hypothesis(self, tmp_image):
+        """VLM 看到 banana 但 target 是 apple → ask 3 次后降级抓 banana。"""
+        decomp = json.dumps({"primary_target": "apple", "constraints": []})
+        vlm_resp = json.dumps({"objects": [
+            {"bbox_2d": [10, 10, 50, 50], "label": "banana",
+             "alternatives": [["banana", 0.85], ["fruit", 0.15]],
+             "confidence": 0.9, "visible_features": "yellow curved"},
+        ]})
+        safety = json.dumps({"dist": {"safe": 1.0}, "reasoning": "fruit"})
+        agent, env = _make_full_agent(
+            decomp, [vlm_resp] * 20, safety,
+            vp_count=2, image_path=tmp_image,
+        )
+        result = agent.run("拿苹果", env)
+        ask_count = sum(1 for a in result.action_history if a.kind == "ask_user")
+        assert ask_count <= agent.MAX_ASK_USER, \
+            f"ask_user should not exceed MAX_ASK_USER={agent.MAX_ASK_USER}, got {ask_count}"
+        # 降级后应尝试抓取
+        grasp_count = sum(1 for a in result.action_history if a.kind == "grasp")
+        assert grasp_count >= 1, "fallback should attempt a grasp"
+
+
 class TestVerifyMismatchFlow:
     """F6 / Edge 9.6: post-grasp verify 失败时的完整恢复流程。
 
