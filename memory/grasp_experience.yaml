@@ -1,1 +1,42 @@
-entries: []
+entries:
+- object_type: apple
+  best_strategy: top_down
+  failed:
+  - strategy: top_down
+    reason: ik_unreachable
+    count: 12
+  total_attempts: 19
+  success_count: 7
+  notes: ''
+  last_updated: '2026-05-11'
+- object_type: banana
+  best_strategy: top_down
+  failed:
+  - strategy: top_down
+    reason: ik_unreachable
+    count: 10
+  total_attempts: 12
+  success_count: 2
+  notes: ''
+  last_updated: '2026-05-11'
+- object_type: bowl
+  best_strategy: top_down
+  failed: []
+  total_attempts: 2
+  success_count: 2
+  notes: ''
+  last_updated: '2026-05-11'
+- object_type: peeler
+  best_strategy: top_down
+  failed: []
+  total_attempts: 1
+  success_count: 1
+  notes: ''
+  last_updated: '2026-05-11'
+- object_type: cup
+  best_strategy: top_down
+  failed: []
+  total_attempts: 1
+  success_count: 1
+  notes: ''
+  last_updated: '2026-05-11'
