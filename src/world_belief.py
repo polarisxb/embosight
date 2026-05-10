@@ -312,10 +312,10 @@ class WorldBelief:
     def target(self, *, ignore_ambiguity: bool = False) -> Optional[Hypothesis]:
         """返回最匹配 user_query 的 hypothesis。
 
-        - 如无 decomposed 或无 hypotheses, None
-        - 取 label_alternatives 里 primary_target / synonyms 的概率最大者
-        - 副分: 当前 label 文本含 primary_target / synonym 也算 0.5
-          (synonym 命中分数稍低: 0.45, 避免压制 primary 命中)
+        两阶段匹配 (方案 B):
+        - Phase 1: 只用 primary_target 匹配 (完全等价于 P0 之前行为)
+        - Phase 2: primary 无结果时, 用 synonyms 做兜底 (不影响已成功的场景)
+
         - top1 与 top2 的概率差 < 0.2 → 视为模糊, 返回 None (Edge case 9.12)
         - ignore_ambiguity=True 跳过模糊检查 (用于 consume_user_answer)
         """
@@ -323,16 +323,36 @@ class WorldBelief:
             return None
         target_word = self.decomposed.primary_target.lower()
         target_key = _label_key(target_word)
-        # primary 优先匹配; synonym 命中得分略低 (0.45 vs 0.5) 防止压过精确匹配
-        match_words: list[tuple[str, str, float]] = [
-            (target_word, target_key, 0.5),
-        ]
+
+        # Phase 1: primary only (保留 pre-P0 行为, 不引入回归)
+        result = self._match_hypotheses(
+            [(target_word, target_key, 0.5)],
+            ignore_ambiguity=ignore_ambiguity,
+        )
+        if result is not None:
+            return result
+
+        # Phase 2: synonym fallback (只在 primary 无结果时)
+        synonym_words: list[tuple[str, str, float]] = []
         for syn in self.decomposed.primary_target_synonyms:
             syn_lower = syn.lower()
             syn_key = _label_key(syn_lower)
             if syn_key and syn_key != target_key:
-                match_words.append((syn_lower, syn_key, 0.45))
+                synonym_words.append((syn_lower, syn_key, 0.45))
+        if synonym_words:
+            return self._match_hypotheses(
+                [(target_word, target_key, 0.5)] + synonym_words,
+                ignore_ambiguity=ignore_ambiguity,
+            )
+        return None
 
+    def _match_hypotheses(
+        self,
+        match_words: list[tuple[str, str, float]],
+        *,
+        ignore_ambiguity: bool = False,
+    ) -> Optional[Hypothesis]:
+        """在 hypotheses 中按 match_words 打分选 top1。"""
         scored: list[tuple[float, Hypothesis]] = []
         for h in self.hypotheses:
             best_match_score = 0.0

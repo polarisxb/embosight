@@ -278,15 +278,15 @@ class QueryAwareGrounder:
                     per_bbox_max[i] = (float(s), q)
 
         from src.clip_scorer import CLIPScorer
-        # 同义词命中阈值略放宽 (synonym 召回通常更弱)
-        threshold = CLIPScorer.INJECT_THRESHOLD
-        if synonyms:
-            threshold = max(0.20, threshold - 0.03)
+        strict_thr = CLIPScorer.INJECT_THRESHOLD   # 0.23, primary 命中用
+        relaxed_thr = max(0.20, strict_thr - 0.03)  # 0.20, synonym 命中用
 
         # 只注入到分数最高的单个 hypothesis, 避免多个注入导致歧义
+        # 按来源分阈值: primary 命中用 strict, synonym 命中用 relaxed
         best_idx, best_score, best_q = -1, 0.0, primary_target
         for i, (score, q) in enumerate(per_bbox_max):
-            if score >= threshold and score > best_score:
+            thr = strict_thr if q == primary_target else relaxed_thr
+            if score >= thr and score > best_score:
                 best_idx, best_score, best_q = i, score, q
         if best_idx < 0:
             return

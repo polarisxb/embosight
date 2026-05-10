@@ -161,7 +161,7 @@ class TestTargetMatchSynonyms:
         assert belief.target() is h
 
     def test_target_primary_beats_synonym(self):
-        """primary 命中分数 0.5, synonym 命中 0.45, 应优先返回 primary 命中物。"""
+        """Phase 1 找到 primary → 直接返回, synonym 不参与 (方案 B)。"""
         import numpy as np
 
         from src.world_belief import (
@@ -187,7 +187,38 @@ class TestTargetMatchSynonyms:
             position_std_m=0.02,
         )
         belief.hypotheses = [h_synonym, h_primary]
-        # 两者得分接近 (0.85 vs 0.85), 应通过 ambiguity 检查或返回 primary
-        result = belief.target(ignore_ambiguity=True)
-        # primary 命中应优先于 synonym
-        assert result is h_primary or result is h_synonym  # 至少能选出一个
+        # Phase 1 (primary only) 找到 h_primary → 直接返回, 不受 h_synonym 干扰
+        result = belief.target()
+        assert result is h_primary
+
+    def test_synonym_no_ambiguity_when_primary_matches(self):
+        """有 synonym 匹配的 hypothesis 存在, 但 primary 也能找到 → 无回归。"""
+        import numpy as np
+
+        from src.world_belief import (
+            DecomposedTask, Hypothesis, WorldBelief,
+        )
+        belief = WorldBelief(user_query="拿酸奶")
+        belief.decomposed = DecomposedTask(
+            primary_target="yogurt",
+            primary_target_synonyms=["dairy cup", "fermented milk"],
+        )
+        # 场景: VLM 正确识别了 yogurt, 同时场景中有一个 cup
+        h_yogurt = Hypothesis(
+            object_id="o1", label="yogurt",
+            label_alternatives=[("yogurt", 0.75), ("container", 0.25)],
+            label_entropy=0.8,
+            position_3d=np.array([0.5, 0, 0.9], dtype=np.float32),
+            position_std_m=0.02,
+        )
+        h_cup = Hypothesis(
+            object_id="o2", label="cup",
+            label_alternatives=[("cup", 0.90), ("mug", 0.10)],
+            label_entropy=0.3,
+            position_3d=np.array([0.6, 0, 0.9], dtype=np.float32),
+            position_std_m=0.02,
+        )
+        belief.hypotheses = [h_yogurt, h_cup]
+        # Phase 1 匹配 primary "yogurt" → 只有 h_yogurt, 无歧义
+        result = belief.target()
+        assert result is h_yogurt

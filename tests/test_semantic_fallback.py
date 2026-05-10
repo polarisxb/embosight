@@ -173,14 +173,15 @@ class TestCLIPMultiQueryInjection:
         # 既然 synonym 已匹配, 不应再注入
         assert h.label_alternatives == old_alts
 
-    def test_relaxed_threshold_with_synonyms(self):
-        """有 synonyms 时阈值放宽到 0.20 (CLIP threshold 0.23 - 0.03)。"""
+    def test_relaxed_threshold_for_synonym_query(self):
+        """synonym 查询用放宽阈值 0.20; primary 查询仍用严格 0.23。"""
         from src.perception import QueryAwareGrounder
 
-        # tangerine 0.21: 严格阈值会过滤, 放宽阈值能通过
+        # primary "tangerine" 0.21 < strict 0.23 → 不够
+        # synonym "orange" 0.21 >= relaxed 0.20 → 够, 注入 "tangerine"
         scorer = MockCLIPScorer(scores={
-            "tangerine": [0.21],
-            "orange": [0.10],
+            "tangerine": [0.10],
+            "orange": [0.21],
         })
         grounder = QueryAwareGrounder.__new__(QueryAwareGrounder)
         grounder._clip_scorer = scorer
@@ -191,6 +192,27 @@ class TestCLIPMultiQueryInjection:
         )
         labels = [lbl for lbl, _ in h.label_alternatives]
         assert "tangerine" in labels
+
+    def test_primary_uses_strict_threshold_even_with_synonyms(self):
+        """primary 0.21 < strict 0.23, 即使有 synonyms 也不因放宽而注入。"""
+        from src.perception import QueryAwareGrounder
+
+        # primary "tangerine" 0.21 是最高分, 但 < strict 0.23
+        # synonym "orange" 0.15 < relaxed 0.20
+        scorer = MockCLIPScorer(scores={
+            "tangerine": [0.21],
+            "orange": [0.15],
+        })
+        grounder = QueryAwareGrounder.__new__(QueryAwareGrounder)
+        grounder._clip_scorer = scorer
+
+        h = _hyp("food", [("food", 0.8)])
+        old_alts = list(h.label_alternatives)
+        grounder._inject_clip_scores(
+            [h], "dummy.png", "tangerine", synonyms=["orange"],
+        )
+        # primary 分数虽然最高但 < strict 阈值, 不应注入
+        assert h.label_alternatives == old_alts
 
     def test_no_synonyms_uses_strict_threshold(self):
         """无 synonyms 时仍用 0.23 阈值 (向后兼容)。"""
