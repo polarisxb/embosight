@@ -85,16 +85,27 @@ class TestAct:
         assert result.attempt.failure_mode == "ik_unreachable"
         assert result.success is False
 
-    def test_hit_z_floor_classified(self):
+    def test_hit_z_floor_recovery_succeeds(self):
+        """descend fails but +5mm retry + lift succeeds → overall success."""
         from src.action_executor import ActionExecutor
         from src.world_belief import DecomposedTask
-        env = FakeEnv(descend_ok=False)
+        env = FakeEnv(descend_ok=False, lift_ok=True)
+        exe = ActionExecutor(scene_describer=None)
+        h, _ = _hyp_with_candidate()
+        result = exe.act(h, DecomposedTask(primary_target="apple"), env)
+        assert result.success is True
+        assert result.attempt.failure_mode == "success"
+
+    def test_hit_z_floor_recovery_fails(self):
+        """descend fails AND lift after retry also fails → hit_z_floor."""
+        from src.action_executor import ActionExecutor
+        from src.world_belief import DecomposedTask
+        env = FakeEnv(descend_ok=False, lift_ok=False, final_z=0.0)
         exe = ActionExecutor(scene_describer=None)
         h, _ = _hyp_with_candidate()
         result = exe.act(h, DecomposedTask(primary_target="apple"), env)
         assert result.attempt.failure_mode == "hit_z_floor"
-        assert "z_actual" in result.attempt.diagnostic
-        assert "z_target" in result.attempt.diagnostic
+        assert "z_retry" in result.attempt.diagnostic
 
     def test_slipped_classified(self):
         from src.action_executor import ActionExecutor

@@ -90,25 +90,43 @@ class ActionExecutor:
             margin_m=margin_m,
         )
         if not descend_ok:
-            return self._failed_result(
-                candidate, "hit_z_floor",
-                {"z_target": z_target, "z_actual": float(z_actual),
-                 "stage": "descend"},
-                env,
+            # ── z-stall recovery: 抬高 5mm 再尝试夹取 ──
+            z_retry = float(z_actual) + 0.005
+            logger.info(
+                "[act] hit_z_floor at z=%.3f, retrying at z=%.3f (+5mm)",
+                z_actual, z_retry,
             )
-
-        # 3. close gripper
-        env.close_gripper(target_label=getattr(target, "label", None))
-
-        # 4. lift
-        lift_ok, final_z = env.lift()
-        if not lift_ok:
-            return self._failed_result(
-                candidate, "slipped",
-                {"z_target": z_target, "z_actual": float(z_actual),
-                 "final_z": float(final_z), "stage": "lift"},
-                env,
+            retry_target = np.array(
+                [float(candidate.point_3d[0]),
+                 float(candidate.point_3d[1]),
+                 z_retry], dtype=np.float32,
             )
+            env.move_arm_to(retry_target, threshold_m=0.005, max_steps=200)
+            env.close_gripper(target_label=getattr(target, "label", None))
+            lift_ok, final_z = env.lift()
+            if lift_ok:
+                logger.info("[act] z-stall recovery succeeded, lifted to z=%.3f", final_z)
+                z_actual = z_retry
+            else:
+                return self._failed_result(
+                    candidate, "hit_z_floor",
+                    {"z_target": z_target, "z_actual": float(z_actual),
+                     "z_retry": z_retry, "stage": "descend_retry_failed"},
+                    env,
+                )
+        else:
+            # 3. close gripper (正常路径)
+            env.close_gripper(target_label=getattr(target, "label", None))
+
+            # 4. lift
+            lift_ok, final_z = env.lift()
+            if not lift_ok:
+                return self._failed_result(
+                    candidate, "slipped",
+                    {"z_target": z_target, "z_actual": float(z_actual),
+                     "final_z": float(final_z), "stage": "lift"},
+                    env,
+                )
 
         eef = env.get_eef_pos()
         attempt = GraspAttempt(
