@@ -262,18 +262,20 @@ class QueryAwareGrounder:
         vp_name = hyps[0].observed_in_views[0] if hyps[0].observed_in_views else "v0"
         bboxes = [h.bbox_per_view.get(vp_name, (0, 0, 0, 0)) for h in hyps]
 
-        # 多查询: 对 primary + synonyms 分别打分, 每个 bbox 取最大值
+        # 多查询: 一次前向同时打分所有 query (避免 N 次独立调用)
         queries = [primary_target] + list(synonyms)
         per_bbox_max: list[tuple[float, str]] = [
             (0.0, primary_target) for _ in bboxes
         ]
-        for q in queries:
-            try:
-                scores = self._clip_scorer.score_crops(image_path, bboxes, q)
-            except Exception as e:
-                logger.debug(f"[clip] query '%s' failed: %s", q, e)
-                continue
-            for i, s in enumerate(scores):
+        try:
+            all_scores = self._clip_scorer.score_crops_multi(
+                image_path, bboxes, queries,
+            )
+        except Exception as e:
+            logger.debug("[clip] multi-query failed: %s", e)
+            return
+        for qi, q in enumerate(queries):
+            for i, s in enumerate(all_scores[qi]):
                 if s > per_bbox_max[i][0]:
                     per_bbox_max[i] = (float(s), q)
 

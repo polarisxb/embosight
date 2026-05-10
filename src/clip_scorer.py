@@ -87,11 +87,30 @@ class CLIPScorer:
         Returns:
             cosine similarities, 与 bboxes 等长; 加载失败时全 0
         """
-        if not bboxes:
-            return []
+        return self.score_crops_multi(image_path, bboxes, [text_query])[0]
+
+    def score_crops_multi(
+        self,
+        image_path: str,
+        bboxes: list[tuple[int, int, int, int]],
+        text_queries: list[str],
+    ) -> list[list[float]]:
+        """批量多查询: 一次前向传播同时计算多个 text_query 的分数。
+
+        Args:
+            image_path: 原始观察图像路径
+            bboxes: [(x1, y1, x2, y2), ...] 每个 hypothesis 的 bbox
+            text_queries: 多个目标词 (e.g. ["cake", "pastry", "dessert"])
+
+        Returns:
+            list[list[float]]: shape (len(text_queries), len(bboxes))
+            每个 query 对每个 bbox 的 cosine similarity
+        """
+        if not bboxes or not text_queries:
+            return [[0.0] * len(bboxes) for _ in text_queries]
         self._ensure_loaded()
         if self._model is None:
-            return [0.0] * len(bboxes)
+            return [[0.0] * len(bboxes) for _ in text_queries]
 
         try:
             from PIL import Image
@@ -110,9 +129,9 @@ class CLIPScorer:
                 else:
                     crops.append(img.crop((x1, y1, x2, y2)))
 
-            # Batch encode
+            # Batch encode: 多 query 一次前向
             inputs = self._processor(
-                text=[text_query],
+                text=text_queries,
                 images=crops,
                 return_tensors="pt",
                 padding=True,
@@ -121,12 +140,12 @@ class CLIPScorer:
 
             with torch.no_grad():
                 outputs = self._model(**inputs)
-                # logits_per_text shape: (1, n_crops)
+                # logits_per_text shape: (n_queries, n_crops)
                 # 转为 cosine similarity (CLIP logits = 100 * cosine_sim)
-                sims = (outputs.logits_per_text[0] / 100.0).cpu().numpy().tolist()
+                sims = (outputs.logits_per_text / 100.0).cpu().numpy().tolist()
 
             return sims
 
         except Exception as e:
-            logger.warning("[clip] score_crops failed: %s", e)
-            return [0.0] * len(bboxes)
+            logger.warning("[clip] score_crops_multi failed: %s", e)
+            return [[0.0] * len(bboxes) for _ in text_queries]

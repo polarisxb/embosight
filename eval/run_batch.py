@@ -71,7 +71,7 @@ def run_one_scenario_subprocess(
             text=True,
             cwd=str(REPO_ROOT),
             env=env_vars,
-            timeout=600,  # 10 分钟超时
+            timeout=900,  # 15 分钟超时 (CLIP 多查询需要更多时间)
         )
         elapsed = time.time() - t0
         stdout = proc.stdout
@@ -80,8 +80,8 @@ def run_one_scenario_subprocess(
         return {
             "scenario_id": scenario_id,
             "success": False,
-            "error": "subprocess timeout (600s)",
-            "time_s": 600.0,
+            "error": "subprocess timeout (900s)",
+            "time_s": 900.0,
             "steps": None,
             "failure_reason": "timeout",
             "grasp_failure_mode": None,

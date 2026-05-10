@@ -64,6 +64,9 @@ class MockCLIPScorer:
             scores = self._scores
         return scores[:len(bboxes)]
 
+    def score_crops_multi(self, image_path, bboxes, text_queries):
+        return [self.score_crops(image_path, bboxes, q) for q in text_queries]
+
 
 class TestCLIPInjection:
     def test_inject_adds_target_to_alternatives(self):
