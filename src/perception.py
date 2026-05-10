@@ -117,6 +117,8 @@ class QueryAwareGrounder:
             pass
 
         primary = belief.decomposed.primary_target if belief.decomposed else ""
+        synonyms = (belief.decomposed.primary_target_synonyms
+                    if belief.decomposed else [])
         constraints = belief.decomposed.constraints if belief.decomposed else []
         prompt = self._build_query_aware_prompt(primary, constraints, img_w, img_h)
 
@@ -140,7 +142,7 @@ class QueryAwareGrounder:
         hyps = self._parse_to_hypotheses(raw, viewpoint, env)
         # CLIP semantic injection: 当 VLM 标签不含 target 时，用视觉相似度补救
         if self._clip_scorer and primary and hyps:
-            self._inject_clip_scores(hyps, image_path, primary)
+            self._inject_clip_scores(hyps, image_path, primary, synonyms)
         return Evidence(
             source="vlm_ground", timestamp=time.time(),
             raw_payload={
@@ -233,31 +235,59 @@ class QueryAwareGrounder:
 
     def _inject_clip_scores(
         self, hyps: list[Hypothesis], image_path: str, primary_target: str,
+        synonyms: Optional[list[str]] = None,
     ) -> None:
         """用 CLIP 视觉相似度将 primary_target 注入 VLM 未识别的 hypothesis。
 
-        只在 VLM 标签不含 target 时注入, 避免重复。
+        只在 VLM 标签和 alternatives 不含 target 或任何同义词时注入。
+        多查询: 对 [primary, *synonyms] 分别打分, 取最大值 (跨命名召回)。
+        注入的 label 名仍是 primary_target (保持下游一致性)。
         """
+        synonyms = synonyms or []
         target_key = _label_key(primary_target)
-        # 是否已有 hypothesis 的标签匹配 target
+        synonym_keys = [_label_key(s) for s in synonyms if _label_key(s)]
+        # 是否已有 hypothesis 的标签匹配 target 或任一 synonym
+        all_keys = [target_key] + synonym_keys
         already_found = any(
-            target_key in _label_key(h.label)
-            or any(target_key in _label_key(lbl) for lbl, _ in h.label_alternatives)
+            any(k and k in _label_key(h.label) for k in all_keys)
+            or any(
+                any(k and k in _label_key(lbl) for k in all_keys)
+                for lbl, _ in h.label_alternatives
+            )
             for h in hyps
         )
         if already_found:
-            return  # VLM 已识别, 无需 CLIP 补救
+            return  # VLM 已识别 (含 synonym), 无需 CLIP 补救
 
         vp_name = hyps[0].observed_in_views[0] if hyps[0].observed_in_views else "v0"
         bboxes = [h.bbox_per_view.get(vp_name, (0, 0, 0, 0)) for h in hyps]
-        scores = self._clip_scorer.score_crops(image_path, bboxes, primary_target)
+
+        # 多查询: 对 primary + synonyms 分别打分, 每个 bbox 取最大值
+        queries = [primary_target] + list(synonyms)
+        per_bbox_max: list[tuple[float, str]] = [
+            (0.0, primary_target) for _ in bboxes
+        ]
+        for q in queries:
+            try:
+                scores = self._clip_scorer.score_crops(image_path, bboxes, q)
+            except Exception as e:
+                logger.debug(f"[clip] query '%s' failed: %s", q, e)
+                continue
+            for i, s in enumerate(scores):
+                if s > per_bbox_max[i][0]:
+                    per_bbox_max[i] = (float(s), q)
 
         from src.clip_scorer import CLIPScorer
-        # 只注入到 CLIP 分数最高的单个 hypothesis, 避免多个注入导致歧义
-        best_idx, best_score = -1, 0.0
-        for i, score in enumerate(scores):
-            if score >= CLIPScorer.INJECT_THRESHOLD and score > best_score:
-                best_idx, best_score = i, score
+        # 同义词命中阈值略放宽 (synonym 召回通常更弱)
+        threshold = CLIPScorer.INJECT_THRESHOLD
+        if synonyms:
+            threshold = max(0.20, threshold - 0.03)
+
+        # 只注入到分数最高的单个 hypothesis, 避免多个注入导致歧义
+        best_idx, best_score, best_q = -1, 0.0, primary_target
+        for i, (score, q) in enumerate(per_bbox_max):
+            if score >= threshold and score > best_score:
+                best_idx, best_score, best_q = i, score, q
         if best_idx < 0:
             return
         h = hyps[best_idx]
@@ -271,8 +301,9 @@ class QueryAwareGrounder:
         )
         h.label_entropy = _shannon([p for _, p in h.label_alternatives])
         logger.info(
-            "[clip] injected '%s' (sim=%.3f, prob=%.2f) into %s (label='%s')",
-            primary_target, best_score, inject_prob, h.object_id, h.label,
+            "[clip] injected '%s' via query='%s' (sim=%.3f, prob=%.2f) "
+            "into %s (label='%s')",
+            primary_target, best_q, best_score, inject_prob, h.object_id, h.label,
         )
 
     @staticmethod

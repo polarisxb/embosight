@@ -206,6 +206,9 @@ class DecomposedTask:
     primary_target: str
     constraints: list[Constraint] = field(default_factory=list)
     raw_query: str = ""
+    # 同义词列表 (visually/semantically similar) — 由 LLM 一次性生成,
+    # 用于 target() 匹配 + CLIP 多查询, 提高跨命名召回 (e.g. tangerine ≈ orange)
+    primary_target_synonyms: list[str] = field(default_factory=list)
 
 
 # ============================================================
@@ -308,10 +311,11 @@ class WorldBelief:
     
     def target(self, *, ignore_ambiguity: bool = False) -> Optional[Hypothesis]:
         """返回最匹配 user_query 的 hypothesis。
-        
+
         - 如无 decomposed 或无 hypotheses, None
-        - 取 label_alternatives 里 primary_target 的概率最大者
-        - 副分: 当前 label 文本含 primary_target 也算 0.5
+        - 取 label_alternatives 里 primary_target / synonyms 的概率最大者
+        - 副分: 当前 label 文本含 primary_target / synonym 也算 0.5
+          (synonym 命中分数稍低: 0.45, 避免压制 primary 命中)
         - top1 与 top2 的概率差 < 0.2 → 视为模糊, 返回 None (Edge case 9.12)
         - ignore_ambiguity=True 跳过模糊检查 (用于 consume_user_answer)
         """
@@ -319,24 +323,33 @@ class WorldBelief:
             return None
         target_word = self.decomposed.primary_target.lower()
         target_key = _label_key(target_word)
+        # primary 优先匹配; synonym 命中得分略低 (0.45 vs 0.5) 防止压过精确匹配
+        match_words: list[tuple[str, str, float]] = [
+            (target_word, target_key, 0.5),
+        ]
+        for syn in self.decomposed.primary_target_synonyms:
+            syn_lower = syn.lower()
+            syn_key = _label_key(syn_lower)
+            if syn_key and syn_key != target_key:
+                match_words.append((syn_lower, syn_key, 0.45))
+
         scored: list[tuple[float, Hypothesis]] = []
         for h in self.hypotheses:
-            label_matches = (
-                target_word in h.label.lower()
-                or target_key in _label_key(h.label)
-            )
+            best_match_score = 0.0
             prob = 0.0
-            # 搜索 ALL alternatives (zoom 可能改变 top label)
-            if h.label_alternatives:
-                for lbl, p in h.label_alternatives:
-                    if p >= 0.20 and (
-                        target_word in lbl.lower() or target_key in _label_key(lbl)
-                    ):
-                        prob = max(prob, p)
-            if label_matches:
-                prob = max(prob, 0.5)
+            for word, key, base_score in match_words:
+                if word in h.label.lower() or key in _label_key(h.label):
+                    best_match_score = max(best_match_score, base_score)
+                if h.label_alternatives:
+                    for lbl, p in h.label_alternatives:
+                        if p >= 0.20 and (
+                            word in lbl.lower() or key in _label_key(lbl)
+                        ):
+                            prob = max(prob, p)
+            if best_match_score > 0:
+                prob = max(prob, best_match_score)
             if prob > 0:
-                prob = max(prob, 0.5)
+                prob = max(prob, best_match_score or 0.5)
                 scored.append((prob, h))
         if not scored:
             return None

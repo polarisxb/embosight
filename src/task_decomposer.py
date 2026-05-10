@@ -78,8 +78,42 @@ class TaskDecomposer:
                 text=c.get("text"),
                 reason=c.get("reason", ""),
             ))
+        # 解析同义词 (过滤过宽的词 + 过短/过长的词)
+        synonyms = self._parse_synonyms(
+            data.get("primary_target_synonyms", []), primary,
+        )
         return DecomposedTask(
             primary_target=primary,
             constraints=constraints,
             raw_query=query,
+            primary_target_synonyms=synonyms,
         )
+
+    # 过宽的同义词黑名单 (匹配会污染所有 hypothesis)
+    _SYNONYM_BLACKLIST = {
+        "object", "thing", "item", "stuff", "something", "anything",
+        "物体", "东西",
+    }
+
+    @staticmethod
+    def _parse_synonyms(raw_list, primary: str) -> list[str]:
+        """过滤+清洗同义词列表。"""
+        if not isinstance(raw_list, list):
+            return []
+        primary_lower = primary.strip().lower()
+        out: list[str] = []
+        seen: set[str] = {primary_lower}
+        for s in raw_list[:5]:  # 最多 5 个
+            if not isinstance(s, str):
+                continue
+            cleaned = s.strip().lower()
+            if not cleaned or len(cleaned) < 2 or len(cleaned) > 30:
+                continue
+            if cleaned in seen:
+                continue
+            if cleaned in TaskDecomposer._SYNONYM_BLACKLIST:
+                logger.info("[decompose] dropping over-broad synonym '%s'", cleaned)
+                continue
+            out.append(cleaned)
+            seen.add(cleaned)
+        return out
