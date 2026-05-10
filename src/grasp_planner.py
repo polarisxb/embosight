@@ -49,7 +49,7 @@ class GraspPlanner:
     # LLM 策略选择
     # ──────────────────────────────────────
 
-    def select_strategy(self, hyp: Hypothesis) -> GraspStrategy:
+    def select_strategy(self, hyp: Hypothesis, memory_advice: str = "") -> GraspStrategy:
         """让 LLM 根据物体外观 + 安全属性选择抓取策略。"""
         if not self.llm or not self._strategy_template:
             return GraspStrategy(strategy="top_down", reasoning="no LLM",
@@ -70,6 +70,7 @@ class GraspPlanner:
             .replace("{visible_features}", hyp.visible_features or "(no description)")
             .replace("{safety_dist}", safety_text)
             .replace("{pose}", pose_text)
+            .replace("{past_experience}", memory_advice or "No prior experience with this object.")
         )
 
         try:

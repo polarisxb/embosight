@@ -11,6 +11,9 @@ Think step by step:
 2. What is the dominant risk? (fragile/sharp/hot/chemical/none)
 3. What grasp approach is safest for THIS specific instance?
 
+Past experience with this object type: {past_experience}
+If past experience indicates a strategy failure, do NOT repeat that strategy.
+
 Available strategies:
 - top_down: approach from above, standard grip (good for: solid items, sealed packages, fruits, bottles with cap)
 - gentle_side: approach from the side with wide gentle grip (good for: fragile open items, soft food, eggs)
