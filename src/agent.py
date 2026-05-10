@@ -20,6 +20,7 @@ from src.world_belief import (
     Hypothesis,
     WorldBelief,
 )
+from src.memory_manager import MemoryEntry, MemoryManager
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,7 @@ class EmboSightAgent:
         viewpoint_lib,
         llm,
         vlm,
+        memory_manager: Optional[MemoryManager] = None,
     ):
         self.task_decomposer = task_decomposer
         self.perception = perception
@@ -55,6 +57,7 @@ class EmboSightAgent:
         self.vp_lib = viewpoint_lib
         self.llm = llm
         self.vlm = vlm
+        self.memory = memory_manager or MemoryManager()
 
     # ──────────────────────────────────────
     # 测试用工厂 (with_test_doubles)
@@ -371,6 +374,14 @@ class EmboSightAgent:
         if self.logger:
             self.logger.start_episode(query)
 
+        # Load long-term memory for this task
+        self.memory.working_memory.clear()
+        prior = self.memory.load_for_task(
+            belief.decomposed.primary_target if belief.decomposed else "",
+        )
+        if prior:
+            logger.info("[agent] loaded prior knowledge:\n%s", prior)
+
         # 初始 NBV: 至少拍一帧
         self._execute_action(
             Action(kind="observe", viewpoint=self.vp_lib[0]),
@@ -387,17 +398,20 @@ class EmboSightAgent:
                     env, belief,
                 )
                 if self._latest_grasp_succeeded(belief):
+                    self._consolidate_memory(belief, success=True)
                     return self._success_result(belief, start)
                 continue
 
             action = self.decide_next(belief)
             if action.kind == "give_up":
+                self._consolidate_memory(belief, success=False)
                 return self._giveup_result(
                     belief, start,
                     reason=action.metadata.get("reason"),
                 )
             self._execute_action(action, env, belief)
 
+        self._consolidate_memory(belief, success=False)
         return self._giveup_result(belief, start, reason="MAX_STEPS reached")
 
     # ──────────────────────────────────────
@@ -436,7 +450,10 @@ class EmboSightAgent:
         elif action.kind == "plan_grasp_candidates":
             hyp = action.target_hypothesis
             # LLM 策略选择: 根据外观 + 安全属性决定抓取方式
-            strategy = self.grasp_planner.select_strategy(hyp)
+            grasp_advice = self.memory.get_grasp_advice(hyp.label) or ""
+            working_advice = self.memory.get_working_summary(domain="grasp")
+            memory_advice = "\n".join(filter(None, [grasp_advice, working_advice]))
+            strategy = self.grasp_planner.select_strategy(hyp, memory_advice=memory_advice)
             hyp.grasp_strategy = strategy
             logger.info(
                 "[agent] grasp strategy: %s | reason: %s | speech: %s",
@@ -474,6 +491,31 @@ class EmboSightAgent:
                 action.target_hypothesis, belief.decomposed, env,
             )
             action.target_hypothesis.grasp_attempts.append(result.attempt)
+            hyp = action.target_hypothesis
+            strategy_name = (
+                hyp.grasp_strategy.strategy if hyp.grasp_strategy else "unknown"
+            )
+            if result.attempt.failure_mode == "success":
+                self.memory.record_event(MemoryEntry(
+                    step=len(belief.action_history),
+                    domain="grasp", event="strategy_succeeded",
+                    context={"strategy": strategy_name, "object": hyp.label},
+                    lesson=f"{hyp.label}: {strategy_name} succeeded",
+                ))
+            else:
+                self.memory.record_event(MemoryEntry(
+                    step=len(belief.action_history),
+                    domain="grasp", event="strategy_failed",
+                    context={
+                        "strategy": strategy_name,
+                        "failure": result.attempt.failure_mode,
+                        "object": hyp.label,
+                    },
+                    lesson=(
+                        f"{hyp.label}: {strategy_name} failed "
+                        f"({result.attempt.failure_mode}), avoid this strategy"
+                    ),
+                ))
             if result.attempt.failure_mode == "success":
                 try:
                     verify_ok, conf = self.executor.verify_grasp(
@@ -604,6 +646,17 @@ class EmboSightAgent:
                 h.label = h.label_alternatives[0][0]
                 from src.perception import _shannon
                 h.label_entropy = _shannon([p for _, p in h.label_alternatives])
+
+    def _consolidate_memory(self, belief: WorldBelief, success: bool) -> None:
+        """Episode 结束: 将 working memory 精华写入 long-term YAML。"""
+        try:
+            target_hyp = belief.target()
+            self.memory.consolidate(
+                success=success,
+                object_type=target_hyp.label if target_hyp else "",
+            )
+        except Exception as e:
+            logger.warning("[agent] memory consolidate failed: %s", e)
 
     def _latest_grasp_succeeded(self, belief: WorldBelief) -> bool:
         h = belief.target()
