@@ -36,3 +36,66 @@ scenarios:
     user_mode: fake_from_robocasa
     max_resets: 1
     difficulty: easy
+
+  - id: fixed_seed_discover_004
+    env_name: PickPlaceCounterToCabinet
+    seed: 50
+    query: "pick up anything"
+    expected_object: null
+    user_mode: fake_from_robocasa
+    max_resets: 1
+    difficulty: easy
+
+  - id: fixed_seed_discover_005
+    env_name: PickPlaceCounterToCabinet
+    seed: 55
+    query: "pick up anything"
+    expected_object: null
+    user_mode: fake_from_robocasa
+    max_resets: 1
+    difficulty: easy
+
+  - id: fixed_seed_discover_006
+    env_name: PickPlaceCounterToCabinet
+    seed: 60
+    query: "pick up anything"
+    expected_object: null
+    user_mode: fake_from_robocasa
+    max_resets: 1
+    difficulty: easy
+
+  - id: fixed_seed_discover_007
+    env_name: PickPlaceCounterToCabinet
+    seed: 70
+    query: "pick up anything"
+    expected_object: null
+    user_mode: fake_from_robocasa
+    max_resets: 1
+    difficulty: easy
+
+  - id: fixed_seed_discover_008
+    env_name: PickPlaceCounterToCabinet
+    seed: 80
+    query: "pick up anything"
+    expected_object: null
+    user_mode: fake_from_robocasa
+    max_resets: 1
+    difficulty: easy
+
+  - id: fixed_seed_discover_009
+    env_name: PickPlaceCounterToCabinet
+    seed: 90
+    query: "pick up anything"
+    expected_object: null
+    user_mode: fake_from_robocasa
+    max_resets: 1
+    difficulty: easy
+
+  - id: fixed_seed_discover_010
+    env_name: PickPlaceCounterToCabinet
+    seed: 100
+    query: "pick up anything"
+    expected_object: null
+    user_mode: fake_from_robocasa
+    max_resets: 1
+    difficulty: easy
