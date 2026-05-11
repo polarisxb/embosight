@@ -416,6 +416,11 @@ class EmboSightAgent:
                     reason=action.metadata.get("reason"),
                 )
             self._execute_action(action, env, belief)
+            # decide_next 也可能返回 grasp (如 _force_best_hypothesis),
+            # 必须检查成功, 否则 grasp 成功了但 agent 不知道 → MAX_STEPS
+            if action.kind == "grasp" and self._latest_grasp_succeeded(belief):
+                self._consolidate_memory(belief, success=True)
+                return self._success_result(belief, start)
 
         self._consolidate_memory(belief, success=False)
         return self._giveup_result(belief, start, reason="MAX_STEPS reached")

@@ -531,7 +531,8 @@ class WorldBelief:
         return True
     
     def prune_phantom_hypotheses(self) -> int:
-        """删除疑似幻觉 hypothesis (1 视角 + 高熵 + 步数>3)。返回删除数。"""
+        """删除疑似幻觉 hypothesis (1 视角 + 高熵 + 步数>3)。返回删除数。
+        但不删除 is_label_confident 通过的 hypothesis (概率差够大仍可信)。"""
         if len(self.action_history) <= self.PRUNE_MIN_STEPS:
             return 0
         before = len(self.hypotheses)
@@ -542,6 +543,7 @@ class WorldBelief:
                 and h.label_entropy > self.PRUNE_PHANTOM_ENTROPY
                 and not h.grasp_attempts
                 and h.times_re_observed == 0
+                and not self.is_label_confident(h)
             )
         ]
         return before - len(self.hypotheses)
