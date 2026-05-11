@@ -88,3 +88,61 @@ def test_summarize_results_counts_failures_strategies_objects_and_slowest():
     assert summary["strategy_usage"] == {"strategy_top_down": 2}
     assert summary["object_distribution"] == {"apple": 1, "wine": 1}
     assert summary["slowest_runs"][0]["scenario_id"] == "random_seed_103"
+
+
+def test_parse_run_fixed_output_extracts_oracle_and_episode_result():
+    module = _load_module()
+    stdout = '''
+========== EPISODE RESULT ==========
+scenario: random_seed_101
+success : True
+speech  : 我来拿apple
+steps   : 4
+time    : 12.3s
+
+========== ORACLE SUMMARY ==========
+{
+  "success": true,
+  "failure_reason": null,
+  "grasp_failure_mode": "success",
+  "grasp_candidate_source": "strategy_top_down",
+  "action_sequence": ["observe", "classify_safety", "plan_grasp_candidates", "grasp"],
+  "actual_object": "apple"
+}
+episode: logs/episodes/episode_1.json
+'''
+
+    result = module.parse_run_fixed_output(
+        scenario_id="random_seed_101",
+        seed=101,
+        returncode=0,
+        stdout=stdout,
+        stderr="",
+        elapsed=12.34,
+    )
+
+    assert result["scenario_id"] == "random_seed_101"
+    assert result["seed"] == 101
+    assert result["success"] is True
+    assert result["steps"] == 4
+    assert result["speech"] == "我来拿apple"
+    assert result["grasp_failure_mode"] == "success"
+    assert result["grasp_strategy"] == "strategy_top_down"
+    assert result["action_sequence"] == [
+        "observe", "classify_safety", "plan_grasp_candidates", "grasp",
+    ]
+    assert result["actual_object"] == "apple"
+
+
+def test_prepare_memory_dir_writes_empty_index_and_domains(tmp_path):
+    module = _load_module()
+    memory_dir = tmp_path / "memory" / "random_seed_101"
+
+    module.prepare_memory_dir(memory_dir)
+
+    assert (memory_dir / "index.yaml").exists()
+    assert (memory_dir / "grasp_experience.yaml").exists()
+    assert (memory_dir / "recognition_hints.yaml").exists()
+    index_text = (memory_dir / "index.yaml").read_text(encoding="utf-8")
+    assert "grasp" in index_text
+    assert "recognition" in index_text

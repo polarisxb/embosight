@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +55,190 @@ def append_jsonl(path: Path, item: dict[str, Any]) -> None:
         f.write(json.dumps(item, ensure_ascii=False, sort_keys=True) + "\n")
         f.flush()
         os.fsync(f.fileno())
+
+
+def parse_run_fixed_output(
+    scenario_id: str,
+    seed: int,
+    returncode: int,
+    stdout: str,
+    stderr: str,
+    elapsed: float,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "scenario_id": scenario_id,
+        "seed": seed,
+        "success": returncode == 0,
+        "error": None,
+        "steps": None,
+        "time_s": round(elapsed, 1),
+        "failure_reason": None,
+        "grasp_failure_mode": None,
+        "grasp_strategy": None,
+        "action_sequence": [],
+        "speech": None,
+        "actual_object": None,
+    }
+
+    try:
+        oracle_start = stdout.find("ORACLE SUMMARY")
+        if oracle_start >= 0:
+            json_start = stdout.find("{", oracle_start)
+            json_end = stdout.find("\nepisode:", json_start)
+            if json_end < 0:
+                json_end = stdout.rfind("}")
+            if json_start >= 0 and json_end >= 0:
+                oracle_json = stdout[json_start:json_end + 1]
+                oracle = json.loads(oracle_json)
+                result["success"] = oracle.get("success", False)
+                result["failure_reason"] = oracle.get("failure_reason")
+                result["grasp_failure_mode"] = oracle.get("grasp_failure_mode")
+                result["grasp_strategy"] = oracle.get("grasp_candidate_source")
+                result["action_sequence"] = oracle.get("action_sequence", [])
+                result["actual_object"] = oracle.get("actual_object")
+
+        ep_start = stdout.find("EPISODE RESULT")
+        if ep_start >= 0:
+            for line in stdout[ep_start:ep_start + 500].splitlines():
+                if line.startswith("steps"):
+                    try:
+                        result["steps"] = int(line.split(":", 1)[1].strip())
+                    except (ValueError, IndexError):
+                        pass
+                elif line.startswith("speech"):
+                    result["speech"] = line.split(":", 1)[1].strip() if ":" in line else None
+                elif line.startswith("reason") and not result["failure_reason"]:
+                    result["failure_reason"] = line.split(":", 1)[1].strip()
+    except Exception as e:
+        if returncode != 0 and not result["error"]:
+            tail = (stderr or stdout)[-500:] if (stderr or stdout) else "unknown"
+            result["error"] = f"parse_failed ({type(e).__name__}: {e}): {tail[-200:]}"
+
+    if returncode != 0 and not result["failure_reason"] and not result["error"]:
+        result["failure_reason"] = "subprocess_nonzero_exit"
+        result["error"] = stderr[-300:] if stderr else "no stderr"
+
+    return result
+
+
+def prepare_memory_dir(memory_dir: Path) -> None:
+    memory_dir.mkdir(parents=True, exist_ok=True)
+    grasp_path = memory_dir / "grasp_experience.yaml"
+    recognition_path = memory_dir / "recognition_hints.yaml"
+    index_path = memory_dir / "index.yaml"
+
+    if not grasp_path.exists():
+        grasp_path.write_text(yaml.dump({"entries": []}, allow_unicode=True), encoding="utf-8")
+    if not recognition_path.exists():
+        recognition_path.write_text(yaml.dump({"entries": []}, allow_unicode=True), encoding="utf-8")
+    index_path.write_text(
+        yaml.dump({
+            "version": 1,
+            "domains": {
+                "grasp": str(grasp_path),
+                "recognition": str(recognition_path),
+            },
+        }, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+
+
+def run_one_seed_subprocess(
+    scenario: dict[str, Any],
+    run_dir: Path,
+    scenarios_config: Path,
+    gpu_id: int,
+    config: str,
+    agent_config: str,
+    log_level: str,
+    timeout_s: int,
+) -> dict[str, Any]:
+    scenario_id = str(scenario["id"])
+    seed = int(scenario["seed"])
+    per_run_log_dir = run_dir / "per_run_logs"
+    per_run_log_dir.mkdir(parents=True, exist_ok=True)
+    stdout_path = per_run_log_dir / f"{scenario_id}.stdout.txt"
+    stderr_path = per_run_log_dir / f"{scenario_id}.stderr.txt"
+    memory_dir = run_dir / "memory" / scenario_id
+    prepare_memory_dir(memory_dir)
+
+    env_vars = os.environ.copy()
+    env_vars["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+
+    cmd = [
+        sys.executable, "eval/run_fixed.py",
+        "--scenario", scenario_id,
+        "--scenarios-config", str(scenarios_config),
+        "--config", config,
+        "--agent-config", agent_config,
+        "--log-level", log_level,
+        "--allow-object-mismatch",
+        "--memory-dir", str(memory_dir),
+    ]
+
+    t0 = time.time()
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            cwd=str(REPO_ROOT),
+            env=env_vars,
+            timeout=timeout_s,
+        )
+        elapsed = time.time() - t0
+        stdout = proc.stdout or ""
+        stderr = proc.stderr or ""
+        stdout_path.write_text(stdout, encoding="utf-8")
+        stderr_path.write_text(stderr, encoding="utf-8")
+        result = parse_run_fixed_output(
+            scenario_id=scenario_id,
+            seed=seed,
+            returncode=proc.returncode,
+            stdout=stdout,
+            stderr=stderr,
+            elapsed=elapsed,
+        )
+    except subprocess.TimeoutExpired as e:
+        stdout = e.stdout if isinstance(e.stdout, str) else ""
+        stderr = e.stderr if isinstance(e.stderr, str) else ""
+        stdout_path.write_text(stdout, encoding="utf-8")
+        stderr_path.write_text(stderr, encoding="utf-8")
+        result = {
+            "scenario_id": scenario_id,
+            "seed": seed,
+            "success": False,
+            "error": f"subprocess timeout ({timeout_s}s)",
+            "time_s": float(timeout_s),
+            "steps": None,
+            "failure_reason": "timeout",
+            "grasp_failure_mode": None,
+            "grasp_strategy": None,
+            "action_sequence": [],
+            "speech": None,
+            "actual_object": None,
+        }
+    except Exception as e:
+        elapsed = time.time() - t0
+        result = {
+            "scenario_id": scenario_id,
+            "seed": seed,
+            "success": False,
+            "error": f"{type(e).__name__}: {e}",
+            "time_s": round(elapsed, 1),
+            "steps": None,
+            "failure_reason": "subprocess_error",
+            "grasp_failure_mode": None,
+            "grasp_strategy": None,
+            "action_sequence": [],
+            "speech": None,
+            "actual_object": None,
+        }
+
+    result["stdout_path"] = str(stdout_path)
+    result["stderr_path"] = str(stderr_path)
+    result["memory_dir"] = str(memory_dir)
+    return result
 
 
 def summarize_results(results: list[dict[str, Any]]) -> dict[str, Any]:
