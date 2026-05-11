@@ -14,6 +14,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from src.eval_oracle import summarize_episode  # noqa: E402
+from src.memory_manager import MemoryManager  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +108,20 @@ def latest_episode_path(log_dir: str | Path) -> Path | None:
     return max(paths, key=lambda p: p.stat().st_mtime)
 
 
-def build_agent(top_cfg: dict[str, Any], agent_cfg: dict[str, Any], env, user_mode: str, query: str):
+def create_memory_manager(memory_dir: str | Path | None):
+    if memory_dir is None:
+        return None
+    return MemoryManager(memory_dir=Path(memory_dir))
+
+
+def build_agent(
+    top_cfg: dict[str, Any],
+    agent_cfg: dict[str, Any],
+    env,
+    user_mode: str,
+    query: str,
+    memory_dir: str | Path | None = None,
+):
     from scripts.run_agent import _build_llm, _build_vlm
     from src.action_executor import ActionExecutor
     from src.active_planner import ActiveViewpointSelector, ViewpointLibrary
@@ -134,6 +148,7 @@ def build_agent(top_cfg: dict[str, Any], agent_cfg: dict[str, Any], env, user_mo
         user_channel = FakeUserChannel.from_query(llm, query)
     else:
         user_channel = CLIUserChannel()
+    memory_manager = create_memory_manager(memory_dir)
     return EmboSightAgent(
         task_decomposer=TaskDecomposer(llm),
         perception=QueryAwareGrounder(
@@ -158,6 +173,7 @@ def build_agent(top_cfg: dict[str, Any], agent_cfg: dict[str, Any], env, user_mo
         viewpoint_lib=vp_lib,
         llm=llm,
         vlm=vlm,
+        memory_manager=memory_manager,
     )
 
 
@@ -169,6 +185,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--agent-config", default="configs/agent.yaml")
     parser.add_argument("--log-level", default="INFO")
     parser.add_argument("--allow-object-mismatch", action="store_true")
+    parser.add_argument("--memory-dir", default=None,
+                        help="Optional per-run memory directory for isolated eval")
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -216,6 +234,7 @@ def main(argv: list[str] | None = None) -> int:
         env,
         str(scenario.get("user_mode", "fake_from_robocasa")),
         query,
+        memory_dir=args.memory_dir,
     )
     result = agent.run(query, env)
     print("\n========== EPISODE RESULT ==========")

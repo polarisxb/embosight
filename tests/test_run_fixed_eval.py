@@ -95,3 +95,18 @@ def test_reset_until_expected_seeds_each_attempt_deterministically():
         ("seed", 43),
         ("reset", None),
     ]
+
+
+def test_create_memory_manager_none_returns_none():
+    module = _load_module()
+
+    assert module.create_memory_manager(None) is None
+
+
+def test_create_memory_manager_uses_custom_dir(tmp_path):
+    module = _load_module()
+
+    mm = module.create_memory_manager(tmp_path)
+
+    assert mm is not None
+    assert mm.memory_dir == tmp_path
