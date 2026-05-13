@@ -32,6 +32,8 @@ class MemoryManager:
     Long-term memory: YAML files with pointer-index (persistent, cross-episode).
     """
 
+    _MAX_SYNONYMS_PER_TARGET = 5
+
     def __init__(self, memory_dir: Path = Path("memory")):
         self.memory_dir = memory_dir
         self.working_memory: list[MemoryEntry] = []
@@ -140,10 +142,17 @@ class MemoryManager:
     # ── Consolidate (episode 结束, working → long-term) ──
 
     def consolidate(self, success: bool, object_type: str = "") -> None:
+        # grasp: always (Phase 1 contract — records failures too)
         grasp_events = [e for e in self.working_memory if e.domain == "grasp"]
         if grasp_events and object_type:
             self._consolidate_grasp(grasp_events, object_type, success)
-        # Phase 2: recognition consolidation
+        # recognition: only on success (avoids fixing误命中 into long-term)
+        if success:
+            recognition_events = [
+                e for e in self.working_memory if e.domain == "recognition"
+            ]
+            if recognition_events:
+                self._consolidate_recognition(recognition_events)
 
     def _consolidate_grasp(
         self, events: list[MemoryEntry], object_type: str, success: bool,
@@ -191,6 +200,90 @@ class MemoryManager:
         target_entry["last_updated"] = datetime.now().strftime("%Y-%m-%d")
         self._long_term["grasp"] = entries
         self._save_domain("grasp")
+
+    def _consolidate_recognition(self, events: list[MemoryEntry]) -> None:
+        """Merge recognition working events into long-term YAML.
+
+        - vlm_common_labels: set semantics (append unique)
+        - effective_synonyms: count merged per (target, synonym); sorted desc; capped
+        - clip_helpful: True iff any event has method='clip'
+        Only called when episode succeeded (caller enforces).
+        """
+        from collections import defaultdict
+
+        entries = self._load_domain("recognition")
+
+        by_target: dict[str, list[MemoryEntry]] = defaultdict(list)
+        for e in events:
+            tgt = str(e.context.get("target", "")).strip().lower()
+            if tgt:
+                by_target[tgt].append(e)
+
+        for target, evts in by_target.items():
+            entry = None
+            for ex in entries:
+                if str(ex.get("target", "")).strip().lower() == target:
+                    entry = ex
+                    break
+            if entry is None:
+                entry = {
+                    "target": target,
+                    "vlm_common_labels": [],
+                    "effective_synonyms": [],
+                    "clip_helpful": False,
+                    "notes": "",
+                    "last_updated": "",
+                }
+                entries.append(entry)
+
+            seen_in_episode: set[tuple[str, str]] = set()
+            for e in evts:
+                ctx = e.context
+                if e.event == "synonym_effective":
+                    syn = str(ctx.get("synonym", "")).strip().lower()
+                    method = "clip"
+                    vlm_label = str(ctx.get("vlm_label", "")).strip().lower()
+                elif e.event == "label_corrected":
+                    syn = str(ctx.get("detected_label", "")).strip().lower()
+                    method = str(ctx.get("method", "llm"))
+                    vlm_label = syn
+                else:
+                    continue
+                if not syn or syn == target:
+                    continue
+                key = (e.event, syn)
+                if key in seen_in_episode:
+                    continue
+                seen_in_episode.add(key)
+
+                if vlm_label and vlm_label not in entry["vlm_common_labels"]:
+                    entry["vlm_common_labels"].append(vlm_label)
+
+                existing_syn = next(
+                    (s for s in entry["effective_synonyms"] if s["name"] == syn),
+                    None,
+                )
+                if existing_syn:
+                    existing_syn["count"] = existing_syn.get("count", 1) + 1
+                    existing_syn["last_method"] = method
+                else:
+                    entry["effective_synonyms"].append(
+                        {"name": syn, "count": 1, "last_method": method},
+                    )
+
+                if method == "clip":
+                    entry["clip_helpful"] = True
+
+            entry["effective_synonyms"].sort(
+                key=lambda s: s.get("count", 0), reverse=True,
+            )
+            entry["effective_synonyms"] = (
+                entry["effective_synonyms"][:self._MAX_SYNONYMS_PER_TARGET]
+            )
+            entry["last_updated"] = datetime.now().strftime("%Y-%m-%d")
+
+        self._long_term["recognition"] = entries
+        self._save_domain("recognition")
 
     def _save_domain(self, domain: str) -> None:
         fpath = self._domain_files.get(domain)

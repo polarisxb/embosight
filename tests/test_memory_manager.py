@@ -164,3 +164,144 @@ class TestLongTermMemory:
         mm = MemoryManager(memory_dir=Path(tempfile.mkdtemp()) / "nonexistent")
         assert mm.get_grasp_advice("anything") is None
         assert mm.load_for_task("anything") == ""
+
+
+class TestRecognitionConsolidation:
+    def _make_dir(self) -> Path:
+        import yaml
+        d = Path(tempfile.mkdtemp()) / "memory"
+        d.mkdir()
+        (d / "index.yaml").write_text(yaml.dump({
+            "version": 1,
+            "domains": {
+                "grasp": str(d / "grasp_experience.yaml"),
+                "recognition": str(d / "recognition_hints.yaml"),
+            },
+        }), encoding="utf-8")
+        (d / "grasp_experience.yaml").write_text(yaml.dump({"entries": []}), encoding="utf-8")
+        (d / "recognition_hints.yaml").write_text(yaml.dump({"entries": []}), encoding="utf-8")
+        return d
+
+    def test_consolidate_recognition_creates_entry(self):
+        from src.memory_manager import MemoryEntry, MemoryManager
+        d = self._make_dir()
+        mm = MemoryManager(memory_dir=d)
+        mm.record_event(MemoryEntry(
+            step=3, domain="recognition", event="synonym_effective",
+            context={"target": "tangerine", "synonym": "orange",
+                     "sim": 0.31, "vlm_label": "orange"},
+            lesson="tangerine: CLIP via 'orange'",
+        ))
+        mm.consolidate(success=True, object_type="tangerine")
+
+        mm2 = MemoryManager(memory_dir=d)
+        entries = mm2._load_domain("recognition")
+        assert len(entries) == 1
+        e = entries[0]
+        assert e["target"] == "tangerine"
+        assert "orange" in e["vlm_common_labels"]
+        assert any(s["name"] == "orange" and s["count"] == 1 for s in e["effective_synonyms"])
+        assert e["clip_helpful"] is True
+
+    def test_consolidate_recognition_skips_on_failure(self):
+        from src.memory_manager import MemoryEntry, MemoryManager
+        d = self._make_dir()
+        mm = MemoryManager(memory_dir=d)
+        mm.record_event(MemoryEntry(
+            step=3, domain="recognition", event="synonym_effective",
+            context={"target": "tangerine", "synonym": "orange",
+                     "sim": 0.31, "vlm_label": "orange"},
+            lesson="x",
+        ))
+        mm.consolidate(success=False, object_type="tangerine")
+
+        mm2 = MemoryManager(memory_dir=d)
+        entries = mm2._load_domain("recognition")
+        assert entries == []
+
+    def test_consolidate_recognition_merges_count(self):
+        from src.memory_manager import MemoryEntry, MemoryManager
+        d = self._make_dir()
+        # Episode 1
+        mm = MemoryManager(memory_dir=d)
+        mm.record_event(MemoryEntry(
+            step=3, domain="recognition", event="synonym_effective",
+            context={"target": "tangerine", "synonym": "orange",
+                     "sim": 0.31, "vlm_label": "orange"},
+            lesson="x",
+        ))
+        mm.consolidate(success=True, object_type="tangerine")
+
+        # Episode 2: same (target, synonym)
+        mm2 = MemoryManager(memory_dir=d)
+        mm2.record_event(MemoryEntry(
+            step=4, domain="recognition", event="synonym_effective",
+            context={"target": "tangerine", "synonym": "orange",
+                     "sim": 0.40, "vlm_label": "citrus"},
+            lesson="x",
+        ))
+        mm2.consolidate(success=True, object_type="tangerine")
+
+        mm3 = MemoryManager(memory_dir=d)
+        entries = mm3._load_domain("recognition")
+        e = entries[0]
+        # count merged to 2
+        syn = next(s for s in e["effective_synonyms"] if s["name"] == "orange")
+        assert syn["count"] == 2
+        # vlm_common_labels accumulated (set semantics)
+        assert "orange" in e["vlm_common_labels"]
+        assert "citrus" in e["vlm_common_labels"]
+
+    def test_consolidate_recognition_llm_method(self):
+        from src.memory_manager import MemoryEntry, MemoryManager
+        d = self._make_dir()
+        mm = MemoryManager(memory_dir=d)
+        mm.record_event(MemoryEntry(
+            step=3, domain="recognition", event="label_corrected",
+            context={"target": "yogurt", "detected_label": "container",
+                     "method": "llm"},
+            lesson="x",
+        ))
+        mm.consolidate(success=True, object_type="yogurt")
+
+        mm2 = MemoryManager(memory_dir=d)
+        entries = mm2._load_domain("recognition")
+        e = entries[0]
+        assert "container" in e["vlm_common_labels"]
+        syn = next(s for s in e["effective_synonyms"] if s["name"] == "container")
+        assert syn["last_method"] == "llm"
+        assert e["clip_helpful"] is False
+
+    def test_consolidate_recognition_synonyms_capped_at_5(self):
+        from src.memory_manager import MemoryEntry, MemoryManager
+        d = self._make_dir()
+        mm = MemoryManager(memory_dir=d)
+        for i in range(7):
+            mm.record_event(MemoryEntry(
+                step=i, domain="recognition", event="synonym_effective",
+                context={"target": "tangerine", "synonym": f"syn_{i}",
+                         "sim": 0.30, "vlm_label": f"syn_{i}"},
+                lesson="x",
+            ))
+        mm.consolidate(success=True, object_type="tangerine")
+
+        mm2 = MemoryManager(memory_dir=d)
+        entries = mm2._load_domain("recognition")
+        assert len(entries[0]["effective_synonyms"]) == 5
+
+    def test_grasp_consolidation_still_runs_on_failure(self):
+        """Phase 1 contract: grasp consolidation writes regardless of success."""
+        from src.memory_manager import MemoryEntry, MemoryManager
+        d = self._make_dir()
+        mm = MemoryManager(memory_dir=d)
+        mm.record_event(MemoryEntry(
+            step=5, domain="grasp", event="strategy_failed",
+            context={"strategy": "top_down", "failure": "hit_z_floor"},
+            lesson="x",
+        ))
+        mm.consolidate(success=False, object_type="apple")
+
+        mm2 = MemoryManager(memory_dir=d)
+        advice = mm2.get_grasp_advice("apple")
+        assert advice is not None
+        assert "top_down" in advice
