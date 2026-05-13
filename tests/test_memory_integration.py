@@ -316,3 +316,117 @@ class TestRecognitionRoundTrip:
         agent2._apply_recognition_hints(belief2)
 
         assert "container" in belief2.decomposed.primary_target_synonyms
+
+
+class TestSafetyRoundTrip:
+    def _make_memory_dir(self, tmp_path):
+        import yaml
+        d = tmp_path / "memory"
+        d.mkdir()
+        (d / "index.yaml").write_text(yaml.dump({
+            "version": 1,
+            "domains": {
+                "grasp": str(d / "grasp_experience.yaml"),
+                "safety": str(d / "safety_knowledge.yaml"),
+            },
+        }), encoding="utf-8")
+        (d / "grasp_experience.yaml").write_text(yaml.dump({"entries": []}), encoding="utf-8")
+        (d / "safety_knowledge.yaml").write_text(yaml.dump({"entries": []}), encoding="utf-8")
+        return d
+
+    def test_safety_classify_persists_and_injects_next_episode(self, tmp_path):
+        """Episode 1: agent records safety_classified → consolidate.
+        Episode 2: fresh agent retrieves prior, formats hint.
+        """
+        from src.agent import EmboSightAgent
+        from src.memory_manager import MemoryManager
+        from src.world_belief import Evidence
+
+        d = self._make_memory_dir(tmp_path)
+
+        # ===== Episode 1 =====
+        mm1 = MemoryManager(memory_dir=d)
+        agent1 = EmboSightAgent.__new__(EmboSightAgent)
+        agent1.memory = mm1
+
+        ev = Evidence(
+            source="llm_safety", timestamp=0.0,
+            raw_payload={
+                "dist": {"sharp": 0.80, "safe": 0.20},
+                "entropy": 0.50,
+                "reasoning": "metal blade visible",
+            },
+        )
+        agent1._record_safety_classified("knife", ev)
+        assert any(
+            e.domain == "safety" and e.event == "safety_classified"
+            for e in mm1.working_memory
+        )
+        mm1.consolidate(success=True, object_type="knife")
+
+        # ===== Episode 2 =====
+        mm2 = MemoryManager(memory_dir=d)
+        agent2 = EmboSightAgent.__new__(EmboSightAgent)
+        agent2.memory = mm2
+
+        prior = mm2.get_safety_prior("knife")
+        assert prior is not None
+        assert prior["top_class"] == "sharp"
+        assert prior["observations"] == 1
+        assert abs(prior["dist"]["sharp"] - 0.80) < 1e-6
+
+        hint = agent2._format_safety_prior_hint("knife")
+        assert hint is not None
+        assert "knife" in hint
+        assert "sharp" in hint
+
+    def test_safety_dist_converges_across_episodes(self, tmp_path):
+        """Multiple successful episodes → running average sharpens belief."""
+        from src.agent import EmboSightAgent
+        from src.memory_manager import MemoryManager
+        from src.world_belief import Evidence
+
+        d = self._make_memory_dir(tmp_path)
+
+        # 3 successful episodes, each classifies knife with high sharp prob
+        for sharp_p in (0.80, 0.85, 0.90):
+            mm = MemoryManager(memory_dir=d)
+            agent = EmboSightAgent.__new__(EmboSightAgent)
+            agent.memory = mm
+            ev = Evidence(
+                source="llm_safety", timestamp=0.0,
+                raw_payload={
+                    "dist": {"sharp": sharp_p, "safe": 1.0 - sharp_p},
+                    "entropy": 0.4,
+                },
+            )
+            agent._record_safety_classified("knife", ev)
+            mm.consolidate(success=True, object_type="knife")
+
+        mm_final = MemoryManager(memory_dir=d)
+        prior = mm_final.get_safety_prior("knife")
+        assert prior["observations"] == 3
+        # average should be (0.80 + 0.85 + 0.90) / 3 = 0.85
+        assert abs(prior["dist"]["sharp"] - 0.85) < 1e-6
+        assert prior["top_class"] == "sharp"
+
+    def test_failed_episode_does_not_persist_safety(self, tmp_path):
+        """Phase 2 contract: only success consolidates safety."""
+        from src.agent import EmboSightAgent
+        from src.memory_manager import MemoryManager
+        from src.world_belief import Evidence
+
+        d = self._make_memory_dir(tmp_path)
+        mm = MemoryManager(memory_dir=d)
+        agent = EmboSightAgent.__new__(EmboSightAgent)
+        agent.memory = mm
+
+        ev = Evidence(
+            source="llm_safety", timestamp=0.0,
+            raw_payload={"dist": {"sharp": 0.9, "safe": 0.1}, "entropy": 0.3},
+        )
+        agent._record_safety_classified("knife", ev)
+        mm.consolidate(success=False, object_type="knife")  # FAILED
+
+        mm2 = MemoryManager(memory_dir=d)
+        assert mm2.get_safety_prior("knife") is None
