@@ -169,8 +169,9 @@ def run_one_seed_subprocess(
     env_vars = os.environ.copy()
     env_vars["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
 
+    run_script = os.environ.get("EMBOSIGHT_RUN_FIXED_SCRIPT", "eval/run_fixed.py")
     cmd = [
-        sys.executable, "eval/run_fixed.py",
+        sys.executable, run_script,
         "--scenario", scenario_id,
         "--scenarios-config", str(scenarios_config),
         "--config", config,
