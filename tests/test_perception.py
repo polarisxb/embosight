@@ -33,6 +33,37 @@ def _make_grounder(label_temperature: float = 1.0, vlm=None):
     )
 
 
+def _make_grounder_with_clip(vlm, clip_scores):
+    from src.perception import QueryAwareGrounder
+    from src.vlm_cache import VLMCache
+    from tests.test_semantic_fallback import MockCLIPScorer
+    return QueryAwareGrounder(
+        vlm=vlm, llm=MockLLM([]),
+        cache=VLMCache(), label_temperature=1.0,
+        clip_scorer=MockCLIPScorer(scores=clip_scores),
+    )
+
+
+def _make_belief(primary, synonyms=None):
+    from src.world_belief import DecomposedTask, WorldBelief
+    b = WorldBelief(user_query=f"pick the {primary}")
+    b.decomposed = DecomposedTask(
+        primary_target=primary,
+        primary_target_synonyms=list(synonyms or []),
+    )
+    return b
+
+
+class _FakeEnv:
+    def __init__(self, image_path):
+        self._p = image_path
+    def observe(self, vp):
+        class _Obs:
+            pass
+        _Obs.image_path = self._p
+        return _Obs()
+
+
 class TestParse:
     def test_basic_parse(self):
         g = _make_grounder()
@@ -393,3 +424,55 @@ class TestVerifyGrasp:
                 return type("VP", (), {"name": "eye_in_hand"})()
         ok, conf = g.verify_grasp(h, FakeEnv())
         assert ok is False
+
+
+class TestClipInjectedEvidence:
+    def test_observe_emits_clip_injected_when_synonym_hits(self, tmp_image):
+        """VLM 标 'citrus' (与 target/synonym 都不匹配); CLIP synonym 'orange' 命中 → evidence 含 clip_injected"""
+        vlm = MockVLM([_make_vlm_json([
+            {"bbox_2d": [0, 0, 50, 50], "label": "citrus",
+             "alternatives": [["citrus", 1.0]],
+             "confidence": 0.9, "visible_features": "round"},
+        ])])
+        g = _make_grounder_with_clip(vlm, clip_scores={
+            "tangerine": [0.10],   # primary 低于 strict 0.23
+            "orange":    [0.30],   # synonym 高于 relaxed 0.20
+        })
+        belief = _make_belief("tangerine", synonyms=["orange"])
+
+        ev = g.observe(viewpoint=None, env=_FakeEnv(tmp_image), belief=belief)
+        assert "clip_injected" in ev.raw_payload
+        info = ev.raw_payload["clip_injected"]
+        assert info["target"] == "tangerine"
+        assert info["synonym"] == "orange"
+        assert info["sim"] > 0.20
+        # vlm_label 在注入后 label 变成 'tangerine'，但 clip_injected 记录的应该是原始 vlm_label='citrus'
+        assert info["vlm_label"] == "citrus"
+
+    def test_observe_omits_clip_injected_when_primary_self_hits(self, tmp_image):
+        """best_q == primary → 无 synonym 知识 → 字段不应出现。"""
+        vlm = MockVLM([_make_vlm_json([
+            {"bbox_2d": [0, 0, 50, 50], "label": "fruit",
+             "alternatives": [["fruit", 1.0]],
+             "confidence": 0.9, "visible_features": "round"},
+        ])])
+        g = _make_grounder_with_clip(vlm, clip_scores={"cake": [0.30]})
+        belief = _make_belief("cake")
+
+        ev = g.observe(viewpoint=None, env=_FakeEnv(tmp_image), belief=belief)
+        assert "clip_injected" not in ev.raw_payload
+
+    def test_observe_omits_clip_injected_when_no_injection(self, tmp_image):
+        """所有 CLIP 分数低于阈值 → 字段不应出现。"""
+        vlm = MockVLM([_make_vlm_json([
+            {"bbox_2d": [0, 0, 50, 50], "label": "fruit",
+             "alternatives": [["fruit", 1.0]],
+             "confidence": 0.9, "visible_features": "round"},
+        ])])
+        g = _make_grounder_with_clip(vlm, clip_scores={
+            "tangerine": [0.05], "orange": [0.05],
+        })
+        belief = _make_belief("tangerine", synonyms=["orange"])
+
+        ev = g.observe(viewpoint=None, env=_FakeEnv(tmp_image), belief=belief)
+        assert "clip_injected" not in ev.raw_payload

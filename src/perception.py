@@ -140,17 +140,23 @@ class QueryAwareGrounder:
                 )
 
         hyps = self._parse_to_hypotheses(raw, viewpoint, env)
+        clip_info: Optional[dict] = None
         # CLIP semantic injection: 当 VLM 标签不含 target 时，用视觉相似度补救
         if self._clip_scorer and primary and hyps:
-            self._inject_clip_scores(hyps, image_path, primary, synonyms)
+            clip_info = self._inject_clip_scores(
+                hyps, image_path, primary, synonyms,
+            )
+        payload: dict = {
+            "viewpoint": getattr(viewpoint, "name", str(viewpoint)),
+            "hypotheses": [self._hyp_to_dict(h) for h in hyps],
+            "image_path": image_path,
+            "raw_vlm_text": raw[:1000],
+        }
+        if clip_info is not None:
+            payload["clip_injected"] = clip_info
         return Evidence(
             source="vlm_ground", timestamp=time.time(),
-            raw_payload={
-                "viewpoint": getattr(viewpoint, "name", str(viewpoint)),
-                "hypotheses": [self._hyp_to_dict(h) for h in hyps],
-                "image_path": image_path,
-                "raw_vlm_text": raw[:1000],
-            },
+            raw_payload=payload,
         )
 
     # ──────────────────────────────────────
@@ -236,12 +242,16 @@ class QueryAwareGrounder:
     def _inject_clip_scores(
         self, hyps: list[Hypothesis], image_path: str, primary_target: str,
         synonyms: Optional[list[str]] = None,
-    ) -> None:
+    ) -> Optional[dict]:
         """用 CLIP 视觉相似度将 primary_target 注入 VLM 未识别的 hypothesis。
 
         只在 VLM 标签和 alternatives 不含 target 或任何同义词时注入。
         多查询: 对 [primary, *synonyms] 分别打分, 取最大值 (跨命名召回)。
         注入的 label 名仍是 primary_target (保持下游一致性)。
+
+        Returns: 命中且 best_q != primary_target 时返回
+                 {"target","synonym","sim","vlm_label"} 供 memory 记录;
+                 其他情况返回 None。
         """
         synonyms = synonyms or []
         target_key = _label_key(primary_target)
@@ -257,7 +267,7 @@ class QueryAwareGrounder:
             for h in hyps
         )
         if already_found:
-            return  # VLM 已识别 (含 synonym), 无需 CLIP 补救
+            return None  # VLM 已识别 (含 synonym), 无需 CLIP 补救
 
         vp_name = hyps[0].observed_in_views[0] if hyps[0].observed_in_views else "v0"
         bboxes = [h.bbox_per_view.get(vp_name, (0, 0, 0, 0)) for h in hyps]
@@ -273,7 +283,7 @@ class QueryAwareGrounder:
             )
         except Exception as e:
             logger.debug("[clip] multi-query failed: %s", e)
-            return
+            return None
         for qi, q in enumerate(queries):
             for i, s in enumerate(all_scores[qi]):
                 if s > per_bbox_max[i][0]:
@@ -291,8 +301,9 @@ class QueryAwareGrounder:
             if score >= thr and score > best_score:
                 best_idx, best_score, best_q = i, score, q
         if best_idx < 0:
-            return
+            return None
         h = hyps[best_idx]
+        original_label = h.label  # 记录注入前的 VLM label (供 memory)
         # 注入概率至少 0.35, 保证归一化后 > 0.20 (通过 target() 阈值)
         inject_prob = max(0.35, float(best_score))
         h.label_alternatives.append((primary_target, inject_prob))
@@ -307,6 +318,15 @@ class QueryAwareGrounder:
             "into %s (label='%s')",
             primary_target, best_q, best_score, inject_prob, h.object_id, h.label,
         )
+        # 只在 best_q != primary 时返回 synonym 知识 (primary 自身命中无 synonym 信息)
+        if best_q == primary_target:
+            return None
+        return {
+            "target": primary_target,
+            "synonym": best_q,
+            "sim": float(best_score),
+            "vlm_label": original_label,
+        }
 
     @staticmethod
     def _extract_json(raw: str) -> Optional[dict]:
