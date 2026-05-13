@@ -618,6 +618,38 @@ class EmboSightAgent:
             if not merged:
                 belief.add_hypothesis(new_h)
 
+        # Recognition memory: CLIP synonym hit
+        clip_info = ev.raw_payload.get("clip_injected")
+        if clip_info:
+            self._record_recognition_synonym(clip_info)
+
+    def _record_recognition_synonym(self, info: dict) -> None:
+        """Record a synonym_effective event into working memory (dedup per episode)."""
+        target = str(info.get("target", "")).strip().lower()
+        synonym = str(info.get("synonym", "")).strip().lower()
+        if not target or not synonym or synonym == target:
+            return
+        # dedupe within episode by (target, synonym)
+        for e in self.memory.working_memory:
+            if (e.domain == "recognition"
+                    and e.event == "synonym_effective"
+                    and e.context.get("target") == target
+                    and e.context.get("synonym") == synonym):
+                return
+        sim = float(info.get("sim", 0.0))
+        self.memory.record_event(MemoryEntry(
+            step=len(self.memory.working_memory),
+            domain="recognition",
+            event="synonym_effective",
+            context={
+                "target": target,
+                "synonym": synonym,
+                "sim": sim,
+                "vlm_label": str(info.get("vlm_label", "")).strip().lower(),
+            },
+            lesson=f"{target}: CLIP hit via '{synonym}' (sim={sim:.2f})",
+        ))
+
     @staticmethod
     def _dict_to_hypothesis(d: dict) -> Hypothesis:
         return Hypothesis(

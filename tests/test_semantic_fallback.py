@@ -290,3 +290,83 @@ class TestLLMSemanticFallback:
         agent._llm_semantic_fallback(b)
         assert b.target() is not None
         assert b.target() is b.hypotheses[0]
+
+
+class TestAgentRecordsCLIPEvent:
+    def _make_minimal_agent(self):
+        import tempfile
+        from pathlib import Path
+        from src.agent import EmboSightAgent
+        from src.memory_manager import MemoryManager
+        agent = EmboSightAgent.__new__(EmboSightAgent)
+        agent.memory = MemoryManager(memory_dir=Path(tempfile.mkdtemp()))
+        return agent
+
+    def _make_evidence_with_clip(self, clip_info=None):
+        import time
+        from src.world_belief import Evidence
+        payload = {
+            "hypotheses": [{
+                "object_id": "obj_0",
+                "label": "citrus",
+                "label_alternatives": [("citrus", 0.7), ("tangerine", 0.3)],
+                "label_entropy": 0.5,
+                "position_3d": [0.5, 0.0, 0.9],
+                "position_std_m": 0.02,
+                "bbox_per_view": {"v0": [0, 0, 50, 50]},
+                "observed_in_views": ["v0"],
+            }],
+        }
+        if clip_info is not None:
+            payload["clip_injected"] = clip_info
+        return Evidence(
+            source="vlm_ground", timestamp=time.time(), raw_payload=payload,
+        )
+
+    def test_merge_evidence_records_synonym_effective(self):
+        from src.world_belief import DecomposedTask, WorldBelief
+        agent = self._make_minimal_agent()
+        belief = WorldBelief(user_query="pick tangerine")
+        belief.decomposed = DecomposedTask(primary_target="tangerine")
+
+        ev = self._make_evidence_with_clip(clip_info={
+            "target": "tangerine", "synonym": "orange",
+            "sim": 0.30, "vlm_label": "citrus",
+        })
+        agent._merge_hypotheses_from_evidence(belief, ev)
+
+        recog = [e for e in agent.memory.working_memory if e.domain == "recognition"]
+        assert len(recog) == 1
+        assert recog[0].event == "synonym_effective"
+        assert recog[0].context["target"] == "tangerine"
+        assert recog[0].context["synonym"] == "orange"
+        assert recog[0].context["vlm_label"] == "citrus"
+
+    def test_merge_evidence_no_record_without_clip_info(self):
+        from src.world_belief import DecomposedTask, WorldBelief
+        agent = self._make_minimal_agent()
+        belief = WorldBelief(user_query="pick tangerine")
+        belief.decomposed = DecomposedTask(primary_target="tangerine")
+
+        ev = self._make_evidence_with_clip(clip_info=None)
+        agent._merge_hypotheses_from_evidence(belief, ev)
+
+        recog = [e for e in agent.memory.working_memory if e.domain == "recognition"]
+        assert recog == []
+
+    def test_merge_evidence_dedups_same_episode_synonym(self):
+        from src.world_belief import DecomposedTask, WorldBelief
+        agent = self._make_minimal_agent()
+        belief = WorldBelief(user_query="pick tangerine")
+        belief.decomposed = DecomposedTask(primary_target="tangerine")
+
+        info = {"target": "tangerine", "synonym": "orange",
+                "sim": 0.30, "vlm_label": "citrus"}
+        ev1 = self._make_evidence_with_clip(clip_info=info)
+        ev2 = self._make_evidence_with_clip(clip_info=info)
+
+        agent._merge_hypotheses_from_evidence(belief, ev1)
+        agent._merge_hypotheses_from_evidence(belief, ev2)
+
+        recog = [e for e in agent.memory.working_memory if e.domain == "recognition"]
+        assert len(recog) == 1  # 第二次去重
