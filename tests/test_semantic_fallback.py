@@ -430,3 +430,98 @@ class TestAgentRecordsLLMFallbackEvent:
         assert recog[0].event == "label_corrected"
         assert recog[0].context["target"] == "cake"
         assert recog[0].context["detected_label"] == "chocolate"
+
+
+class TestAgentSafetyPriorAndRecording:
+    """Agent should:
+    1) read safety prior from memory and pass it to SafetyClassifier
+    2) record safety_classified event after classification
+    """
+
+    def _make_minimal_agent(self):
+        import tempfile
+        from pathlib import Path
+        from src.agent import EmboSightAgent
+        from src.memory_manager import MemoryManager
+        agent = EmboSightAgent.__new__(EmboSightAgent)
+        agent.memory = MemoryManager(memory_dir=Path(tempfile.mkdtemp()))
+        return agent
+
+    def test_format_safety_prior_hint_with_prior(self, tmp_path):
+        import yaml
+        from src.agent import EmboSightAgent
+        from src.memory_manager import MemoryManager
+        d = tmp_path / "memory"
+        d.mkdir()
+        (d / "index.yaml").write_text(yaml.dump({
+            "version": 1,
+            "domains": {"safety": str(d / "safety_knowledge.yaml")},
+        }), encoding="utf-8")
+        (d / "safety_knowledge.yaml").write_text(yaml.dump({
+            "entries": [{
+                "label": "knife",
+                "dist": {"sharp": 0.85, "safe": 0.10, "fragile": 0.05},
+                "top_class": "sharp",
+                "observations": 4,
+                "last_updated": "2026-05-13",
+            }],
+        }), encoding="utf-8")
+        agent = EmboSightAgent.__new__(EmboSightAgent)
+        agent.memory = MemoryManager(memory_dir=d)
+
+        hint = agent._format_safety_prior_hint("knife")
+        assert hint is not None
+        assert "knife" in hint
+        assert "sharp" in hint
+        # 应该提到 n=4 / 4 obs / observations 之一
+        assert "4" in hint
+
+    def test_format_safety_prior_hint_no_prior_returns_none(self):
+        agent = self._make_minimal_agent()
+        assert agent._format_safety_prior_hint("knife") is None
+
+    def test_format_safety_prior_hint_empty_label_returns_none(self):
+        agent = self._make_minimal_agent()
+        assert agent._format_safety_prior_hint("") is None
+
+    def test_record_safety_classified_writes_event(self):
+        from src.world_belief import Evidence
+        agent = self._make_minimal_agent()
+        ev = Evidence(
+            source="llm_safety", timestamp=0.0,
+            raw_payload={
+                "dist": {"sharp": 0.8, "safe": 0.2},
+                "entropy": 0.5,
+                "reasoning": "looks sharp",
+            },
+        )
+        agent._record_safety_classified("knife", ev)
+
+        safety_events = [
+            e for e in agent.memory.working_memory if e.domain == "safety"
+        ]
+        assert len(safety_events) == 1
+        assert safety_events[0].event == "safety_classified"
+        assert safety_events[0].context["label"] == "knife"
+        assert safety_events[0].context["dist"]["sharp"] == 0.8
+        assert safety_events[0].context["entropy"] == 0.5
+
+    def test_record_safety_classified_skips_empty_label(self):
+        from src.world_belief import Evidence
+        agent = self._make_minimal_agent()
+        ev = Evidence(
+            source="llm_safety", timestamp=0.0,
+            raw_payload={"dist": {"safe": 1.0}, "entropy": 0.0},
+        )
+        agent._record_safety_classified("", ev)
+        assert [e for e in agent.memory.working_memory if e.domain == "safety"] == []
+
+    def test_record_safety_classified_skips_empty_dist(self):
+        from src.world_belief import Evidence
+        agent = self._make_minimal_agent()
+        ev = Evidence(
+            source="llm_safety", timestamp=0.0,
+            raw_payload={"dist": {}, "entropy": 0.0, "reasoning": "parse_failed"},
+        )
+        agent._record_safety_classified("knife", ev)
+        assert [e for e in agent.memory.working_memory if e.domain == "safety"] == []

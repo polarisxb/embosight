@@ -412,6 +412,61 @@ class EmboSightAgent:
                 len(added), belief.decomposed.primary_target, added,
             )
 
+    def _format_safety_prior_hint(self, label: str) -> Optional[str]:
+        """Format historical safety prior into a hint string for SafetyClassifier.
+
+        Returns None if label is empty or no prior is known for this label.
+        """
+        if not label:
+            return None
+        prior = self.memory.get_safety_prior(label)
+        if not prior:
+            return None
+        dist = prior.get("dist") or {}
+        if not dist:
+            return None
+        top = prior.get("top_class") or max(dist, key=dist.get)
+        n = int(prior.get("observations", 0))
+        top_prob = float(dist.get(top, 0.0))
+        dist_brief = ", ".join(
+            f"{k}={v:.2f}"
+            for k, v in sorted(dist.items(), key=lambda x: x[1], reverse=True)[:5]
+        )
+        return (
+            f"Historical safety prior for '{label}' (n={n} obs): "
+            f"top class = {top} (avg {top_prob:.2f}). "
+            f"Full dist: {dist_brief}. "
+            f"Treat this as a Bayesian prior — trust visual evidence if "
+            f"it strongly contradicts."
+        )
+
+    def _record_safety_classified(self, label: str, ev: Evidence) -> None:
+        """Append a safety_classified event to working memory.
+
+        Skips when label is empty or dist is missing/empty (e.g. parse_failed).
+        Episode-level dedup is intentionally deferred to consolidation
+        (latest dist wins per label).
+        """
+        label = (label or "").strip().lower()
+        if not label:
+            return
+        payload = ev.raw_payload or {}
+        dist = payload.get("dist") or {}
+        if not isinstance(dist, dict) or not dist:
+            return
+        self.memory.record_event(MemoryEntry(
+            step=len(self.memory.working_memory),
+            domain="safety",
+            event="safety_classified",
+            context={
+                "label": label,
+                "dist": dict(dist),
+                "entropy": float(payload.get("entropy", 0.0)),
+                "reasoning": str(payload.get("reasoning", "")),
+            },
+            lesson=f"{label}: safety classified",
+        ))
+
     # ──────────────────────────────────────
     # run (主循环, §5.1)
     # ──────────────────────────────────────
@@ -504,10 +559,14 @@ class EmboSightAgent:
             self._update_hypothesis_from_evidence(action.target_hypothesis, ev)
 
         elif action.kind == "classify_safety":
-            ev = self.safety.classify(action.target_hypothesis)
+            hyp = action.target_hypothesis
+            # Phase 2 safety: inject historical prior + record observation
+            prior_hint = self._format_safety_prior_hint(hyp.label)
+            ev = self.safety.classify(hyp, prior_hint=prior_hint)
             belief.evidence.append(ev)
-            action.target_hypothesis.safety_dist = ev.raw_payload.get("dist", {})
-            action.target_hypothesis.safety_entropy = ev.raw_payload.get("entropy", 1.0)
+            hyp.safety_dist = ev.raw_payload.get("dist", {})
+            hyp.safety_entropy = ev.raw_payload.get("entropy", 1.0)
+            self._record_safety_classified(hyp.label, ev)
 
         elif action.kind == "plan_grasp_candidates":
             hyp = action.target_hypothesis
