@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -33,6 +34,7 @@ class LLMBackend:
         max_tokens: int = 2048,
         temperature: float = 0.1,
         timeout: float = 60.0,
+        max_retries: int = 3,
     ) -> None:
         """
         Args:
@@ -42,6 +44,7 @@ class LLMBackend:
             max_tokens: 最大输出 tokens
             temperature: 采样温度（任务分解建议 0.0-0.3）
             timeout: 请求超时（秒）
+            max_retries: 连接失败重试次数（指数退避: 2s/4s/8s）
         """
         try:
             from openai import OpenAI
@@ -63,6 +66,7 @@ class LLMBackend:
         self.max_tokens = max_tokens
         self.temperature = temperature
         self.timeout = timeout
+        self.max_retries = max_retries
 
         self.client = OpenAI(
             api_key=self.api_key,
@@ -104,14 +108,31 @@ class LLMBackend:
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
 
-        try:
-            response = self.client.chat.completions.create(**kwargs)
-            content = response.choices[0].message.content or ""
-            logger.debug(f"LLM 响应长度: {len(content)} chars")
-            return content
-        except Exception as e:
-            logger.error(f"LLM 调用失败: {e}")
-            raise
+        last_exc = None
+        for attempt in range(1, self.max_retries + 2):
+            try:
+                response = self.client.chat.completions.create(**kwargs)
+                content = response.choices[0].message.content or ""
+                logger.debug(f"LLM 响应长度: {len(content)} chars")
+                return content
+            except Exception as e:
+                last_exc = e
+                is_connection = (
+                    "Connection" in type(e).__name__
+                    or "ConnectError" in type(e).__name__
+                    or "APIConnectionError" in type(e).__name__
+                )
+                if is_connection and attempt <= self.max_retries:
+                    wait = 2 ** attempt
+                    logger.warning(
+                        "LLM 连接失败 (attempt %d/%d)，%ds 后重试: %s",
+                        attempt, self.max_retries + 1, wait, e,
+                    )
+                    time.sleep(wait)
+                else:
+                    logger.error(f"LLM 调用失败: {e}")
+                    raise
+        raise last_exc  # type: ignore[misc]
 
 
 # ============================================================
