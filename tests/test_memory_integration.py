@@ -206,3 +206,113 @@ class TestRecognitionSynonymInjection:
         )
         agent._apply_recognition_hints(belief)
         assert belief.decomposed.primary_target_synonyms == ["fruit"]
+
+
+class TestRecognitionRoundTrip:
+    def test_clip_episode_persists_and_injects_next_episode(self, tmp_path):
+        """Episode 1: simulate CLIP-injected evidence + grasp success.
+        Episode 2: fresh MemoryManager+agent loads the persisted synonym.
+        """
+        import time
+        import yaml
+        from src.agent import EmboSightAgent
+        from src.memory_manager import MemoryManager
+        from src.world_belief import DecomposedTask, Evidence, WorldBelief
+
+        # Setup persistent memory dir
+        d = tmp_path / "memory"
+        d.mkdir()
+        (d / "index.yaml").write_text(yaml.dump({
+            "version": 1,
+            "domains": {"recognition": str(d / "recognition_hints.yaml")},
+        }), encoding="utf-8")
+        (d / "recognition_hints.yaml").write_text(yaml.dump({"entries": []}), encoding="utf-8")
+
+        # ===== Episode 1 =====
+        mm1 = MemoryManager(memory_dir=d)
+        agent1 = EmboSightAgent.__new__(EmboSightAgent)
+        agent1.memory = mm1
+
+        belief1 = WorldBelief(user_query="pick tangerine")
+        belief1.decomposed = DecomposedTask(primary_target="tangerine")
+
+        ev = Evidence(
+            source="vlm_ground", timestamp=time.time(),
+            raw_payload={
+                "hypotheses": [{
+                    "object_id": "obj_0",
+                    "label": "citrus",
+                    "label_alternatives": [("citrus", 0.5), ("tangerine", 0.5)],
+                    "label_entropy": 0.69,
+                    "position_3d": [0.5, 0.0, 0.9],
+                    "position_std_m": 0.02,
+                    "bbox_per_view": {"v0": [0, 0, 50, 50]},
+                    "observed_in_views": ["v0"],
+                }],
+                "clip_injected": {
+                    "target": "tangerine",
+                    "synonym": "orange",
+                    "sim": 0.30,
+                    "vlm_label": "citrus",
+                },
+            },
+        )
+        agent1._merge_hypotheses_from_evidence(belief1, ev)
+        # Working memory should now contain the synonym_effective event
+        assert any(
+            e.domain == "recognition" and e.event == "synonym_effective"
+            for e in mm1.working_memory
+        )
+        # Simulate successful grasp → consolidate
+        mm1.consolidate(success=True, object_type="tangerine")
+
+        # ===== Episode 2 =====
+        mm2 = MemoryManager(memory_dir=d)
+        agent2 = EmboSightAgent.__new__(EmboSightAgent)
+        agent2.memory = mm2
+
+        belief2 = WorldBelief(user_query="pick tangerine")
+        belief2.decomposed = DecomposedTask(
+            primary_target="tangerine",
+            primary_target_synonyms=[],
+        )
+        agent2._apply_recognition_hints(belief2)
+
+        assert "orange" in belief2.decomposed.primary_target_synonyms
+
+    def test_llm_fallback_episode_persists_and_injects(self, tmp_path):
+        """End-to-end for label_corrected path: LLM fallback → consolidate → next episode hint."""
+        import yaml
+        from src.agent import EmboSightAgent
+        from src.memory_manager import MemoryManager
+        from src.world_belief import DecomposedTask, WorldBelief
+
+        d = tmp_path / "memory"
+        d.mkdir()
+        (d / "index.yaml").write_text(yaml.dump({
+            "version": 1,
+            "domains": {"recognition": str(d / "recognition_hints.yaml")},
+        }), encoding="utf-8")
+        (d / "recognition_hints.yaml").write_text(yaml.dump({"entries": []}), encoding="utf-8")
+
+        # ===== Episode 1: LLM fallback corrects label =====
+        mm1 = MemoryManager(memory_dir=d)
+        agent1 = EmboSightAgent.__new__(EmboSightAgent)
+        agent1.memory = mm1
+
+        agent1._record_label_corrected("yogurt", "container", method="llm")
+        mm1.consolidate(success=True, object_type="yogurt")
+
+        # ===== Episode 2 =====
+        mm2 = MemoryManager(memory_dir=d)
+        agent2 = EmboSightAgent.__new__(EmboSightAgent)
+        agent2.memory = mm2
+
+        belief2 = WorldBelief(user_query="pick yogurt")
+        belief2.decomposed = DecomposedTask(
+            primary_target="yogurt",
+            primary_target_synonyms=[],
+        )
+        agent2._apply_recognition_hints(belief2)
+
+        assert "container" in belief2.decomposed.primary_target_synonyms
