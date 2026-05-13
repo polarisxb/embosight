@@ -348,6 +348,7 @@ class EmboSightAgent:
                 matched_h.label_entropy = _shannon(
                     [p for _, p in matched_h.label_alternatives]
                 )
+            self._record_label_corrected(primary, answer, method="llm")
             return True
 
         matched_h.label_alternatives.append((primary, 0.40))
@@ -361,7 +362,34 @@ class EmboSightAgent:
             "[semantic_fallback] LLM matched '%s' → '%s' (injected into %s)",
             primary, answer, matched_h.object_id,
         )
+        self._record_label_corrected(primary, answer, method="llm")
         return True
+
+    def _record_label_corrected(
+        self, target: str, detected_label: str, method: str = "llm",
+    ) -> None:
+        """Record a label_corrected event into working memory (dedup per episode)."""
+        target = (target or "").strip().lower()
+        detected_label = (detected_label or "").strip().lower()
+        if not target or not detected_label or detected_label == target:
+            return
+        for e in self.memory.working_memory:
+            if (e.domain == "recognition"
+                    and e.event == "label_corrected"
+                    and e.context.get("target") == target
+                    and e.context.get("detected_label") == detected_label):
+                return
+        self.memory.record_event(MemoryEntry(
+            step=len(self.memory.working_memory),
+            domain="recognition",
+            event="label_corrected",
+            context={
+                "target": target,
+                "detected_label": detected_label,
+                "method": method,
+            },
+            lesson=f"{target}: {method} matched detected '{detected_label}'",
+        ))
 
     # ──────────────────────────────────────
     # run (主循环, §5.1)

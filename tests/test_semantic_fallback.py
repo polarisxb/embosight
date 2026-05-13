@@ -370,3 +370,63 @@ class TestAgentRecordsCLIPEvent:
 
         recog = [e for e in agent.memory.working_memory if e.domain == "recognition"]
         assert len(recog) == 1  # 第二次去重
+
+
+class TestAgentRecordsLLMFallbackEvent:
+    def _make_agent_with_llm(self, llm_response: str):
+        import tempfile
+        from pathlib import Path
+        from tests._mocks import MockLLM
+        from src.active_planner import ViewpointLibrary
+        from src.agent import EmboSightAgent
+        vp_lib = ViewpointLibrary(config_path="configs/viewpoints.yaml")
+        llm = MockLLM(responses=[llm_response])
+        agent = EmboSightAgent.with_test_doubles(vp_lib=vp_lib, llm=llm)
+        # override memory with a fresh isolated one
+        from src.memory_manager import MemoryManager
+        agent.memory = MemoryManager(memory_dir=Path(tempfile.mkdtemp()))
+        return agent
+
+    def test_llm_fallback_records_label_corrected_on_match(self):
+        agent = self._make_agent_with_llm("chocolate")
+        b = WorldBelief(user_query="pick up the cake")
+        b.decomposed = DecomposedTask(primary_target="cake")
+        b.hypotheses = [_hyp("chocolate", [("chocolate", 0.6), ("candy", 0.4)])]
+
+        ok = agent._llm_semantic_fallback(b)
+        assert ok is True
+
+        recog = [e for e in agent.memory.working_memory if e.domain == "recognition"]
+        assert len(recog) == 1
+        assert recog[0].event == "label_corrected"
+        assert recog[0].context["target"] == "cake"
+        assert recog[0].context["detected_label"] == "chocolate"
+        assert recog[0].context["method"] == "llm"
+
+    def test_llm_fallback_no_record_on_none(self):
+        agent = self._make_agent_with_llm("none")
+        b = WorldBelief(user_query="pick up the cake")
+        b.decomposed = DecomposedTask(primary_target="cake")
+        b.hypotheses = [_hyp("book", [("book", 0.8), ("notebook", 0.2)])]
+
+        ok = agent._llm_semantic_fallback(b)
+        assert ok is False
+        recog = [e for e in agent.memory.working_memory if e.domain == "recognition"]
+        assert recog == []
+
+    def test_llm_fallback_records_when_target_already_in_alternatives(self):
+        """if already 分支也应该记录 label_corrected"""
+        agent = self._make_agent_with_llm("chocolate")
+        b = WorldBelief(user_query="pick up the cake")
+        b.decomposed = DecomposedTask(primary_target="cake")
+        # 故意把 cake 已经放进 alternatives (低概率)
+        b.hypotheses = [_hyp("chocolate", [("chocolate", 0.6), ("cake", 0.1), ("candy", 0.3)])]
+
+        ok = agent._llm_semantic_fallback(b)
+        assert ok is True
+
+        recog = [e for e in agent.memory.working_memory if e.domain == "recognition"]
+        assert len(recog) == 1
+        assert recog[0].event == "label_corrected"
+        assert recog[0].context["target"] == "cake"
+        assert recog[0].context["detected_label"] == "chocolate"
