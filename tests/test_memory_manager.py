@@ -305,3 +305,54 @@ class TestRecognitionConsolidation:
         advice = mm2.get_grasp_advice("apple")
         assert advice is not None
         assert "top_down" in advice
+
+
+class TestRecognitionHints:
+    def _make_dir_with_hints(self) -> Path:
+        import yaml
+        d = Path(tempfile.mkdtemp()) / "memory"
+        d.mkdir()
+        (d / "index.yaml").write_text(yaml.dump({
+            "version": 1,
+            "domains": {"recognition": str(d / "recognition_hints.yaml")},
+        }), encoding="utf-8")
+        (d / "recognition_hints.yaml").write_text(yaml.dump({
+            "entries": [
+                {
+                    "target": "tangerine",
+                    "vlm_common_labels": ["orange", "citrus"],
+                    "effective_synonyms": [
+                        {"name": "orange", "count": 3, "last_method": "clip"},
+                        {"name": "citrus", "count": 1, "last_method": "clip"},
+                    ],
+                    "clip_helpful": True,
+                    "notes": "",
+                    "last_updated": "2026-05-13",
+                },
+            ],
+        }), encoding="utf-8")
+        return d
+
+    def test_get_synonyms_returns_count_desc(self):
+        from src.memory_manager import MemoryManager
+        d = self._make_dir_with_hints()
+        mm = MemoryManager(memory_dir=d)
+        syns = mm.get_recognition_hints_synonyms("tangerine")
+        assert syns == ["orange", "citrus"]
+
+    def test_get_synonyms_case_insensitive(self):
+        from src.memory_manager import MemoryManager
+        d = self._make_dir_with_hints()
+        mm = MemoryManager(memory_dir=d)
+        assert mm.get_recognition_hints_synonyms("TANGERINE") == ["orange", "citrus"]
+
+    def test_get_synonyms_unknown_returns_empty(self):
+        from src.memory_manager import MemoryManager
+        d = self._make_dir_with_hints()
+        mm = MemoryManager(memory_dir=d)
+        assert mm.get_recognition_hints_synonyms("banana") == []
+
+    def test_get_synonyms_missing_file_returns_empty(self):
+        from src.memory_manager import MemoryManager
+        mm = MemoryManager(memory_dir=Path(tempfile.mkdtemp()))
+        assert mm.get_recognition_hints_synonyms("tangerine") == []

@@ -122,11 +122,38 @@ class MemoryManager:
                 if labels:
                     parts.append(f"VLM often labels as: {', '.join(labels)}")
                 syns = entry.get("effective_synonyms", [])
-                if syns:
-                    parts.append(f"effective synonyms: {', '.join(syns)}")
+                # syns may be list[str] (legacy) or list[dict] (Phase 2)
+                syn_names = [
+                    s["name"] if isinstance(s, dict) else str(s)
+                    for s in syns
+                ]
+                if syn_names:
+                    parts.append(f"effective synonyms: {', '.join(syn_names)}")
                 if parts:
                     return f"{target}: {'; '.join(parts)}"
         return None
+
+    def get_recognition_hints_synonyms(self, target: str) -> list[str]:
+        """Return historical effective synonyms for target (sorted by count desc).
+
+        Returns [] if no entry or load fails.
+        """
+        entries = self._load_domain("recognition")
+        tgt_key = target.lower().strip()
+        for entry in entries:
+            if str(entry.get("target", "")).lower().strip() == tgt_key:
+                syns = entry.get("effective_synonyms", []) or []
+                # defensive re-sort by count desc
+                ordered = sorted(
+                    syns, key=lambda s: s.get("count", 0) if isinstance(s, dict) else 0,
+                    reverse=True,
+                )
+                return [
+                    str(s["name"]) if isinstance(s, dict) else str(s)
+                    for s in ordered
+                    if (s.get("name") if isinstance(s, dict) else s)
+                ]
+        return []
 
     def load_for_task(self, primary_target: str, object_type: str = "") -> str:
         parts: list[str] = []
