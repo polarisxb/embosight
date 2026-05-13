@@ -74,3 +74,45 @@ class TestSafetyClassifier:
         sc = SafetyClassifier(llm=llm)
         ev = sc.classify(_make_hyp())
         assert "weight" in ev.raw_payload["dist"]
+
+
+class TestSafetyPriorHint:
+    def test_no_hint_default_prompt(self):
+        from src.safety_gate import SafetyClassifier
+        llm = MockLLM(responses=[json.dumps({
+            "dist": {"safe": 1.0}, "reasoning": "x",
+        })])
+        sc = SafetyClassifier(llm=llm)
+        sc.classify(_make_hyp(label="apple"))
+        prompt = llm.calls[0][0]
+        assert "Historical" not in prompt
+        assert "prior" not in prompt.lower()
+
+    def test_with_prior_hint_injects_into_prompt(self):
+        from src.safety_gate import SafetyClassifier
+        llm = MockLLM(responses=[json.dumps({
+            "dist": {"sharp": 0.9, "safe": 0.1}, "reasoning": "x",
+        })])
+        sc = SafetyClassifier(llm=llm)
+        sc.classify(
+            _make_hyp(label="knife"),
+            prior_hint="Historical: 'knife' previously classified as sharp (0.85, n=4 obs).",
+        )
+        prompt = llm.calls[0][0]
+        assert "Historical" in prompt
+        assert "knife" in prompt
+        assert "sharp" in prompt
+
+    def test_prior_hint_does_not_break_parsing(self):
+        """Even with prior, classifier still parses dist correctly."""
+        from src.safety_gate import SafetyClassifier
+        llm = MockLLM(responses=[json.dumps({
+            "dist": {"sharp": 0.95, "safe": 0.05},
+            "reasoning": "y",
+        })])
+        sc = SafetyClassifier(llm=llm)
+        ev = sc.classify(
+            _make_hyp(label="knife"),
+            prior_hint="anything",
+        )
+        assert ev.raw_payload["dist"]["sharp"] == pytest.approx(0.95)

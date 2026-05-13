@@ -11,6 +11,7 @@ import math
 import re
 import time
 from pathlib import Path
+from typing import Optional
 
 from src.world_belief import Evidence, Hypothesis
 
@@ -40,8 +41,10 @@ class SafetyClassifier:
         p = Path(prompt_path)
         self._template = p.read_text(encoding="utf-8") if p.exists() else None
 
-    def classify(self, hyp: Hypothesis) -> Evidence:
-        prompt = self._build_prompt(hyp)
+    def classify(
+        self, hyp: Hypothesis, prior_hint: Optional[str] = None,
+    ) -> Evidence:
+        prompt = self._build_prompt(hyp, prior_hint)
         try:
             raw = self.llm.generate(prompt, system="")
         except Exception as e:
@@ -74,25 +77,32 @@ class SafetyClassifier:
             },
         )
 
-    def _build_prompt(self, hyp: Hypothesis) -> str:
+    def _build_prompt(
+        self, hyp: Hypothesis, prior_hint: Optional[str] = None,
+    ) -> str:
         if self._template is None:
-            return f"Classify safety of {hyp.label}, return JSON dist."
-        alts_top3 = hyp.label_alternatives[:3]
-        alts_text = ", ".join(f"{lbl}({p:.2f})" for lbl, p in alts_top3)
-        features = "; ".join(
-            f"{vp}: ..." for vp in hyp.observed_in_views
-        ) or "(无)"
-        pose_text = (
-            "upright" if (hyp.pose_estimate is None or hyp.pose_estimate.upright)
-            else "side"
-        )
-        return (
-            self._template
-            .replace("{label}", hyp.label)
-            .replace("{alternatives_top3}", alts_text)
-            .replace("{features}", features)
-            .replace("{pose_summary}", pose_text)
-        )
+            base = f"Classify safety of {hyp.label}, return JSON dist."
+        else:
+            alts_top3 = hyp.label_alternatives[:3]
+            alts_text = ", ".join(f"{lbl}({p:.2f})" for lbl, p in alts_top3)
+            features = "; ".join(
+                f"{vp}: ..." for vp in hyp.observed_in_views
+            ) or "(无)"
+            pose_text = (
+                "upright" if (hyp.pose_estimate is None or hyp.pose_estimate.upright)
+                else "side"
+            )
+            base = (
+                self._template
+                .replace("{label}", hyp.label)
+                .replace("{alternatives_top3}", alts_text)
+                .replace("{features}", features)
+                .replace("{pose_summary}", pose_text)
+            )
+        if prior_hint:
+            # Prepend prior knowledge so LLM sees it before instructions
+            return f"{prior_hint}\n\n{base}"
+        return base
 
     @staticmethod
     def _extract_json(raw: str):
