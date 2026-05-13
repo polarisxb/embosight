@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 import json
+import logging
 import os
 import subprocess
 import sys
 import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -292,3 +296,172 @@ def summarize_results(results: list[dict[str, Any]]) -> dict[str, Any]:
         "slowest_runs": slowest_runs,
         "failed_runs": failed_runs,
     }
+
+
+def write_scenarios_yaml(scenarios: list[dict[str, Any]], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        yaml.dump({"scenarios": scenarios}, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+
+
+def format_summary_text(summary: dict[str, Any]) -> str:
+    lines: list[str] = []
+    lines.append("=" * 60)
+    lines.append("LONG GENERALIZATION RUN SUMMARY")
+    lines.append("=" * 60)
+    lines.append(f"Total scenarios : {summary['total']}")
+    lines.append(f"Completed       : {summary['completed']}")
+    lines.append(f"Successes       : {summary['successes']}")
+    lines.append(f"Success rate    : {summary['success_rate'] * 100:.1f}%")
+    lines.append(f"Errors          : {summary['errors']}")
+    lines.append(f"Timeouts        : {summary['timeouts']}")
+    lines.append(f"Avg steps       : {summary['avg_steps']:.1f}")
+    lines.append(f"Avg time (s)    : {summary['avg_time_s']:.1f}")
+    lines.append("")
+    lines.append("--- Failure Breakdown ---")
+    for reason, count in summary.get("failure_breakdown", {}).items():
+        lines.append(f"  {reason}: {count}")
+    lines.append("")
+    lines.append("--- Strategy Usage ---")
+    for strategy, count in summary.get("strategy_usage", {}).items():
+        lines.append(f"  {strategy}: {count}")
+    lines.append("")
+    lines.append("--- Object Distribution ---")
+    for obj, count in summary.get("object_distribution", {}).items():
+        lines.append(f"  {obj}: {count}")
+    lines.append("=" * 60)
+    return "\n".join(lines)
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Long-run pure generalization evaluation for EmboSight",
+    )
+    parser.add_argument("--seed-start", type=int, default=0,
+                        help="First seed (default: 0)")
+    parser.add_argument("--count", type=int, required=True,
+                        help="Number of seeds to run")
+    parser.add_argument("--parallel", type=int, default=4,
+                        help="Max parallel subprocesses (default: 4)")
+    parser.add_argument("--run-id", type=str, default=None,
+                        help="Run identifier (default: timestamp)")
+    parser.add_argument("--resume", action="store_true",
+                        help="Resume from checkpoint (skip completed seeds)")
+    parser.add_argument("--timeout-s", type=int, default=900,
+                        help="Per-seed subprocess timeout in seconds (default: 900)")
+    parser.add_argument("--config", default="configs/default.yaml")
+    parser.add_argument("--agent-config", default="configs/agent.yaml")
+    parser.add_argument("--log-level", default="INFO")
+    args = parser.parse_args(argv)
+    if args.run_id is None:
+        args.run_id = datetime.now().strftime("gen_%Y%m%d_%H%M%S")
+    return args
+
+
+logger = logging.getLogger(__name__)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    logging.basicConfig(
+        level=args.log_level,
+        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    )
+
+    run_dir = Path("logs/long_generalization") / args.run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    results_path = run_dir / "results.jsonl"
+    summary_json_path = run_dir / "summary.json"
+    summary_txt_path = run_dir / "summary.txt"
+    scenarios_yaml_path = run_dir / "scenarios.yaml"
+
+    scenarios = generate_seed_scenarios(args.seed_start, args.count)
+    write_scenarios_yaml(scenarios, scenarios_yaml_path)
+
+    completed = load_completed_results(results_path) if args.resume else {}
+    pending = [s for s in scenarios if s["id"] not in completed]
+
+    logger.info(
+        "Run %s: %d total, %d completed, %d pending, parallel=%d, timeout=%ds",
+        args.run_id, len(scenarios), len(completed), len(pending),
+        args.parallel, args.timeout_s,
+    )
+
+    if not pending:
+        logger.info("All seeds already completed. Generating summary only.")
+    else:
+        manifest = {
+            "run_id": args.run_id,
+            "seed_start": args.seed_start,
+            "count": args.count,
+            "parallel": args.parallel,
+            "timeout_s": args.timeout_s,
+            "started_at": datetime.now().isoformat(),
+        }
+        (run_dir / "manifest.json").write_text(
+            json.dumps(manifest, indent=2), encoding="utf-8"
+        )
+
+        with ProcessPoolExecutor(max_workers=args.parallel) as pool:
+            futures = {}
+            for i, scenario in enumerate(pending):
+                gpu_id = i % args.parallel
+                future = pool.submit(
+                    run_one_seed_subprocess,
+                    scenario=scenario,
+                    run_dir=run_dir,
+                    scenarios_config=scenarios_yaml_path,
+                    gpu_id=gpu_id,
+                    config=args.config,
+                    agent_config=args.agent_config,
+                    log_level=args.log_level,
+                    timeout_s=args.timeout_s,
+                )
+                futures[future] = scenario
+
+            for future in as_completed(futures):
+                scenario = futures[future]
+                try:
+                    result = future.result()
+                except Exception as e:
+                    result = {
+                        "scenario_id": scenario["id"],
+                        "seed": scenario["seed"],
+                        "success": False,
+                        "error": f"future_exception: {type(e).__name__}: {e}",
+                        "time_s": 0.0,
+                        "steps": None,
+                        "failure_reason": "executor_error",
+                        "grasp_failure_mode": None,
+                        "grasp_strategy": None,
+                        "action_sequence": [],
+                        "speech": None,
+                        "actual_object": None,
+                    }
+                append_jsonl(results_path, result)
+                completed[result["scenario_id"]] = result
+                done = len(completed)
+                total = len(scenarios)
+                status = "OK" if result.get("success") else "FAIL"
+                logger.info(
+                    "[%d/%d] %s %s (%.1fs)",
+                    done, total, status, result["scenario_id"],
+                    float(result.get("time_s") or 0),
+                )
+
+    all_results = list(completed.values())
+    summary = summarize_results(all_results)
+    summary_json_path.write_text(
+        json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    text = format_summary_text(summary)
+    summary_txt_path.write_text(text, encoding="utf-8")
+    print(text)
+
+    return 0 if summary["success_rate"] >= 0.5 else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

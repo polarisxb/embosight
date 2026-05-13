@@ -146,3 +146,69 @@ def test_prepare_memory_dir_writes_empty_index_and_domains(tmp_path):
     index_text = (memory_dir / "index.yaml").read_text(encoding="utf-8")
     assert "grasp" in index_text
     assert "recognition" in index_text
+
+
+def test_parse_cli_args_defaults():
+    module = _load_module()
+
+    args = module.parse_args(["--count", "5"])
+
+    assert args.seed_start == 0
+    assert args.count == 5
+    assert args.parallel == 4
+    assert args.timeout_s == 900
+    assert args.resume is False
+    assert args.run_id is not None
+
+
+def test_parse_cli_args_custom():
+    module = _load_module()
+
+    args = module.parse_args([
+        "--seed-start", "100",
+        "--count", "50",
+        "--parallel", "2",
+        "--run-id", "overnight-1",
+        "--resume",
+        "--timeout-s", "1800",
+    ])
+
+    assert args.seed_start == 100
+    assert args.count == 50
+    assert args.parallel == 2
+    assert args.run_id == "overnight-1"
+    assert args.resume is True
+    assert args.timeout_s == 1800
+
+
+def test_write_scenarios_yaml(tmp_path):
+    module = _load_module()
+
+    scenarios = module.generate_seed_scenarios(seed_start=0, count=2)
+    out_path = tmp_path / "scenarios.yaml"
+    module.write_scenarios_yaml(scenarios, out_path)
+
+    import yaml
+    loaded = yaml.safe_load(out_path.read_text(encoding="utf-8"))
+    assert len(loaded["scenarios"]) == 2
+    assert loaded["scenarios"][0]["id"] == "random_seed_0"
+    assert loaded["scenarios"][1]["seed"] == 1
+
+
+def test_format_summary_text():
+    module = _load_module()
+    summary = {
+        "total": 3, "completed": 3, "successes": 1,
+        "success_rate": 1 / 3, "errors": 1, "timeouts": 1,
+        "avg_steps": 8.0, "avg_time_s": 310.0,
+        "failure_breakdown": {"timeout": 1, "MAX_STEPS reached": 1},
+        "strategy_usage": {"strategy_top_down": 2},
+        "object_distribution": {"apple": 1, "wine": 1},
+        "slowest_runs": [], "failed_runs": [],
+    }
+
+    text = module.format_summary_text(summary)
+
+    assert "33.3%" in text
+    assert "timeout" in text
+    assert "strategy_top_down" in text
