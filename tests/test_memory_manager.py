@@ -356,3 +356,176 @@ class TestRecognitionHints:
         from src.memory_manager import MemoryManager
         mm = MemoryManager(memory_dir=Path(tempfile.mkdtemp()))
         assert mm.get_recognition_hints_synonyms("tangerine") == []
+
+
+class TestSafetyConsolidation:
+    def _make_dir(self) -> Path:
+        import yaml
+        d = Path(tempfile.mkdtemp()) / "memory"
+        d.mkdir()
+        (d / "index.yaml").write_text(yaml.dump({
+            "version": 1,
+            "domains": {
+                "grasp": str(d / "grasp_experience.yaml"),
+                "safety": str(d / "safety_knowledge.yaml"),
+            },
+        }), encoding="utf-8")
+        (d / "grasp_experience.yaml").write_text(yaml.dump({"entries": []}), encoding="utf-8")
+        (d / "safety_knowledge.yaml").write_text(yaml.dump({"entries": []}), encoding="utf-8")
+        return d
+
+    def test_consolidate_safety_creates_entry(self):
+        from src.memory_manager import MemoryEntry, MemoryManager
+        d = self._make_dir()
+        mm = MemoryManager(memory_dir=d)
+        mm.record_event(MemoryEntry(
+            step=2, domain="safety", event="safety_classified",
+            context={
+                "label": "knife",
+                "dist": {"safe": 0.05, "sharp": 0.85, "fragile": 0.10},
+                "entropy": 0.40,
+            },
+            lesson="knife: sharp(0.85)",
+        ))
+        mm.consolidate(success=True, object_type="knife")
+
+        mm2 = MemoryManager(memory_dir=d)
+        entries = mm2._load_domain("safety")
+        assert len(entries) == 1
+        e = entries[0]
+        assert e["label"] == "knife"
+        assert e["observations"] == 1
+        assert e["top_class"] == "sharp"
+        assert abs(e["dist"]["sharp"] - 0.85) < 1e-6
+
+    def test_consolidate_safety_skips_on_failure(self):
+        from src.memory_manager import MemoryEntry, MemoryManager
+        d = self._make_dir()
+        mm = MemoryManager(memory_dir=d)
+        mm.record_event(MemoryEntry(
+            step=2, domain="safety", event="safety_classified",
+            context={
+                "label": "knife",
+                "dist": {"sharp": 0.9, "safe": 0.1},
+                "entropy": 0.32,
+            },
+            lesson="x",
+        ))
+        mm.consolidate(success=False, object_type="knife")
+
+        mm2 = MemoryManager(memory_dir=d)
+        assert mm2._load_domain("safety") == []
+
+    def test_consolidate_safety_running_average(self):
+        """Episode 2 observation merges as running average."""
+        from src.memory_manager import MemoryEntry, MemoryManager
+        d = self._make_dir()
+
+        mm = MemoryManager(memory_dir=d)
+        mm.record_event(MemoryEntry(
+            step=1, domain="safety", event="safety_classified",
+            context={
+                "label": "knife",
+                "dist": {"safe": 0.20, "sharp": 0.80},
+                "entropy": 0.50,
+            },
+            lesson="x",
+        ))
+        mm.consolidate(success=True, object_type="knife")
+
+        mm2 = MemoryManager(memory_dir=d)
+        mm2.record_event(MemoryEntry(
+            step=1, domain="safety", event="safety_classified",
+            context={
+                "label": "knife",
+                "dist": {"safe": 0.40, "sharp": 0.60},
+                "entropy": 0.67,
+            },
+            lesson="x",
+        ))
+        mm2.consolidate(success=True, object_type="knife")
+
+        mm3 = MemoryManager(memory_dir=d)
+        e = mm3._load_domain("safety")[0]
+        assert e["observations"] == 2
+        # running average: (0.80 + 0.60)/2 = 0.70
+        assert abs(e["dist"]["sharp"] - 0.70) < 1e-6
+        assert abs(e["dist"]["safe"] - 0.30) < 1e-6
+        assert e["top_class"] == "sharp"
+
+    def test_consolidate_safety_dedup_within_episode(self):
+        """Same label observed twice in one episode → only latest dist counted once."""
+        from src.memory_manager import MemoryEntry, MemoryManager
+        d = self._make_dir()
+        mm = MemoryManager(memory_dir=d)
+        # First observation
+        mm.record_event(MemoryEntry(
+            step=1, domain="safety", event="safety_classified",
+            context={"label": "knife", "dist": {"sharp": 0.5, "safe": 0.5},
+                     "entropy": 0.69},
+            lesson="x",
+        ))
+        # Second observation of the same label later in the episode
+        mm.record_event(MemoryEntry(
+            step=3, domain="safety", event="safety_classified",
+            context={"label": "knife", "dist": {"sharp": 0.9, "safe": 0.1},
+                     "entropy": 0.32},
+            lesson="x",
+        ))
+        mm.consolidate(success=True, object_type="knife")
+
+        mm2 = MemoryManager(memory_dir=d)
+        e = mm2._load_domain("safety")[0]
+        assert e["observations"] == 1  # 同 episode 同 label 视为一次
+        # 应该用最新（最后一次）dist
+        assert abs(e["dist"]["sharp"] - 0.9) < 1e-6
+
+
+class TestSafetyPriorReader:
+    def _make_dir_with_safety(self, label: str = "knife") -> Path:
+        import yaml
+        d = Path(tempfile.mkdtemp()) / "memory"
+        d.mkdir()
+        (d / "index.yaml").write_text(yaml.dump({
+            "version": 1,
+            "domains": {"safety": str(d / "safety_knowledge.yaml")},
+        }), encoding="utf-8")
+        (d / "safety_knowledge.yaml").write_text(yaml.dump({
+            "entries": [
+                {
+                    "label": label,
+                    "dist": {"safe": 0.10, "sharp": 0.85, "fragile": 0.05},
+                    "top_class": "sharp",
+                    "observations": 4,
+                    "last_updated": "2026-05-13",
+                },
+            ],
+        }), encoding="utf-8")
+        return d
+
+    def test_get_safety_prior_returns_entry(self):
+        from src.memory_manager import MemoryManager
+        d = self._make_dir_with_safety()
+        mm = MemoryManager(memory_dir=d)
+        prior = mm.get_safety_prior("knife")
+        assert prior is not None
+        assert prior["top_class"] == "sharp"
+        assert prior["observations"] == 4
+        assert "dist" in prior
+
+    def test_get_safety_prior_case_insensitive(self):
+        from src.memory_manager import MemoryManager
+        d = self._make_dir_with_safety()
+        mm = MemoryManager(memory_dir=d)
+        assert mm.get_safety_prior("KNIFE") is not None
+
+    def test_get_safety_prior_unknown_returns_none(self):
+        from src.memory_manager import MemoryManager
+        d = self._make_dir_with_safety()
+        mm = MemoryManager(memory_dir=d)
+        assert mm.get_safety_prior("banana") is None
+
+    def test_get_safety_prior_missing_file_returns_none(self):
+        from src.memory_manager import MemoryManager
+        mm = MemoryManager(memory_dir=Path(tempfile.mkdtemp()))
+        assert mm.get_safety_prior("knife") is None

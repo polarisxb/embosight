@@ -180,6 +180,11 @@ class MemoryManager:
             ]
             if recognition_events:
                 self._consolidate_recognition(recognition_events)
+            safety_events = [
+                e for e in self.working_memory if e.domain == "safety"
+            ]
+            if safety_events:
+                self._consolidate_safety(safety_events)
 
     def _consolidate_grasp(
         self, events: list[MemoryEntry], object_type: str, success: bool,
@@ -311,6 +316,90 @@ class MemoryManager:
 
         self._long_term["recognition"] = entries
         self._save_domain("recognition")
+
+    def _consolidate_safety(self, events: list[MemoryEntry]) -> None:
+        """Merge safety_classified events into long-term YAML as running average.
+
+        - Same label observed multiple times in one episode → only latest dist
+          counted as ONE observation (dedup).
+        - Cross-episode: running average over `dist`, observations += 1.
+        - top_class = argmax of merged dist.
+        Only called when episode succeeded (caller enforces).
+        """
+        entries = self._load_domain("safety")
+
+        # episode-scoped dedup: keep latest dist per label
+        latest_by_label: dict[str, dict] = {}
+        for e in events:
+            if e.event != "safety_classified":
+                continue
+            label = str(e.context.get("label", "")).strip().lower()
+            dist = e.context.get("dist", {})
+            if not label or not isinstance(dist, dict) or not dist:
+                continue
+            # normalize defensively
+            total = sum(float(v) for v in dist.values() if v is not None) or 1.0
+            norm = {
+                str(k): float(v) / total
+                for k, v in dist.items() if v is not None
+            }
+            latest_by_label[label] = norm
+
+        for label, new_dist in latest_by_label.items():
+            entry = next(
+                (x for x in entries
+                 if str(x.get("label", "")).strip().lower() == label),
+                None,
+            )
+            if entry is None:
+                entry = {
+                    "label": label,
+                    "dist": dict(new_dist),
+                    "top_class": max(new_dist, key=new_dist.get),
+                    "observations": 1,
+                    "last_updated": "",
+                }
+                entries.append(entry)
+            else:
+                old_n = int(entry.get("observations", 0)) or 0
+                old_dist = entry.get("dist", {}) or {}
+                merged_keys = set(old_dist) | set(new_dist)
+                new_n = old_n + 1
+                merged: dict[str, float] = {}
+                for k in merged_keys:
+                    old_v = float(old_dist.get(k, 0.0))
+                    new_v = float(new_dist.get(k, 0.0))
+                    merged[k] = (old_v * old_n + new_v) / new_n
+                # renormalize (numerical safety)
+                tot = sum(merged.values()) or 1.0
+                merged = {k: v / tot for k, v in merged.items()}
+                entry["dist"] = merged
+                entry["observations"] = new_n
+                entry["top_class"] = max(merged, key=merged.get)
+            entry["last_updated"] = datetime.now().strftime("%Y-%m-%d")
+
+        self._long_term["safety"] = entries
+        self._save_domain("safety")
+
+    def get_safety_prior(self, label: str) -> Optional[dict]:
+        """Return historical safety classification prior for label, or None.
+
+        Returns dict with keys: dist, top_class, observations.
+        """
+        if not label:
+            return None
+        entries = self._load_domain("safety")
+        key = label.lower().strip()
+        for entry in entries:
+            if str(entry.get("label", "")).lower().strip() == key:
+                dist = entry.get("dist", {}) or {}
+                return {
+                    "dist": dict(dist),
+                    "top_class": entry.get("top_class")
+                    or (max(dist, key=dist.get) if dist else None),
+                    "observations": int(entry.get("observations", 0)),
+                }
+        return None
 
     def _save_domain(self, domain: str) -> None:
         fpath = self._domain_files.get(domain)
