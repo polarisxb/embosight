@@ -387,7 +387,7 @@ Step 6:   grasp(top_down) → SUCCESS ✓ (省了 2 步)
 
 - [x] recognition_hints.yaml 写入 (CLIP/LLM 纠正时) — 见 `docs/superpowers/specs/2026-05-13-memory-phase2-recognition-design.md`
 - [x] recognition hints 注入 perception 流程 (via primary_target_synonyms, 方案 A)
-- [ ] safety_knowledge.yaml (安全重分类)
+- [x] safety_knowledge.yaml 写入 + 注入 (跨 episode running average) — 见 `docs/superpowers/specs/2026-05-14-memory-phase2-safety-design.md`
 - [ ] 消融实验 (w/ vs w/o memory)
 
 ### Phase 3 (论文级 — 语义检索)
