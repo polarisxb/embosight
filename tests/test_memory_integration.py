@@ -112,3 +112,97 @@ class TestEndToEndMemoryFlow:
         assert "top_down" in advice
         assert "geometric_centroid" in advice
         assert "ik_unreachable" in advice
+
+
+class TestRecognitionSynonymInjection:
+    def _make_memory_with_synonym(self, target: str, synonym: str):
+        import yaml
+        d = Path(tempfile.mkdtemp()) / "memory"
+        d.mkdir()
+        (d / "index.yaml").write_text(yaml.dump({
+            "version": 1,
+            "domains": {"recognition": str(d / "recognition_hints.yaml")},
+        }), encoding="utf-8")
+        (d / "recognition_hints.yaml").write_text(yaml.dump({
+            "entries": [{
+                "target": target,
+                "vlm_common_labels": [synonym],
+                "effective_synonyms": [
+                    {"name": synonym, "count": 2, "last_method": "clip"},
+                ],
+                "clip_helpful": True,
+                "notes": "",
+                "last_updated": "2026-05-13",
+            }],
+        }), encoding="utf-8")
+        from src.memory_manager import MemoryManager
+        return MemoryManager(memory_dir=d)
+
+    def test_run_start_injects_persisted_synonym(self):
+        from src.agent import EmboSightAgent
+        from src.world_belief import DecomposedTask, WorldBelief
+
+        mm = self._make_memory_with_synonym("tangerine", "orange")
+        agent = EmboSightAgent.__new__(EmboSightAgent)
+        agent.memory = mm
+
+        belief = WorldBelief(user_query="pick tangerine")
+        belief.decomposed = DecomposedTask(
+            primary_target="tangerine",
+            primary_target_synonyms=["mandarin"],
+        )
+
+        agent._apply_recognition_hints(belief)
+
+        syns = belief.decomposed.primary_target_synonyms
+        assert "mandarin" in syns
+        assert "orange" in syns
+
+    def test_run_start_dedupes_synonyms(self):
+        from src.agent import EmboSightAgent
+        from src.world_belief import DecomposedTask, WorldBelief
+
+        mm = self._make_memory_with_synonym("tangerine", "orange")
+        agent = EmboSightAgent.__new__(EmboSightAgent)
+        agent.memory = mm
+
+        belief = WorldBelief(user_query="pick tangerine")
+        belief.decomposed = DecomposedTask(
+            primary_target="tangerine",
+            primary_target_synonyms=["orange"],
+        )
+
+        agent._apply_recognition_hints(belief)
+        syns = belief.decomposed.primary_target_synonyms
+        assert syns.count("orange") == 1
+
+    def test_run_start_noop_without_decomposed(self):
+        from src.agent import EmboSightAgent
+        from src.world_belief import WorldBelief
+
+        mm = self._make_memory_with_synonym("tangerine", "orange")
+        agent = EmboSightAgent.__new__(EmboSightAgent)
+        agent.memory = mm
+
+        belief = WorldBelief(user_query="")
+        belief.decomposed = None
+        # should not raise
+        agent._apply_recognition_hints(belief)
+
+    def test_run_start_noop_without_hints(self):
+        """target with no persisted hints → list unchanged."""
+        import tempfile
+        from src.agent import EmboSightAgent
+        from src.memory_manager import MemoryManager
+        from src.world_belief import DecomposedTask, WorldBelief
+
+        agent = EmboSightAgent.__new__(EmboSightAgent)
+        agent.memory = MemoryManager(memory_dir=Path(tempfile.mkdtemp()))
+
+        belief = WorldBelief(user_query="pick apple")
+        belief.decomposed = DecomposedTask(
+            primary_target="apple",
+            primary_target_synonyms=["fruit"],
+        )
+        agent._apply_recognition_hints(belief)
+        assert belief.decomposed.primary_target_synonyms == ["fruit"]

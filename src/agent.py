@@ -391,6 +391,27 @@ class EmboSightAgent:
             lesson=f"{target}: {method} matched detected '{detected_label}'",
         ))
 
+    def _apply_recognition_hints(self, belief: WorldBelief) -> None:
+        """Merge persisted recognition synonyms into belief.decomposed.primary_target_synonyms.
+
+        Idempotent: dedupes case-insensitively. No-op when decomposed is absent.
+        """
+        if not belief.decomposed or not belief.decomposed.primary_target:
+            return
+        hint_syns = self.memory.get_recognition_hints_synonyms(
+            belief.decomposed.primary_target,
+        )
+        if not hint_syns:
+            return
+        existing = {s.lower() for s in belief.decomposed.primary_target_synonyms}
+        added = [s for s in hint_syns if s.lower() not in existing]
+        if added:
+            belief.decomposed.primary_target_synonyms.extend(added)
+            logger.info(
+                "[memory] injected %d recognition synonym(s) for '%s': %s",
+                len(added), belief.decomposed.primary_target, added,
+            )
+
     # ──────────────────────────────────────
     # run (主循环, §5.1)
     # ──────────────────────────────────────
@@ -409,6 +430,8 @@ class EmboSightAgent:
         )
         if prior:
             logger.info("[agent] loaded prior knowledge:\n%s", prior)
+        # Phase 2: inject persisted recognition synonyms into decomposed.synonyms
+        self._apply_recognition_hints(belief)
 
         # 初始 NBV: 至少拍一帧
         self._execute_action(
