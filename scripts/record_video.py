@@ -62,6 +62,7 @@ def record_episode(
     env = _build_env(top_cfg)
     actual_object, _ = reset_until_expected(
         env, expected_object=scenario.get("expected_object"), seed=scenario.get("seed"),
+        max_resets=int(scenario.get("max_resets", 1)),
     )
     query = rewrite_query_for_actual_object(
         str(scenario.get("query", "pick up anything")),
