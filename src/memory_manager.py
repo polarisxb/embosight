@@ -101,13 +101,19 @@ class MemoryManager:
         for entry in entries:
             if entry.get("object_type", "").lower().strip() == obj_key:
                 parts = []
-                best = entry.get("best_strategy")
-                if best:
-                    parts.append(f"prefer {best}")
+                # 收集失败信息
+                failed_strategies: set[str] = set()
                 for f in entry.get("failed", []):
+                    count = f.get("count", 1)
                     parts.append(
-                        f"avoid {f['strategy']} ({f['reason']} x{f.get('count', 1)})"
+                        f"avoid {f['strategy']} ({f['reason']} x{count})"
                     )
+                    if count >= 3:
+                        failed_strategies.add(f["strategy"])
+                # "prefer X" 仅在 X 没有严重失败时输出, 否则会产生矛盾信号
+                best = entry.get("best_strategy")
+                if best and best not in failed_strategies:
+                    parts.insert(0, f"prefer {best}")
                 if parts:
                     return f"{object_type}: {', '.join(parts)}"
         return None

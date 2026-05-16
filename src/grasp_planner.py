@@ -19,6 +19,8 @@ import numpy as np
 
 from src.world_belief import GraspAttempt, GraspCandidate, GraspStrategy, Hypothesis
 
+_FAIL_BAN_THRESHOLD = 3  # ≥ N 次失败的策略从 LLM 可选列表中移除
+
 logger = logging.getLogger(__name__)
 
 
@@ -49,10 +51,38 @@ class GraspPlanner:
     # LLM 策略选择
     # ──────────────────────────────────────
 
+    @staticmethod
+    def _parse_banned_strategies(memory_advice: str) -> set[str]:
+        """从 memory_advice 中提取失败次数 ≥ _FAIL_BAN_THRESHOLD 的策略名。
+
+        识别格式: "avoid <strategy> (<reason> x<N>)"
+        """
+        banned: set[str] = set()
+        for m in re.finditer(r"avoid\s+(\w+)\s+\([^)]*x(\d+)", memory_advice):
+            strat, count = m.group(1), int(m.group(2))
+            if count >= _FAIL_BAN_THRESHOLD:
+                banned.add(strat)
+        return banned
+
     def select_strategy(self, hyp: Hypothesis, memory_advice: str = "") -> GraspStrategy:
-        """让 LLM 根据物体外观 + 安全属性选择抓取策略。"""
+        """让 LLM 根据物体外观 + 安全属性选择抓取策略。
+
+        失败 ≥ _FAIL_BAN_THRESHOLD 次的策略会从可选列表中物理删除。
+        """
+        all_strategies = {"top_down", "gentle_side", "handle_grasp", "scoop_under", "refuse"}
+        banned = self._parse_banned_strategies(memory_advice)
+        available = all_strategies - banned
+        if banned:
+            logger.info("[grasp_planner] banned strategies (fail≥%d): %s",
+                        _FAIL_BAN_THRESHOLD, banned)
+
         if not self.llm or not self._strategy_template:
-            return GraspStrategy(strategy="top_down", reasoning="no LLM",
+            # 无 LLM 时, 从未禁止的策略中按优先级选择
+            for fallback in ["top_down", "handle_grasp", "gentle_side"]:
+                if fallback in available:
+                    return GraspStrategy(strategy=fallback, reasoning="no LLM",
+                                         speech=f"我来拿{hyp.label}")
+            return GraspStrategy(strategy="top_down", reasoning="no LLM (all banned)",
                                  speech=f"我来拿{hyp.label}")
 
         safety_text = ", ".join(
@@ -64,8 +94,17 @@ class GraspPlanner:
             "upright" if (hyp.pose_estimate is None or hyp.pose_estimate.upright)
             else "side/tilted"
         )
+
+        # 从 prompt 模板中物理删除已禁止的策略行
+        template = self._strategy_template
+        if banned:
+            lines = template.split("\n")
+            lines = [ln for ln in lines
+                     if not any(f"- {b}:" in ln for b in banned)]
+            template = "\n".join(lines)
+
         prompt = (
-            self._strategy_template
+            template
             .replace("{label}", hyp.label)
             .replace("{visible_features}", hyp.visible_features or "(no description)")
             .replace("{safety_dist}", safety_text)
@@ -78,9 +117,17 @@ class GraspPlanner:
             data = self._extract_json(raw)
             if data and "strategy" in data:
                 strat = str(data["strategy"]).lower()
-                valid = {"top_down", "gentle_side", "handle_grasp", "scoop_under", "refuse"}
-                if strat not in valid:
-                    strat = "top_down"
+                # 后置检查: LLM 仍选了被禁/无效策略 → 覆盖
+                if strat not in available or strat not in all_strategies:
+                    old = strat
+                    for fb in ["top_down", "handle_grasp", "gentle_side"]:
+                        if fb in available:
+                            strat = fb
+                            break
+                    logger.warning(
+                        "[grasp_planner] LLM chose banned/invalid '%s', "
+                        "overriding to '%s'", old, strat,
+                    )
                 return GraspStrategy(
                     strategy=strat,
                     approach_axis=str(data.get("approach_axis", "z")),
@@ -90,7 +137,12 @@ class GraspPlanner:
         except Exception as e:
             logger.warning("[grasp_planner] strategy selection failed: %s", e)
 
-        return GraspStrategy(strategy="top_down", reasoning="fallback",
+        # fallback: 从未禁止的策略中选
+        for fb in ["top_down", "handle_grasp", "gentle_side"]:
+            if fb in available:
+                return GraspStrategy(strategy=fb, reasoning="fallback",
+                                     speech=f"我来拿{hyp.label}")
+        return GraspStrategy(strategy="top_down", reasoning="fallback (all banned)",
                              speech=f"我来拿{hyp.label}")
 
     # ──────────────────────────────────────
@@ -104,12 +156,17 @@ class GraspPlanner:
         "scoop_under":   {"approach_dir": [0, 0, -0.3], "finger_width": 0.08, "score": 0.65, "depth_margin": 0.020},
     }
 
+    _SIDE_TILT_Z = -0.26  # 侧抓下倾分量 (归一化后≈15°)
+
     def _side_approach_dir(self, obj_pos: np.ndarray, env) -> np.ndarray:
-        """计算从机器人指向物体的水平方向 (最容易到达的侧抓方向)。
+        """计算从机器人指向物体的接近方向, 带 ~15° 下倾。
+
+        纯水平接近 (z=0) 会把 Panda 臂逼到关节极限; 下倾 15° 让肘
+        可以高于腕, 可用关节空间大幅增加, 同时符合人体工学。
 
         Returns:
-            3D unit vector in world frame, z=0.
-            Fallback [1, 0, 0] if positions are too close.
+            3D unit vector in world frame.
+            Fallback [1, 0, -0.26] (normalized) if positions are too close.
         """
         try:
             base_pos = env.get_base_pose()[0]  # (3,)
@@ -118,8 +175,11 @@ class GraspPlanner:
         delta_xy = obj_pos[:2] - base_pos[:2]
         d = float(np.linalg.norm(delta_xy))
         if d < 0.01:
-            return np.array([1.0, 0.0, 0.0], dtype=np.float32)
-        return np.array([delta_xy[0] / d, delta_xy[1] / d, 0.0], dtype=np.float32)
+            raw = np.array([1.0, 0.0, self._SIDE_TILT_Z], dtype=np.float32)
+        else:
+            raw = np.array([delta_xy[0] / d, delta_xy[1] / d, self._SIDE_TILT_Z],
+                           dtype=np.float32)
+        return raw / np.linalg.norm(raw)
 
     def plan(self, hyp: Hypothesis, env=None) -> list[GraspCandidate]:
         env = env or self.env
@@ -133,12 +193,22 @@ class GraspPlanner:
             )
             # 侧抓方向: 动态计算 robot→object 水平向量
             raw_ad = np.array(params["approach_dir"], dtype=np.float32)
-            if abs(raw_ad[2]) < 0.5:  # 非 top-down → 用实际相对位置
+            is_side = abs(raw_ad[2]) < 0.5
+            if is_side:
                 ad = self._side_approach_dir(hyp.position_3d, env)
             else:
                 ad = raw_ad
+
+            # 策略抓点偏移: 细长直立物体的质心处最窄, 需偏移
+            grasp_pt = hyp.position_3d.copy()
+            is_upright = (hyp.pose_estimate is None or hyp.pose_estimate.upright)
+            if is_upright and strategy.strategy == "handle_grasp":
+                grasp_pt[2] += 0.03   # 上移 3cm → 手柄中段
+            elif is_upright and strategy.strategy == "top_down":
+                grasp_pt[2] -= 0.015  # 下移 1.5cm → 碗端/宽端
+
             cands.append(GraspCandidate(
-                point_3d=hyp.position_3d.copy(),
+                point_3d=grasp_pt,
                 approach_dir=ad,
                 finger_width_m=params["finger_width"],
                 score=params["score"],

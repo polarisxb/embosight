@@ -92,7 +92,7 @@ class TestStrategyDrivenPlan:
         assert len(cands) >= 2
         # strategy candidate should be first (highest score)
         assert cands[0].source == "strategy_gentle_side"
-        assert cands[0].approach_dir[2] == 0.0  # horizontal (side approach)
+        assert cands[0].approach_dir[2] < 0  # tilted downward (~15°)
         assert float(np.linalg.norm(cands[0].approach_dir)) > 0.99  # unit vector
         assert cands[0].finger_width_m == 0.06  # wider for gentle
 
@@ -115,6 +115,52 @@ class TestStrategyDrivenPlan:
         sources = [c.source for c in cands]
         assert "strategy_refuse" not in sources
         assert "geometric_centroid" in sources
+
+
+class TestBannedStrategies:
+    def test_parse_banned_from_memory(self):
+        advice = "wooden_spoon: avoid top_down (slipped x4), avoid handle_grasp (slipped x2)"
+        banned = GraspPlanner._parse_banned_strategies(advice)
+        assert "top_down" in banned      # x4 >= 3
+        assert "handle_grasp" not in banned  # x2 < 3
+
+    def test_banned_strategy_not_selected(self):
+        llm = MockLLM(responses=[
+            '{"strategy": "top_down", "reasoning": "best", "speech": "上方拿"}'
+        ])
+        planner = GraspPlanner(vlm=MockVLM([]), env=_FakeEnv(), llm=llm)
+        h = _hyp("spoon")
+        advice = "spoon: avoid top_down (slipped x5)"
+        strategy = planner.select_strategy(h, memory_advice=advice)
+        # LLM chose top_down but it's banned → overridden
+        assert strategy.strategy != "top_down"
+
+    def test_no_llm_respects_ban(self):
+        planner = GraspPlanner(vlm=MockVLM([]), env=_FakeEnv(), llm=None)
+        h = _hyp("spoon")
+        advice = "spoon: avoid top_down (slipped x3)"
+        strategy = planner.select_strategy(h, memory_advice=advice)
+        assert strategy.strategy != "top_down"
+
+    def test_grasp_point_offset_handle(self):
+        planner = GraspPlanner(vlm=MockVLM([]), env=_FakeEnv(), llm=None)
+        h = _hyp("spoon")
+        h.grasp_strategy = GraspStrategy(strategy="handle_grasp", speech="侧抓")
+        cands = planner.plan(h)
+        strat_cand = [c for c in cands if c.source == "strategy_handle_grasp"]
+        assert len(strat_cand) == 1
+        # upright → z offset +3cm from centroid
+        assert strat_cand[0].point_3d[2] > h.position_3d[2]
+
+    def test_grasp_point_offset_top_down(self):
+        planner = GraspPlanner(vlm=MockVLM([]), env=_FakeEnv(), llm=None)
+        h = _hyp("spoon")
+        h.grasp_strategy = GraspStrategy(strategy="top_down", speech="上方拿")
+        cands = planner.plan(h)
+        strat_cand = [c for c in cands if c.source == "strategy_top_down"]
+        assert len(strat_cand) == 1
+        # upright → z offset -1.5cm from centroid
+        assert strat_cand[0].point_3d[2] < h.position_3d[2]
 
 
 class TestGraspStrategyDataclass:
