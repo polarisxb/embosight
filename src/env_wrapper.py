@@ -1513,8 +1513,8 @@ class EnvWrapper:
             if xy_norm > 0.1:
                 xy_unit = xy_approach / xy_norm
                 base_target = np.array([
-                    float(pre_pos[0]) - xy_unit[0] * 0.25,
-                    float(pre_pos[1]) - xy_unit[1] * 0.25,
+                    float(pre_pos[0]) - xy_unit[0] * 0.10,
+                    float(pre_pos[1]) - xy_unit[1] * 0.10,
                     float(eef[2]),
                 ], dtype=np.float32)
             else:

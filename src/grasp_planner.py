@@ -156,7 +156,7 @@ class GraspPlanner:
         "scoop_under":   {"approach_dir": [0, 0, -0.3], "finger_width": 0.08, "score": 0.65, "depth_margin": 0.020},
     }
 
-    _SIDE_TILT_Z = -0.26  # 侧抓下倾分量 (归一化后≈15°)
+    _SIDE_TILT_Z = -0.47  # 侧抓下倾分量 (归一化后≈25°)
 
     def _side_approach_dir(self, obj_pos: np.ndarray, env) -> np.ndarray:
         """计算从机器人指向物体的接近方向, 带 ~15° 下倾。
@@ -193,8 +193,8 @@ class GraspPlanner:
             )
             # 侧抓方向: 动态计算 robot→object 水平向量
             raw_ad = np.array(params["approach_dir"], dtype=np.float32)
-            is_side = abs(raw_ad[2]) < 0.5
-            if is_side:
+            has_xy = max(abs(raw_ad[0]), abs(raw_ad[1])) > 0.1
+            if has_xy:  # 有水平分量 → 动态计算侧抓方向
                 ad = self._side_approach_dir(hyp.position_3d, env)
             else:
                 ad = raw_ad
