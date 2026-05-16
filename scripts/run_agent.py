@@ -96,6 +96,7 @@ def main() -> int:
         "--user-mode", default="fake_from_robocasa",
         choices=["fake_from_robocasa", "fake_from_query", "cli"],
     )
+    parser.add_argument("--seed", type=int, default=None, help="环境随机种子")
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args()
 
@@ -112,6 +113,8 @@ def main() -> int:
     vlm = _build_vlm(top_cfg)
     cache = VLMCache(max_size=agent_cfg["cache"]["max_size"])
     env = _build_env(top_cfg)
+    if args.seed is not None:
+        env.seed(args.seed)
     vp_lib = ViewpointLibrary(
         config_path=top_cfg.get("viewpoints_path", "configs/viewpoints.yaml"),
     )
