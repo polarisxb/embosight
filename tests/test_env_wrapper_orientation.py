@@ -409,3 +409,76 @@ class TestApproach:
         assert ok is True
         assert len(approach_calls) == 1
         np.testing.assert_allclose(approach_calls[0][1], [0.0, 0.0, -1.0])
+
+
+# ============================================================
+# Task 8: move_to_pre_grasp uses approach_dir
+# ============================================================
+
+
+class TestMoveToPreGrasp:
+    def _make_candidate(self, point, approach_dir):
+        from src.world_belief import GraspCandidate
+
+        return GraspCandidate(
+            point_3d=np.asarray(point, dtype=np.float32),
+            approach_dir=np.asarray(approach_dir, dtype=np.float32),
+            finger_width_m=0.04,
+            score=0.9,
+            source="test",
+        )
+
+    def test_top_down_pre_grasp_above_object(self, monkeypatch):
+        """top_down: pre-grasp position should be height_m above object."""
+        from src.env_wrapper import EnvWrapper
+
+        wrapper = EnvWrapper.__new__(EnvWrapper)
+        moves = []
+        monkeypatch.setattr(wrapper, "move_arm_to",
+                            lambda t, **kw: moves.append((np.array(t, copy=True), kw)) or True)
+        monkeypatch.setattr(wrapper, "_gripper_action", lambda *a, **kw: None)
+        monkeypatch.setattr(wrapper, "get_eef_pos",
+                            lambda: np.array([0.5, 0.0, 1.0], dtype=np.float32))
+
+        c = self._make_candidate([0.5, 0.0, 0.9], [0.0, 0.0, -1.0])
+        wrapper.move_to_pre_grasp(c, height_m=0.05)
+        # Final move target should be (0.5, 0.0, 0.95) = obj + 5cm above
+        last_pos = moves[-1][0]
+        np.testing.assert_allclose(last_pos, [0.5, 0.0, 0.95], atol=1e-6)
+
+    def test_side_pre_grasp_offset_horizontally(self, monkeypatch):
+        """side approach (+x): pre-grasp should be height_m back along -x at object z."""
+        from src.env_wrapper import EnvWrapper
+
+        wrapper = EnvWrapper.__new__(EnvWrapper)
+        moves = []
+        monkeypatch.setattr(wrapper, "move_arm_to",
+                            lambda t, **kw: moves.append((np.array(t, copy=True), kw)) or True)
+        monkeypatch.setattr(wrapper, "_gripper_action", lambda *a, **kw: None)
+        monkeypatch.setattr(wrapper, "get_eef_pos",
+                            lambda: np.array([0.5, 0.0, 1.0], dtype=np.float32))
+
+        c = self._make_candidate([0.5, 0.0, 0.93], [1.0, 0.0, 0.0])
+        wrapper.move_to_pre_grasp(c, height_m=0.10)
+        # Final move target should be (0.5 - 0.10, 0.0, 0.93) = back 10cm in -x at obj z
+        last_pos = moves[-1][0]
+        np.testing.assert_allclose(last_pos, [0.4, 0.0, 0.93], atol=1e-6)
+
+    def test_side_pre_grasp_passes_approach_dir(self, monkeypatch):
+        """The pre-grasp move should pass approach_dir for orientation alignment."""
+        from src.env_wrapper import EnvWrapper
+
+        wrapper = EnvWrapper.__new__(EnvWrapper)
+        moves = []
+        monkeypatch.setattr(wrapper, "move_arm_to",
+                            lambda t, **kw: moves.append((np.array(t, copy=True), kw)) or True)
+        monkeypatch.setattr(wrapper, "_gripper_action", lambda *a, **kw: None)
+        monkeypatch.setattr(wrapper, "get_eef_pos",
+                            lambda: np.array([0.5, 0.0, 1.0], dtype=np.float32))
+
+        c = self._make_candidate([0.5, 0.0, 0.93], [1.0, 0.0, 0.0])
+        wrapper.move_to_pre_grasp(c, height_m=0.10)
+        # The final move (pre-grasp) should pass approach_dir
+        ad = moves[-1][1].get("approach_dir")
+        assert ad is not None
+        np.testing.assert_allclose(np.asarray(ad), [1.0, 0.0, 0.0], atol=1e-6)

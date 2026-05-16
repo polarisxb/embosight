@@ -1458,33 +1458,64 @@ class EnvWrapper:
         return True
 
     def move_to_pre_grasp(self, candidate, height_m: float = 0.05) -> bool:
-        """移动到 candidate 上方 height_m 处 (pre-grasp 高度)。
+        """移动到 candidate 的 pre-grasp 位置, 朝向对齐 candidate.approach_dir。
 
-        先移动底座靠近物体 (xy 平面), 再伸臂。避免物体在臂工作空间外。
+        Pre-grasp 位置 = point_3d - approach_dir * height_m
+            - top_down (approach_dir=[0,0,-1]): 物体上方 height_m
+            - 侧抓 (approach_dir=[1,0,0]): 物体后方 height_m (沿 -x)
+
+        先移动底盘到 pre-grasp 附近 (xy 平面), 再带朝向控制移到精确 pre-grasp 位。
         """
-        target_xy = np.asarray(candidate.point_3d[:2], dtype=np.float32)
-        # 底座先移到物体前方 0.4m (留臂展空间)
+        # 解析 approach_dir (默认 top_down)
+        approach_dir = np.asarray(
+            getattr(candidate, "approach_dir", [0.0, 0.0, -1.0]),
+            dtype=np.float32,
+        )
+        ad_norm = float(np.linalg.norm(approach_dir))
+        if ad_norm < 1e-6:
+            approach_dir = np.array([0.0, 0.0, -1.0], dtype=np.float32)
+            ad_norm = 1.0
+        ad_unit = approach_dir / ad_norm
+
+        target_pos = np.asarray(candidate.point_3d, dtype=np.float32)
+        pre_pos = target_pos - ad_unit * float(height_m)
+
+        # 底盘先靠近: 用 pre_pos 的 xy, 但 z 保持当前 eef 高度避免硬碰撞
         try:
             eef = self.get_eef_pos()
-            base_target = np.array([
-                target_xy[0] - 0.4,  # 底座在物体前方
-                target_xy[1],
-                float(eef[2]),
-            ], dtype=np.float32)
+            # 底盘前置点: pre_pos.xy 再后退 0.4m 沿 -approach_dir.xy
+            xy_approach = np.array(
+                [ad_unit[0], ad_unit[1], 0.0], dtype=np.float32,
+            )
+            xy_norm = float(np.linalg.norm(xy_approach))
+            if xy_norm > 0.1:
+                xy_unit = xy_approach / xy_norm
+                base_target = np.array([
+                    float(pre_pos[0]) - xy_unit[0] * 0.4,
+                    float(pre_pos[1]) - xy_unit[1] * 0.4,
+                    float(eef[2]),
+                ], dtype=np.float32)
+            else:
+                # top_down 等纯垂直接近: 维持原行为, 底盘前置 0.4m
+                base_target = np.array([
+                    float(target_pos[0]) - 0.4,
+                    float(target_pos[1]),
+                    float(eef[2]),
+                ], dtype=np.float32)
             self.move_arm_to(base_target, threshold_m=0.15, max_steps=600)
         except Exception as e:
             logger.debug(f"[pre_grasp] base approach failed: {e}")
 
-        pre_pos = np.array([
-            target_xy[0],
-            target_xy[1],
-            float(candidate.point_3d[2]) + height_m,
-        ], dtype=np.float32)
+        # 张爪
         try:
             self._gripper_action(-1.0, n_steps=8)
         except Exception:
             pass
-        return self.move_arm_to(pre_pos, threshold_m=0.06)
+
+        # 移到 pre-grasp 位置 + 朝向对齐 approach_dir
+        return self.move_arm_to(
+            pre_pos, threshold_m=0.06, approach_dir=ad_unit,
+        )
 
     def approach(
         self,

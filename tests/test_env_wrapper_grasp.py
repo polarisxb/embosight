@@ -72,7 +72,8 @@ class PregraspThresholdEnv(EnvWrapper):
     def get_eef_pos(self) -> np.ndarray:
         return np.array([0.0, 0.0, 0.9], dtype=np.float32)
 
-    def move_arm_to(self, target_pos_m, max_steps: int = 800, threshold_m: float = 0.02) -> bool:
+    def move_arm_to(self, target_pos_m, max_steps: int = 800,
+                    threshold_m: float = 0.02, **kwargs) -> bool:
         self.move_calls.append((np.asarray(target_pos_m), max_steps, threshold_m))
         return True
 
