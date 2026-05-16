@@ -133,3 +133,51 @@ class TestQuatDeltaToAxisAngle:
         q_tgt = R.from_rotvec([0.0, np.pi / 2, 0.0]).as_quat()
         out = EnvWrapper._quat_delta_to_axis_angle(q_cur, q_tgt)
         np.testing.assert_allclose(out, [0.0, np.pi / 4, 0.0], atol=1e-6)
+
+
+# ============================================================
+# Task 4: _get_eef_quat
+# ============================================================
+
+
+class TestGetEEFQuat:
+    def test_returns_quat_from_obs_key(self):
+        """Should read robot0_eef_quat from observation if available."""
+        from src.env_wrapper import EnvWrapper
+
+        wrapper = EnvWrapper.__new__(EnvWrapper)
+        expected = R.from_rotvec([0.0, np.pi / 4, 0.0]).as_quat()
+        wrapper._latest_obs = {"robot0_eef_quat": expected}
+
+        q = wrapper._get_eef_quat()
+        np.testing.assert_allclose(q, expected, atol=1e-9)
+
+    def test_resets_if_obs_empty(self, monkeypatch):
+        """If no obs, should call reset() to refresh."""
+        from src.env_wrapper import EnvWrapper
+
+        wrapper = EnvWrapper.__new__(EnvWrapper)
+        wrapper._latest_obs = None
+
+        expected = R.from_rotvec([0.0, 0.0, np.pi / 6]).as_quat()
+        reset_called = []
+
+        def fake_reset():
+            reset_called.append(True)
+            wrapper._latest_obs = {"robot0_eef_quat": expected}
+
+        monkeypatch.setattr(wrapper, "reset", fake_reset)
+
+        q = wrapper._get_eef_quat()
+        assert reset_called == [True]
+        np.testing.assert_allclose(q, expected, atol=1e-9)
+
+    def test_raises_if_no_quat_in_obs(self):
+        """If obs exists but no robot0_eef_quat key, raise clear error."""
+        from src.env_wrapper import EnvWrapper
+
+        wrapper = EnvWrapper.__new__(EnvWrapper)
+        wrapper._latest_obs = {"robot0_eef_pos": np.array([0.5, 0.0, 1.0])}
+
+        with pytest.raises(RuntimeError, match="robot0_eef_quat"):
+            wrapper._get_eef_quat()

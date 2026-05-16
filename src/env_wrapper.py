@@ -245,6 +245,20 @@ class EnvWrapper:
             raise RuntimeError("robot0_eef_pos not in observation keys")
         return np.asarray(pos, dtype=np.float32)
 
+    def _get_eef_quat(self) -> np.ndarray:
+        """获取末端执行器当前世界系四元数 (xyzw)。
+
+        Used for orientation control in move_arm_to. Reads robot0_eef_quat
+        from the latest observation. Robosuite Panda exposes the gripper
+        quaternion in world frame in this key by default.
+        """
+        if not self._latest_obs:
+            self.reset()
+        q = self._latest_obs.get("robot0_eef_quat")
+        if q is None:
+            raise RuntimeError("robot0_eef_quat not in observation keys")
+        return np.asarray(q, dtype=np.float64)
+
     def get_base_pose(self) -> tuple[np.ndarray, np.ndarray]:
         """获取底盘在世界系的 (位置, 3x3旋转矩阵)
 
