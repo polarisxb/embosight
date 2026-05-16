@@ -28,8 +28,8 @@ import logging
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 
-from src.config_loader import load_config
-from src.env_wrapper import EnvWrapper
+import yaml
+from src.env_wrapper import EnvConfig, EnvWrapper
 
 logging.basicConfig(
     level=logging.INFO,
@@ -139,9 +139,7 @@ def probe_axis(env, axis_idx: int, magnitude: float = 0.1, n_steps: int = 30):
 
 
 def main():
-    cfg = load_config("configs/default.yaml")
-    sim_cfg = cfg.get("simulator", cfg)
-    env = EnvWrapper(sim_cfg)
+    env = EnvWrapper(EnvConfig())
     env.reset(seed=3)
 
     logger.info("=" * 60)
@@ -196,8 +194,7 @@ def test_live_side_rotation():
     Only runs after Task 5 (move_arm_to extension) is merged. Comment out the
     @skip marker once you reach Task 6.
     """
-    cfg = load_config("configs/default.yaml")
-    env = EnvWrapper(cfg.get("simulator", cfg))
+    env = EnvWrapper(EnvConfig())
     env.reset(seed=3)
 
     q_before = get_gripper_quat_world(env)
