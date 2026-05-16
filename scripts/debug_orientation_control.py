@@ -231,5 +231,4 @@ def test_live_side_rotation():
 
 if __name__ == "__main__":
     main()
-    # Uncomment after Task 5 merged:
-    # test_live_side_rotation()
+    test_live_side_rotation()
