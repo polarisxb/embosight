@@ -129,18 +129,19 @@ def prepare_memory_dir(memory_dir: Path) -> None:
     memory_dir.mkdir(parents=True, exist_ok=True)
     grasp_path = memory_dir / "grasp_experience.yaml"
     recognition_path = memory_dir / "recognition_hints.yaml"
+    safety_path = memory_dir / "safety_knowledge.yaml"
     index_path = memory_dir / "index.yaml"
 
-    if not grasp_path.exists():
-        grasp_path.write_text(yaml.dump({"entries": []}, allow_unicode=True), encoding="utf-8")
-    if not recognition_path.exists():
-        recognition_path.write_text(yaml.dump({"entries": []}, allow_unicode=True), encoding="utf-8")
+    for p in (grasp_path, recognition_path, safety_path):
+        if not p.exists():
+            p.write_text(yaml.dump({"entries": []}, allow_unicode=True), encoding="utf-8")
     index_path.write_text(
         yaml.dump({
             "version": 1,
             "domains": {
                 "grasp": str(grasp_path),
                 "recognition": str(recognition_path),
+                "safety": str(safety_path),
             },
         }, allow_unicode=True, sort_keys=False),
         encoding="utf-8",
