@@ -402,7 +402,8 @@ class EnvWrapper:
         max_steps: int = 800,
         threshold_m: float = 0.02,
         approach_dir: Optional[np.ndarray] = None,
-        ori_gain: float = 0.3,
+        ori_gain: float = 1.0,
+        ori_threshold_rad: float = 0.15,
     ) -> bool:
         """自适应控制: 世界系目标 → base 系增量 → 手臂+底盘协同
 
@@ -420,11 +421,11 @@ class EnvWrapper:
         Args:
             target_pos_m: 3D target position in world frame.
             approach_dir: optional unit vector; if provided, gripper orientation
-                is driven so its local +z axis aligns with approach_dir. When
-                approach_dir indicates top-down (essentially [0,0,-1]) and the
-                gripper already faces down, the orientation control becomes a
-                no-op to preserve back-compat.
+                is driven so its local +z axis aligns with approach_dir.
             ori_gain: scaling factor for orientation action delta.
+            ori_threshold_rad: orientation convergence threshold (radians).
+                When approach_dir is given, loop continues until BOTH
+                position AND orientation converge (or max_steps hit).
 
         Returns:
             True if converged within threshold
@@ -447,7 +448,7 @@ class EnvWrapper:
                 target_quat = self._approach_dir_to_quat(ad)
 
         init_dist = float(np.linalg.norm(target - self.get_eef_pos()))
-        if init_dist < threshold_m:
+        if init_dist < threshold_m and target_quat is None:
             return True
         if init_dist > 0.5:
             max_steps = max(max_steps, int(init_dist * 1500))
@@ -461,15 +462,33 @@ class EnvWrapper:
         stall = 0
         check_interval = 120  # 每 N 步检查一次 stall
         stall_limit = 6
-        max_ori_step_per_iter = 0.2  # 单步朝向 axis-angle 模长上限 (rad)
+        max_ori_step_per_iter = 0.5  # 单步朝向 axis-angle 模长上限 (rad)
 
         for step in range(max_steps):
             current = self.get_eef_pos()
             delta_world = target - current
             dist = float(np.linalg.norm(delta_world))
 
-            if dist < threshold_m:
-                logger.debug(f"[move] converged step={step} dist={dist:.4f}m")
+            # ── 朝向误差 ──
+            ori_err = 0.0
+            if target_quat is not None:
+                try:
+                    q_cur = self._get_eef_quat()
+                    ori_delta_world = self._quat_delta_to_axis_angle(
+                        q_cur, target_quat
+                    )
+                    ori_err = float(np.linalg.norm(ori_delta_world))
+                except Exception:
+                    ori_err = float("inf")
+
+            # ── 双重收敛检查 ──
+            pos_ok = dist < threshold_m
+            ori_ok = ori_err < ori_threshold_rad if target_quat is not None else True
+            if pos_ok and ori_ok:
+                logger.debug(
+                    f"[move] converged step={step} dist={dist:.4f}m "
+                    f"ori_err={ori_err:.4f}rad"
+                )
                 return True
 
             # stall 检测: 放宽间隔和阈值
@@ -480,16 +499,16 @@ class EnvWrapper:
                     if stall >= stall_limit:
                         logger.warning(
                             f"[move_arm_to] stalled at step={step}, "
-                            f"dist={dist:.4f}m (progress={progress:.4f}m)"
+                            f"dist={dist:.4f}m ori_err={ori_err:.4f}rad"
                         )
-                        return dist < threshold_m
+                        return pos_ok and ori_ok
                 else:
                     stall = max(0, stall - 1)
                 prev_dist = dist
                 if step % (check_interval * 3) == 0:
                     logger.debug(
                         f"[move] step={step} dist={dist:.3f}m "
-                        f"stall={stall}/{stall_limit}"
+                        f"ori={ori_err:.3f}rad stall={stall}/{stall_limit}"
                     )
 
             # 世界系 → base 系 (核心修正)
@@ -500,23 +519,19 @@ class EnvWrapper:
             step_size = min(self.ARM_STEP_CAP, dist)
 
             action = np.zeros(action_dim, dtype=np.float32)
-            # 手臂位置: base 系增量
-            action[0:3] = dir_base * step_size
+            # 手臂位置: base 系增量 (只有还没到位时才驱动)
+            if not pos_ok:
+                action[0:3] = dir_base * step_size
 
             # 手臂朝向: 把世界系 axis-angle 转到 base 系, 再 clamp + scale
-            if target_quat is not None:
+            if target_quat is not None and ori_err > ori_threshold_rad:
                 try:
-                    q_cur = self._get_eef_quat()
-                    ori_delta_world = self._quat_delta_to_axis_angle(
-                        q_cur, target_quat
-                    )
-                    # World → base
+                    # ori_delta_world 已在上面计算
                     ori_delta_base = base_ori.T @ ori_delta_world
                     # Clamp per-step magnitude
-                    ori_norm = float(np.linalg.norm(ori_delta_base))
-                    if ori_norm > max_ori_step_per_iter:
+                    if ori_err > max_ori_step_per_iter:
                         ori_delta_base = ori_delta_base * (
-                            max_ori_step_per_iter / ori_norm
+                            max_ori_step_per_iter / ori_err
                         )
                     action[3:6] = (ori_delta_base * ori_gain).astype(np.float32)
                 except Exception as e:
@@ -536,7 +551,10 @@ class EnvWrapper:
                 logger.warning(f"[move_arm_to] step {step} failed: {e}")
                 return False
 
-        logger.warning(f"[move_arm_to] max_steps reached, dist={dist:.4f}m")
+        logger.warning(
+            f"[move_arm_to] max_steps reached, dist={dist:.4f}m "
+            f"ori_err={ori_err:.4f}rad"
+        )
         return False
 
     # ------------------------------------------------------------------
