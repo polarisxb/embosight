@@ -1096,20 +1096,23 @@ class EnvWrapper:
         return contact, float(curr[2])
 
     def _close_gripper_until_grasp(
-        self, target_body: str, max_steps: int = 30, min_close_steps: int = 6
+        self, target_body: str, max_steps: int = 30, min_close_steps: int = 6,
+        squeeze_steps: int = 10,
     ) -> bool:
-        """力闭环关爪: 关闭直到检测到稳定夹持, 不是固定步数
+        """力闭环关爪: 关闭直到检测到夹持, 然后继续施力确保稳固
 
         Args:
             target_body: 目标物体 body name
             max_steps: 最大关爪步数 (上限保护)
             min_close_steps: 最少关爪步数 (给夹爪初始关闭时间)
+            squeeze_steps: 接触确认后继续闭合的步数 (让夹爪完全包裹物体)
 
         Returns:
-            True 若检测到夹持, False 若超时无夹持
+            True 若检测到稳定夹持, False 若超时无夹持
         """
         action = np.zeros(self._env.action_dim, dtype=np.float32)
         action[self._get_gripper_idx()] = 1.0
+        confirmed = False
         for i in range(max_steps):
             try:
                 obs, _, _, _ = self._env.step(action)
@@ -1120,9 +1123,18 @@ class EnvWrapper:
                 return False
             target_contact = self._finger_object_contact(target_body)
             generic_grasp = self._check_grasp_contact()
-            if i >= min_close_steps and target_contact and generic_grasp:
-                logger.info(f"[close_gripper] grasp confirmed at step {i}")
-                return True
+            if not confirmed and i >= min_close_steps and target_contact and generic_grasp:
+                logger.info(f"[close_gripper] contact at step {i}, squeezing {squeeze_steps} more")
+                confirmed = True
+                squeeze_remaining = squeeze_steps
+            if confirmed:
+                squeeze_remaining -= 1
+                if squeeze_remaining <= 0:
+                    logger.info(f"[close_gripper] grasp confirmed + squeezed at step {i}")
+                    return True
+        if confirmed:
+            logger.info(f"[close_gripper] grasp confirmed (squeeze partial) at step {max_steps}")
+            return True
         logger.warning(f"[close_gripper] no grasp after {max_steps} steps")
         return False
 
@@ -1400,15 +1412,29 @@ class EnvWrapper:
         self._gripper_action(-1.0, n_steps=10)
 
     def lift(self, height_m: float = 0.10) -> tuple[bool, float]:
-        """从当前位置抬升 height_m (通常 5-10cm)。"""
+        """从当前位置抬升 height_m，分两阶段: 先慢起(减少滑落)再正常抬。"""
         try:
             curr = self.get_eef_pos()
-            target = (
+            # 阶段1: 慢起 2cm (小步 + 低速, 降低惯性力)
+            gentle_h = min(0.02, height_m)
+            gentle_target = (
                 np.asarray(curr, dtype=np.float32)
-                + np.array([0.0, 0.0, height_m], dtype=np.float32)
+                + np.array([0.0, 0.0, gentle_h], dtype=np.float32)
             )
-            ok = self.move_arm_to(target, threshold_m=0.02, max_steps=200)
-            return bool(ok), float(self.get_eef_pos()[2])
+            self.move_arm_to(gentle_target, threshold_m=0.005, max_steps=120)
+
+            # 阶段2: 正常速度抬到目标高度
+            remaining = height_m - gentle_h
+            if remaining > 0.005:
+                final_target = (
+                    np.asarray(curr, dtype=np.float32)
+                    + np.array([0.0, 0.0, height_m], dtype=np.float32)
+                )
+                self.move_arm_to(final_target, threshold_m=0.02, max_steps=200)
+
+            final_z = float(self.get_eef_pos()[2])
+            ok = final_z > curr[2] + height_m * 0.5  # 至少升了一半
+            return ok, final_z
         except Exception as e:
             logger.warning(f"[lift] failed: {e}")
             return False, 0.0
