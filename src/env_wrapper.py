@@ -401,6 +401,8 @@ class EnvWrapper:
         target_pos_m,
         max_steps: int = 800,
         threshold_m: float = 0.02,
+        approach_dir: Optional[np.ndarray] = None,
+        ori_gain: float = 0.3,
     ) -> bool:
         """自适应控制: 世界系目标 → base 系增量 → 手臂+底盘协同
 
@@ -415,6 +417,15 @@ class EnvWrapper:
             旋转到当前 base 系, 同时驱动手臂和底盘. 步数按距离动态分配.
             底盘增益 0.8 (OmronMobileBase frictionloss=250, kv=1000).
 
+        Args:
+            target_pos_m: 3D target position in world frame.
+            approach_dir: optional unit vector; if provided, gripper orientation
+                is driven so its local +z axis aligns with approach_dir. When
+                approach_dir indicates top-down (essentially [0,0,-1]) and the
+                gripper already faces down, the orientation control becomes a
+                no-op to preserve back-compat.
+            ori_gain: scaling factor for orientation action delta.
+
         Returns:
             True if converged within threshold
         """
@@ -428,6 +439,13 @@ class EnvWrapper:
         base_idx = self._get_base_action_idx()
         has_base = base_idx is not None
 
+        # ── Orientation target (Task 5) ──
+        target_quat: Optional[np.ndarray] = None
+        if approach_dir is not None:
+            ad = np.asarray(approach_dir, dtype=np.float64)
+            if np.linalg.norm(ad) > 1e-6:
+                target_quat = self._approach_dir_to_quat(ad)
+
         init_dist = float(np.linalg.norm(target - self.get_eef_pos()))
         if init_dist < threshold_m:
             return True
@@ -435,13 +453,15 @@ class EnvWrapper:
             max_steps = max(max_steps, int(init_dist * 1500))
         logger.debug(
             f"[move] target={target}, init_dist={init_dist:.3f}m, "
-            f"max_steps={max_steps}, base_idx={base_idx}"
+            f"max_steps={max_steps}, base_idx={base_idx}, "
+            f"approach_dir={approach_dir}"
         )
 
         prev_dist = float("inf")
         stall = 0
         check_interval = 120  # 每 N 步检查一次 stall
         stall_limit = 6
+        max_ori_step_per_iter = 0.2  # 单步朝向 axis-angle 模长上限 (rad)
 
         for step in range(max_steps):
             current = self.get_eef_pos()
@@ -480,8 +500,27 @@ class EnvWrapper:
             step_size = min(self.ARM_STEP_CAP, dist)
 
             action = np.zeros(action_dim, dtype=np.float32)
-            # 手臂: base 系增量
+            # 手臂位置: base 系增量
             action[0:3] = dir_base * step_size
+
+            # 手臂朝向: 把世界系 axis-angle 转到 base 系, 再 clamp + scale
+            if target_quat is not None:
+                try:
+                    q_cur = self._get_eef_quat()
+                    ori_delta_world = self._quat_delta_to_axis_angle(
+                        q_cur, target_quat
+                    )
+                    # World → base
+                    ori_delta_base = base_ori.T @ ori_delta_world
+                    # Clamp per-step magnitude
+                    ori_norm = float(np.linalg.norm(ori_delta_base))
+                    if ori_norm > max_ori_step_per_iter:
+                        ori_delta_base = ori_delta_base * (
+                            max_ori_step_per_iter / ori_norm
+                        )
+                    action[3:6] = (ori_delta_base * ori_gain).astype(np.float32)
+                except Exception as e:
+                    logger.debug(f"[move_arm_to] ori control skipped: {e}")
 
             # 底盘: base 系 forward/side 速度
             if has_base and dist > 0.05:

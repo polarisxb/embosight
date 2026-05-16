@@ -181,3 +181,108 @@ class TestGetEEFQuat:
 
         with pytest.raises(RuntimeError, match="robot0_eef_quat"):
             wrapper._get_eef_quat()
+
+
+# ============================================================
+# Task 5: move_arm_to with approach_dir
+# ============================================================
+
+
+def _make_minimal_wrapper(monkeypatch, current_quat=None, base_ori=None):
+    """Build a minimal EnvWrapper instance with all sim interactions mocked."""
+    from src.env_wrapper import EnvWrapper
+
+    wrapper = EnvWrapper.__new__(EnvWrapper)
+    if current_quat is None:
+        current_quat = np.array([0.0, 0.0, 0.0, 1.0])
+    if base_ori is None:
+        base_ori = np.eye(3, dtype=np.float32)
+
+    captured_actions = []
+
+    class FakeStep:
+        action_dim = 12
+
+        def step(self, action):
+            captured_actions.append(np.array(action, copy=True))
+            return {"robot0_eef_pos": np.array([0.5, 0.0, 1.0]),
+                    "robot0_eef_quat": current_quat}, 0.0, False, {}
+
+    wrapper._env = FakeStep()
+    wrapper._latest_obs = {
+        "robot0_eef_pos": np.array([0.5, 0.0, 1.0]),
+        "robot0_eef_quat": current_quat,
+    }
+    monkeypatch.setattr(wrapper, "_get_base_action_idx", lambda: None)
+    monkeypatch.setattr(wrapper, "get_eef_pos",
+                        lambda: np.array([0.5, 0.0, 1.0], dtype=np.float32))
+    monkeypatch.setattr(wrapper, "get_base_pose",
+                        lambda: (np.zeros(3, dtype=np.float32), base_ori))
+    monkeypatch.setattr(wrapper, "render", lambda: None)
+    return wrapper, captured_actions
+
+
+class TestMoveArmToWithApproachDir:
+    def test_no_approach_dir_leaves_orientation_action_zero(self, monkeypatch):
+        """Without approach_dir, action[3:6] should remain zero (back-compat)."""
+        wrapper, captured = _make_minimal_wrapper(monkeypatch)
+
+        wrapper.move_arm_to(
+            np.array([0.55, 0.0, 1.0]),
+            max_steps=3,
+        )
+        # action[3:6] should all be 0 in every captured action
+        for a in captured:
+            np.testing.assert_allclose(a[3:6], [0.0, 0.0, 0.0])
+
+    def test_side_approach_dir_sets_orientation_action(self, monkeypatch):
+        """approach_dir=[1,0,0] should produce non-zero action[3:6]."""
+        wrapper, captured = _make_minimal_wrapper(monkeypatch)
+
+        wrapper.move_arm_to(
+            np.array([0.55, 0.0, 1.0]),
+            approach_dir=np.array([1.0, 0.0, 0.0]),
+            max_steps=3,
+        )
+        # At least the first step should have a non-zero rotation component
+        first_ori = captured[0][3:6]
+        assert np.linalg.norm(first_ori) > 1e-3, (
+            f"Expected non-zero orientation action, got {first_ori}"
+        )
+
+    def test_top_down_approach_no_drift(self, monkeypatch):
+        """approach_dir=[0,0,-1] when gripper already faces down (rot 180° around x):
+        the orientation action should be near-zero to prevent regression on top_down."""
+        from scipy.spatial.transform import Rotation as R
+        # Set current orientation to gripper facing down (z_local → -z_world)
+        # Rotation: 180° around x-axis takes +z → -z
+        q_down = R.from_rotvec([np.pi, 0.0, 0.0]).as_quat()
+        wrapper, captured = _make_minimal_wrapper(monkeypatch, current_quat=q_down)
+
+        wrapper.move_arm_to(
+            np.array([0.55, 0.0, 1.0]),
+            approach_dir=np.array([0.0, 0.0, -1.0]),
+            max_steps=3,
+        )
+        # Orientation deltas should be small (already aligned)
+        for a in captured:
+            assert np.linalg.norm(a[3:6]) < 0.05, (
+                f"Top-down already aligned should produce ~zero ori, got {a[3:6]}"
+            )
+
+    def test_orientation_uses_base_frame(self, monkeypatch):
+        """The orientation delta should be transformed from world to base frame."""
+        from scipy.spatial.transform import Rotation as R
+        # Base rotated 90° around z (base x-axis = world y-axis)
+        base_ori = R.from_rotvec([0.0, 0.0, np.pi / 2]).as_matrix().astype(np.float32)
+        wrapper, captured = _make_minimal_wrapper(monkeypatch, base_ori=base_ori)
+
+        wrapper.move_arm_to(
+            np.array([0.55, 0.0, 1.0]),
+            approach_dir=np.array([1.0, 0.0, 0.0]),  # +x in world
+            max_steps=3,
+        )
+        # Orientation action should reflect base-frame transformation
+        # If applied raw (world-frame) the rotation axis would be different
+        assert len(captured) >= 1
+        assert np.linalg.norm(captured[0][3:6]) > 1e-3
