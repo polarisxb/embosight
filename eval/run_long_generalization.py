@@ -5,10 +5,11 @@ import argparse
 import json
 import logging
 import os
+import queue
 import subprocess
 import sys
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -406,12 +407,17 @@ def main(argv: list[str] | None = None) -> int:
             json.dumps(manifest, indent=2), encoding="utf-8"
         )
 
-        with ProcessPoolExecutor(max_workers=args.parallel) as pool:
-            futures = {}
-            for i, scenario in enumerate(pending):
-                gpu_id = i % args.parallel
-                future = pool.submit(
-                    run_one_seed_subprocess,
+        # Thread-safe GPU pool: each subprocess acquires a GPU before
+        # running and releases it after, preventing two processes from
+        # sharing the same GPU when tasks complete at different speeds.
+        gpu_pool: queue.Queue[int] = queue.Queue()
+        for g in range(args.parallel):
+            gpu_pool.put(g)
+
+        def _run_with_gpu(scenario: dict) -> dict:
+            gpu_id = gpu_pool.get()
+            try:
+                return run_one_seed_subprocess(
                     scenario=scenario,
                     run_dir=run_dir,
                     scenarios_config=scenarios_yaml_path,
@@ -421,6 +427,13 @@ def main(argv: list[str] | None = None) -> int:
                     log_level=args.log_level,
                     timeout_s=args.timeout_s,
                 )
+            finally:
+                gpu_pool.put(gpu_id)
+
+        with ThreadPoolExecutor(max_workers=args.parallel) as pool:
+            futures = {}
+            for scenario in pending:
+                future = pool.submit(_run_with_gpu, scenario)
                 futures[future] = scenario
 
             for future in as_completed(futures):
