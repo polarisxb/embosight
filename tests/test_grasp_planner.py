@@ -34,6 +34,12 @@ class FakeEnv:
     def is_reachable(self, point_3d, approach_dir):
         return self._reachable_fn(point_3d, approach_dir)
 
+    def get_base_pose(self):
+        return np.array([0.0, 0.0, 0.0]), np.eye(3)
+
+    def get_eef_pos(self):
+        return np.array([0.3, 0.0, 1.0])
+
     def observe(self, vp):
         class Obs:
             image_path = "/dev/null"

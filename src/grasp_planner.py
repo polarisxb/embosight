@@ -104,6 +104,23 @@ class GraspPlanner:
         "scoop_under":   {"approach_dir": [0, 0, -0.3], "finger_width": 0.08, "score": 0.65, "depth_margin": 0.020},
     }
 
+    def _side_approach_dir(self, obj_pos: np.ndarray, env) -> np.ndarray:
+        """计算从机器人指向物体的水平方向 (最容易到达的侧抓方向)。
+
+        Returns:
+            3D unit vector in world frame, z=0.
+            Fallback [1, 0, 0] if positions are too close.
+        """
+        try:
+            base_pos = env.get_base_pose()[0]  # (3,)
+        except Exception:
+            base_pos = env.get_eef_pos()  # fallback
+        delta_xy = obj_pos[:2] - base_pos[:2]
+        d = float(np.linalg.norm(delta_xy))
+        if d < 0.01:
+            return np.array([1.0, 0.0, 0.0], dtype=np.float32)
+        return np.array([delta_xy[0] / d, delta_xy[1] / d, 0.0], dtype=np.float32)
+
     def plan(self, hyp: Hypothesis, env=None) -> list[GraspCandidate]:
         env = env or self.env
         cands: list[GraspCandidate] = []
@@ -114,16 +131,22 @@ class GraspPlanner:
             params = self._STRATEGY_PARAMS.get(
                 strategy.strategy, self._STRATEGY_PARAMS["top_down"],
             )
+            # 侧抓方向: 动态计算 robot→object 水平向量
+            raw_ad = np.array(params["approach_dir"], dtype=np.float32)
+            if abs(raw_ad[2]) < 0.5:  # 非 top-down → 用实际相对位置
+                ad = self._side_approach_dir(hyp.position_3d, env)
+            else:
+                ad = raw_ad
             cands.append(GraspCandidate(
                 point_3d=hyp.position_3d.copy(),
-                approach_dir=np.array(params["approach_dir"]),
+                approach_dir=ad,
                 finger_width_m=params["finger_width"],
                 score=params["score"],
                 source=f"strategy_{strategy.strategy}",
             ))
             logger.info(
                 "[grasp_planner] strategy=%s → approach=%s width=%.2fm",
-                strategy.strategy, params["approach_dir"], params["finger_width"],
+                strategy.strategy, ad, params["finger_width"],
             )
 
         # 兜底: geometric_centroid (总是加, 分数低于策略候选)
@@ -137,9 +160,10 @@ class GraspPlanner:
 
         # axis_aligned_side (pose 横放时)
         if hyp.pose_estimate is not None and not hyp.pose_estimate.upright:
+            ad_side = self._side_approach_dir(hyp.position_3d, env)
             cands.append(GraspCandidate(
                 point_3d=hyp.position_3d.copy(),
-                approach_dir=np.array([1.0, 0, 0]),
+                approach_dir=ad_side,
                 finger_width_m=0.04,
                 score=0.45,
                 source="axis_aligned_side",
@@ -170,9 +194,10 @@ class GraspPlanner:
             new_cands = [c for c in new_cands
                          if c.source != "geometric_centroid"]
             if not any(c.source == "axis_aligned_side" for c in new_cands):
+                ad_side = self._side_approach_dir(hyp.position_3d, self.env)
                 new_cands.append(GraspCandidate(
                     point_3d=hyp.position_3d.copy(),
-                    approach_dir=np.array([1.0, 0, 0]),
+                    approach_dir=ad_side,
                     finger_width_m=0.04, score=0.55,
                     source="axis_aligned_side",
                 ))

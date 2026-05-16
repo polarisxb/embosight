@@ -27,6 +27,10 @@ def _hyp(label: str, safety_dist: dict = None, visible_features: str = "",
 class _FakeEnv:
     def is_reachable(self, point, approach):
         return True
+    def get_base_pose(self):
+        return np.array([0.0, 0.0, 0.0]), np.eye(3)
+    def get_eef_pos(self):
+        return np.array([0.3, 0.0, 1.0])
     def observe(self, vp):
         return None
     def eye_in_hand_viewpoint(self):
@@ -88,7 +92,8 @@ class TestStrategyDrivenPlan:
         assert len(cands) >= 2
         # strategy candidate should be first (highest score)
         assert cands[0].source == "strategy_gentle_side"
-        assert cands[0].approach_dir[0] == 1.0  # side approach
+        assert cands[0].approach_dir[2] == 0.0  # horizontal (side approach)
+        assert float(np.linalg.norm(cands[0].approach_dir)) > 0.99  # unit vector
         assert cands[0].finger_width_m == 0.06  # wider for gentle
 
     def test_no_strategy_uses_geometric_centroid(self):
