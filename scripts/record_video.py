@@ -116,6 +116,8 @@ def record_episode(
             frame = (frame * 255).astype(np.uint8)
         if frame.ndim == 3 and frame.shape[2] == 4:  # RGBA -> RGB
             frame = frame[:, :, :3]
+        # MuJoCo 渲染坐标系原点在左下角，图像需要上下翻转
+        frame = np.flipud(frame).copy()
         writer.append_data(frame)
     writer.close()
 
