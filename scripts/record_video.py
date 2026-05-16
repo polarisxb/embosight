@@ -31,6 +31,7 @@ def record_episode(
     output_path: str,
     fps: int = 10,
     camera: str = "robot0_agentview_center",
+    resolution: tuple[int, int] = (256, 256),
 ) -> None:
     """运行一个 episode 并录制视频"""
     import imageio
@@ -48,6 +49,15 @@ def record_episode(
     agent_cfg = yaml.safe_load(Path(agent_config_path).read_text(encoding="utf-8")) or {}
     if scenario.get("env_name"):
         top_cfg.setdefault("simulator", {})["env_name"] = scenario["env_name"]
+
+    # 覆盖分辨率
+    top_cfg.setdefault("simulator", {})["image_width"] = resolution[0]
+    top_cfg["simulator"]["image_height"] = resolution[1]
+    # 确保录制相机在列表中
+    cam_list = top_cfg["simulator"].get("camera_names", [])
+    if camera not in cam_list:
+        cam_list.append(camera)
+        top_cfg["simulator"]["camera_names"] = cam_list
 
     env = _build_env(top_cfg)
     actual_object, _ = reset_until_expected(
@@ -122,12 +132,23 @@ def main():
                         help="Output mp4 path (default: results/videos/<scenario>.mp4)")
     parser.add_argument("--fps", type=int, default=10)
     parser.add_argument("--camera", default="robot0_agentview_center",
-                        help="Camera to record from")
+                        help="Camera to record from (use robot0_frontview for 3D overview)")
+    parser.add_argument("--resolution", type=int, nargs=2, default=[256, 256],
+                        metavar=("W", "H"),
+                        help="Render resolution (default: 256 256, use 640 480 or 1280 720 for HD)")
+    parser.add_argument("--hd", action="store_true",
+                        help="Shortcut for --camera robot0_frontview --resolution 1280 720 --fps 15")
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args()
 
     logging.basicConfig(level=args.log_level,
                         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
+
+    # --hd 快捷方式：3D 全景高清
+    if args.hd:
+        args.camera = "robot0_frontview"
+        args.resolution = [1280, 720]
+        args.fps = 15
 
     output = args.output or f"results/videos/{args.scenario}.mp4"
 
@@ -139,6 +160,7 @@ def main():
         output_path=output,
         fps=args.fps,
         camera=args.camera,
+        resolution=tuple(args.resolution),
     )
 
 
