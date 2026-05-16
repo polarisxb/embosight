@@ -93,24 +93,74 @@ class ActionExecutor:
             margin_m=margin_m,
         )
         if not descend_ok:
-            # ── z-stall recovery: 在当前位置尝试夹取 (不再上抬, 上抬会远离物体) ──
-            z_retry = float(z_actual)
-            logger.info(
-                "[act] hit_z_floor at z=%.3f, retrying grasp at current z",
-                z_actual,
-            )
-            env.close_gripper(target_label=getattr(target, "label", None))
-            lift_ok, final_z = env.lift()
-            if lift_ok:
-                logger.info("[act] z-stall recovery succeeded, lifted to z=%.3f", final_z)
-                z_actual = z_retry
-            else:
-                return self._failed_result(
-                    candidate, "hit_z_floor",
-                    {"z_target": z_target, "z_actual": float(z_actual),
-                     "z_retry": z_retry, "stage": "descend_retry_failed"},
-                    env,
+            gap = float(z_actual) - z_target
+            # ── 工作空间恢复: z-stall 说明手臂在当前底盘位置到达极限 ──
+            # 思路: 底盘靠近物体 → 手臂构型变化 → z 可达范围扩大
+            if gap > 0.01:
+                logger.info(
+                    "[act] z-stall gap=%.3fm, repositioning base closer",
+                    gap,
                 )
+                obj_xy = candidate.point_3d[:2].astype(np.float32)
+                base_pos, _ = env.get_base_pose()
+                direction = obj_xy - base_pos[:2]
+                step = min(0.08, float(np.linalg.norm(direction)) * 0.3)
+                if float(np.linalg.norm(direction)) > 0.01:
+                    nudge = direction / np.linalg.norm(direction) * step
+                    nudge_target = env.get_eef_pos().copy()
+                    nudge_target[0] += nudge[0]
+                    nudge_target[1] += nudge[1]
+                    env.move_arm_to(nudge_target, threshold_m=0.03, max_steps=300)
+                # 底盘靠近后重新下降
+                descend_ok2, z_actual = env.descend(
+                    candidate.point_3d,
+                    target_label=getattr(target, "label", None),
+                    margin_m=margin_m,
+                )
+                if descend_ok2:
+                    logger.info(
+                        "[act] base reposition succeeded, descend reached z=%.3f",
+                        z_actual,
+                    )
+                    env.close_gripper(target_label=getattr(target, "label", None))
+                    lift_ok, final_z = env.lift()
+                    if not lift_ok:
+                        return self._failed_result(
+                            candidate, "slipped",
+                            {"z_target": z_target, "z_actual": float(z_actual),
+                             "final_z": float(final_z), "stage": "lift_after_reposition"},
+                            env,
+                        )
+                else:
+                    # 底盘靠近后仍然 stall → 在当前位置尝试夹取
+                    logger.info(
+                        "[act] reposition didn't help (z=%.3f), trying grasp at current z",
+                        z_actual,
+                    )
+                    env.close_gripper(target_label=getattr(target, "label", None))
+                    lift_ok, final_z = env.lift()
+                    if not lift_ok:
+                        return self._failed_result(
+                            candidate, "hit_z_floor",
+                            {"z_target": z_target, "z_actual": float(z_actual),
+                             "stage": "descend_reposition_failed"},
+                            env,
+                        )
+            else:
+                # gap <= 1cm: 已经足够近, 直接在当前位置夹取
+                logger.info(
+                    "[act] z-stall but gap=%.3fm (<=1cm), grasping at current z",
+                    gap,
+                )
+                env.close_gripper(target_label=getattr(target, "label", None))
+                lift_ok, final_z = env.lift()
+                if not lift_ok:
+                    return self._failed_result(
+                        candidate, "hit_z_floor",
+                        {"z_target": z_target, "z_actual": float(z_actual),
+                         "stage": "descend_close_enough"},
+                        env,
+                    )
         else:
             # 3. close gripper (正常路径)
             env.close_gripper(target_label=getattr(target, "label", None))

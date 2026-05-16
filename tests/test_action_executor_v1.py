@@ -24,12 +24,14 @@ def _hyp_with_candidate(score=0.9):
 
 class FakeEnv:
     def __init__(self, descend_ok=True, ik_ok=True, lift_ok=True,
-                 final_z=0.05):
+                 final_z=0.05, obj_lifts=True):
         self.descend_ok = descend_ok
         self.ik_ok = ik_ok
         self.lift_ok = lift_ok
         self.final_z = final_z
+        self.obj_lifts = obj_lifts
         self._gripper_open = True
+        self._lifted = False
         self.calls: list[str] = []
 
     def move_to_pre_grasp(self, candidate) -> bool:
@@ -54,10 +56,22 @@ class FakeEnv:
 
     def lift(self) -> tuple[bool, float]:
         self.calls.append("lift")
+        if self.lift_ok and self.obj_lifts:
+            self._lifted = True
         return self.lift_ok, self.final_z
 
     def get_eef_pos(self):
         return np.array([0.5, 0, 0.95])
+
+    def get_base_pose(self):
+        return np.array([0.0, 0.0, 0.0]), np.eye(3, dtype=np.float32)
+
+    def _get_obj_type_map(self):
+        return {"obj_main": "apple"}
+
+    def _get_body_pos(self, body_name):
+        z = 0.98 if self._lifted else 0.9
+        return np.array([0.5, 0, z])
 
     def move_arm_to(self, pos, **kw):
         self.calls.append("move")
@@ -85,11 +99,24 @@ class TestAct:
         assert result.attempt.failure_mode == "ik_unreachable"
         assert result.success is False
 
-    def test_hit_z_floor_recovery_succeeds(self):
-        """descend fails but +5mm retry + lift succeeds → overall success."""
+    def test_hit_z_floor_recovery_obj_not_lifted(self):
+        """descend fails → base reposition → re-descend fails → grasp at current z →
+        lift arm ok but object stays → post-lift verify catches slipped."""
         from src.action_executor import ActionExecutor
         from src.world_belief import DecomposedTask
-        env = FakeEnv(descend_ok=False, lift_ok=True)
+        env = FakeEnv(descend_ok=False, lift_ok=True, obj_lifts=False)
+        exe = ActionExecutor(scene_describer=None)
+        h, _ = _hyp_with_candidate()
+        result = exe.act(h, DecomposedTask(primary_target="apple"), env)
+        assert result.success is False
+        assert result.attempt.failure_mode == "slipped"
+
+    def test_hit_z_floor_recovery_obj_lifted(self):
+        """descend fails → base reposition → re-descend fails → grasp at current z →
+        arm lifts AND object follows → success."""
+        from src.action_executor import ActionExecutor
+        from src.world_belief import DecomposedTask
+        env = FakeEnv(descend_ok=False, lift_ok=True, obj_lifts=True)
         exe = ActionExecutor(scene_describer=None)
         h, _ = _hyp_with_candidate()
         result = exe.act(h, DecomposedTask(primary_target="apple"), env)
@@ -97,7 +124,7 @@ class TestAct:
         assert result.attempt.failure_mode == "success"
 
     def test_hit_z_floor_recovery_fails(self):
-        """descend fails AND lift after retry also fails → hit_z_floor."""
+        """descend fails AND lift after reposition also fails → hit_z_floor."""
         from src.action_executor import ActionExecutor
         from src.world_belief import DecomposedTask
         env = FakeEnv(descend_ok=False, lift_ok=False, final_z=0.0)
@@ -105,7 +132,7 @@ class TestAct:
         h, _ = _hyp_with_candidate()
         result = exe.act(h, DecomposedTask(primary_target="apple"), env)
         assert result.attempt.failure_mode == "hit_z_floor"
-        assert "z_retry" in result.attempt.diagnostic
+        assert result.success is False
 
     def test_slipped_classified(self):
         from src.action_executor import ActionExecutor
