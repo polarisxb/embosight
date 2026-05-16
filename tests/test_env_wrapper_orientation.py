@@ -286,3 +286,126 @@ class TestMoveArmToWithApproachDir:
         # If applied raw (world-frame) the rotation axis would be different
         assert len(captured) >= 1
         assert np.linalg.norm(captured[0][3:6]) > 1e-3
+
+
+# ============================================================
+# Task 7: approach() method
+# ============================================================
+
+
+class TestApproach:
+    def test_top_down_uses_descend_path(self, monkeypatch):
+        """approach(p, [0,0,-1], target_label='apple') with target_body found
+        should call _descend_until_contact (the contact-based descent)."""
+        from src.env_wrapper import EnvWrapper
+
+        wrapper = EnvWrapper.__new__(EnvWrapper)
+        wrapper._latest_obs = {}
+
+        descend_calls = []
+
+        def fake_descend(target, target_body, **kw):
+            descend_calls.append((np.array(target, copy=True), target_body))
+            return True, float(target[2])
+
+        monkeypatch.setattr(wrapper, "_descend_until_contact", fake_descend)
+        monkeypatch.setattr(wrapper, "_get_obj_type_map",
+                            lambda: {"obj_main": "apple"})
+        monkeypatch.setattr(wrapper, "get_eef_pos",
+                            lambda: np.array([0.5, 0.0, 1.0], dtype=np.float32))
+
+        ok, z = wrapper.approach(
+            np.array([0.5, 0.0, 0.9], dtype=np.float32),
+            approach_dir=np.array([0.0, 0.0, -1.0]),
+            target_label="apple",
+            margin_m=0.015,
+        )
+        assert ok is True
+        assert len(descend_calls) == 1
+        # Target z should be 0.9 - 0.015 = 0.885 (margin moves along approach_dir)
+        np.testing.assert_allclose(descend_calls[0][0][2], 0.885, atol=1e-6)
+        assert descend_calls[0][1] == "obj_main"
+
+    def test_side_approach_uses_move_arm_to(self, monkeypatch):
+        """For side approach, should call move_arm_to with approach_dir, not _descend."""
+        from src.env_wrapper import EnvWrapper
+
+        wrapper = EnvWrapper.__new__(EnvWrapper)
+        wrapper._latest_obs = {}
+        move_calls = []
+        descend_calls = []
+
+        def fake_move(target, **kw):
+            move_calls.append((np.array(target, copy=True), kw.get("approach_dir")))
+            return True
+
+        def fake_descend(*a, **kw):
+            descend_calls.append(a)
+            return True, 0.0
+
+        monkeypatch.setattr(wrapper, "move_arm_to", fake_move)
+        monkeypatch.setattr(wrapper, "_descend_until_contact", fake_descend)
+        monkeypatch.setattr(wrapper, "_get_obj_type_map", lambda: {})
+        monkeypatch.setattr(wrapper, "get_eef_pos",
+                            lambda: np.array([0.6, 0.0, 0.93], dtype=np.float32))
+
+        ok, z = wrapper.approach(
+            np.array([0.5, 0.0, 0.93], dtype=np.float32),
+            approach_dir=np.array([1.0, 0.0, 0.0]),
+            target_label=None,
+            margin_m=0.0,
+        )
+        assert ok is True
+        # Should have used move_arm_to with the approach_dir, not _descend
+        assert len(descend_calls) == 0
+        assert len(move_calls) >= 1
+        np.testing.assert_allclose(
+            move_calls[-1][1], [1.0, 0.0, 0.0], atol=1e-6,
+        )
+
+    def test_margin_offsets_along_approach_dir(self, monkeypatch):
+        """For side approach with margin, target should be offset along approach_dir
+        (deeper into the object, i.e., further forward)."""
+        from src.env_wrapper import EnvWrapper
+
+        wrapper = EnvWrapper.__new__(EnvWrapper)
+        wrapper._latest_obs = {}
+        move_calls = []
+        monkeypatch.setattr(wrapper, "move_arm_to",
+                            lambda t, **kw: move_calls.append(np.array(t, copy=True)) or True)
+        monkeypatch.setattr(wrapper, "_get_obj_type_map", lambda: {})
+        monkeypatch.setattr(wrapper, "get_eef_pos",
+                            lambda: np.array([0.0, 0.0, 0.93], dtype=np.float32))
+
+        wrapper.approach(
+            np.array([0.5, 0.0, 0.93], dtype=np.float32),
+            approach_dir=np.array([1.0, 0.0, 0.0]),
+            target_label=None,
+            margin_m=0.02,
+        )
+        # Target should be 0.5 + 0.02 = 0.52 in x (margin pushes along approach_dir)
+        last = move_calls[-1]
+        np.testing.assert_allclose(last[0], 0.52, atol=1e-6)
+
+    def test_descend_wraps_to_approach(self, monkeypatch):
+        """Legacy descend() should delegate to approach() with [0,0,-1]."""
+        from src.env_wrapper import EnvWrapper
+
+        wrapper = EnvWrapper.__new__(EnvWrapper)
+        approach_calls = []
+
+        def fake_approach(point, approach_dir, **kw):
+            approach_calls.append((np.array(point, copy=True),
+                                   np.array(approach_dir, copy=True)))
+            return True, float(point[2])
+
+        monkeypatch.setattr(wrapper, "approach", fake_approach)
+
+        ok, z = wrapper.descend(
+            np.array([0.5, 0.0, 0.9], dtype=np.float32),
+            target_label="apple",
+            margin_m=0.015,
+        )
+        assert ok is True
+        assert len(approach_calls) == 1
+        np.testing.assert_allclose(approach_calls[0][1], [0.0, 0.0, -1.0])

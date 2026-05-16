@@ -1486,43 +1486,87 @@ class EnvWrapper:
             pass
         return self.move_arm_to(pre_pos, threshold_m=0.06)
 
-    def descend(
-        self, point_3d, target_label: Optional[str] = None,
-        step_z: float = 0.01, max_steps: int = 25,
+    def approach(
+        self,
+        point_3d,
+        approach_dir: np.ndarray,
+        target_label: Optional[str] = None,
+        step_z: float = 0.01,
+        max_steps: int = 35,
         margin_m: float = 0.015,
     ) -> tuple[bool, float]:
-        """从当前 pre-grasp 位下降到 point_3d。
+        """方向感知的抓取接近原语。沿 approach_dir 接近 point_3d。
+
+        - top_down (approach_dir≈[0,0,-1]): 等同旧 descend 的接触式下降
+        - 任意方向 (e.g. [1,0,0]): 沿水平方向接近, 同时旋转夹爪朝向
 
         Args:
-            point_3d: 目标 3D 点 (世界系)
-            target_label: 用于查找对应 body 做接触检测; None 时仅 z 收敛
-            margin_m: 自适应深度余量, 目标 z 额外下降此距离以补偿估计误差
+            point_3d: 抓取点 3D 坐标 (世界系)
+            approach_dir: 单位向量, 从接近起点指向物体
+            target_label: 接触检测用的物体 label; None 仅靠位置收敛
+            margin_m: 沿 approach_dir 额外推进的距离 (补偿估计误差)
+
         Returns:
-            (descended_ok, z_actual)
+            (success, final_eef_z)
         """
-        target = np.asarray(point_3d, dtype=np.float32)
+        ad = np.asarray(approach_dir, dtype=np.float32)
+        ad_norm = float(np.linalg.norm(ad))
+        if ad_norm < 1e-6:
+            ad = np.array([0.0, 0.0, -1.0], dtype=np.float32)
+            ad_norm = 1.0
+        ad_unit = ad / ad_norm
+
+        target = np.asarray(point_3d, dtype=np.float32).copy()
         if margin_m > 0:
-            target[2] -= margin_m
-            logger.info(f"[descend] depth margin={margin_m:.3f}m, adjusted z={target[2]:.3f}")
+            target = target + ad_unit * margin_m
+            logger.info(
+                f"[approach] margin={margin_m:.3f}m along {ad_unit}, "
+                f"adjusted target={target}"
+            )
+
+        # top_down 路径: 用接触检测式下降 (保持原有行为)
+        is_top_down = (
+            ad_unit[2] < -0.9 and abs(ad_unit[0]) < 0.1 and abs(ad_unit[1]) < 0.1
+        )
+
         target_body: Optional[str] = None
         if target_label:
             try:
                 type_map = self._get_obj_type_map()
-                # 反查: 找 cat 对应的 body
                 for body, cat in type_map.items():
                     if cat == target_label:
                         target_body = body
                         break
             except Exception as e:
-                logger.debug(f"[descend] type_map lookup failed: {e}")
+                logger.debug(f"[approach] type_map lookup failed: {e}")
 
-        if target_body:
+        if is_top_down and target_body:
             return self._descend_until_contact(
                 target, target_body, step_z=step_z, max_steps=max_steps,
             )
-        # fallback: 无 label, 直接 move_arm_to z=target[2]
-        ok = self.move_arm_to(target, threshold_m=0.01, max_steps=200)
+
+        # 任意方向: 用带朝向控制的 move_arm_to
+        ok = self.move_arm_to(
+            target, threshold_m=0.01, max_steps=400,
+            approach_dir=ad_unit,
+        )
         return bool(ok), float(self.get_eef_pos()[2])
+
+    def descend(
+        self, point_3d, target_label: Optional[str] = None,
+        step_z: float = 0.01, max_steps: int = 25,
+        margin_m: float = 0.015,
+    ) -> tuple[bool, float]:
+        """[向后兼容] 顶部下降, 委托给 approach() with [0,0,-1]。
+
+        旧调用方仍可用 descend(); 新代码应直接调用 approach() 并显式传 approach_dir.
+        """
+        return self.approach(
+            point_3d,
+            approach_dir=np.array([0.0, 0.0, -1.0], dtype=np.float32),
+            target_label=target_label,
+            step_z=step_z, max_steps=max_steps, margin_m=margin_m,
+        )
 
     def close_gripper(self, target_label: Optional[str] = None) -> bool:
         """关爪。有 target_label 时走力闭环 (检测物体接触)。"""
