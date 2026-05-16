@@ -1037,14 +1037,24 @@ class EnvWrapper:
 
         prev_z = None
         stall_count = 0
+        contact_streak = 0
+        # 至少下降 50% 路程或 3cm 才信任接触检测 (防止瞬时擦碰误报)
+        min_descend_m = min(0.03, (start_z - target[2]) * 0.5)
         for i in range(max_steps):
+            curr = self.get_eef_pos()
+            descended = start_z - curr[2]
             if self._finger_object_contact(target_body):
-                curr = self.get_eef_pos()
-                logger.info(
-                    f"[descend] contact at step {i}, "
-                    f"z={curr[2]:.3f} (target {target[2]:.3f})"
-                )
-                return True, float(curr[2])
+                contact_streak += 1
+                # 需要: (a) 已经下降足够距离 AND (b) 连续 2 帧接触
+                if descended >= min_descend_m and contact_streak >= 2:
+                    logger.info(
+                        f"[descend] contact at step {i}, "
+                        f"z={curr[2]:.3f} (target {target[2]:.3f}, "
+                        f"descended {descended:.3f}m)"
+                    )
+                    return True, float(curr[2])
+            else:
+                contact_streak = 0
 
             curr = self.get_eef_pos()
             if curr[2] <= target[2] + 0.001:
