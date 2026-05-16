@@ -63,6 +63,9 @@ def _make_full_agent(decompose_response, vlm_responses, safety_response,
         def descend(self, p, target_label=None, **kwargs):
             return True, float(p[2])
 
+        def approach(self, p, approach_dir, target_label=None, **kwargs):
+            return True, float(p[2])
+
         def close_gripper(self, target_label=None):
             return True
 

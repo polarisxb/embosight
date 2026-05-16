@@ -44,6 +44,15 @@ class FakeEnv:
             return True, point_3d[2]
         return False, point_3d[2] + 0.03   # 卡住
 
+    def approach(self, point_3d, approach_dir, target_label=None, **kwargs):
+        ad = np.asarray(approach_dir, dtype=np.float32)
+        self.calls.append(
+            f"approach[{ad[0]:+.0f},{ad[1]:+.0f},{ad[2]:+.0f}]"
+        )
+        if self.descend_ok:
+            return True, float(point_3d[2])
+        return False, float(point_3d[2]) + 0.03
+
     def close_gripper(self, target_label=None) -> bool:
         self.calls.append("close")
         self._gripper_open = False
@@ -122,6 +131,49 @@ class TestAct:
         result = exe.act(h, DecomposedTask(primary_target="apple"), env)
         assert result.success is True
         assert result.attempt.failure_mode == "success"
+
+    def test_side_approach_passes_correct_dir(self):
+        """When candidate has approach_dir=[1,0,0], act() should call env.approach
+        with that direction (not the default [0,0,-1])."""
+        from src.action_executor import ActionExecutor
+        from src.world_belief import (
+            DecomposedTask, GraspCandidate, Hypothesis,
+        )
+
+        env = FakeEnv()
+        exe = ActionExecutor(scene_describer=None)
+        c = GraspCandidate(
+            point_3d=np.array([0.5, 0, 0.9]),
+            approach_dir=np.array([1.0, 0.0, 0.0]),
+            finger_width_m=0.03, score=0.9,
+            source="side_test",
+        )
+        h = Hypothesis(
+            object_id="o0", label="apple",
+            label_alternatives=[("apple", 0.9)], label_entropy=0.1,
+            position_3d=np.array([0.5, 0, 0.9]), position_std_m=0.02,
+            grasp_candidates=[c],
+        )
+        exe.act(h, DecomposedTask(primary_target="apple"), env)
+        side_calls = [c for c in env.calls if c.startswith("approach[+1")]
+        assert len(side_calls) >= 1, (
+            f"Expected at least one side approach call, got: {env.calls}"
+        )
+
+    def test_top_down_uses_approach_with_z_minus_1(self):
+        """Default top_down candidate should call approach with [0,0,-1]."""
+        from src.action_executor import ActionExecutor
+        from src.world_belief import DecomposedTask
+
+        env = FakeEnv()
+        exe = ActionExecutor(scene_describer=None)
+        h, _ = _hyp_with_candidate()
+        exe.act(h, DecomposedTask(primary_target="apple"), env)
+        # Look for any approach call with z = -1
+        td_calls = [c for c in env.calls if "approach[" in c and ",-1]" in c]
+        assert len(td_calls) >= 1, (
+            f"Expected approach[...,-1] call, got: {env.calls}"
+        )
 
     def test_hit_z_floor_recovery_fails(self):
         """descend fails AND lift after reposition also fails → hit_z_floor."""

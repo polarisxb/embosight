@@ -88,15 +88,35 @@ class ActionExecutor:
                 target.grasp_strategy.strategy, {},
             )
             margin_m = params.get("depth_margin", 0.015)
-        descend_ok, z_actual = env.descend(
-            candidate.point_3d, target_label=getattr(target, "label", None),
+
+        # 解析候选 approach_dir (默认 top_down)
+        approach_dir = np.asarray(
+            getattr(candidate, "approach_dir", [0.0, 0.0, -1.0]),
+            dtype=np.float32,
+        )
+        ad_norm = float(np.linalg.norm(approach_dir))
+        if ad_norm < 1e-6:
+            approach_dir = np.array([0.0, 0.0, -1.0], dtype=np.float32)
+        else:
+            approach_dir = approach_dir / ad_norm
+        is_top_down = (
+            approach_dir[2] < -0.9
+            and abs(approach_dir[0]) < 0.1
+            and abs(approach_dir[1]) < 0.1
+        )
+
+        descend_ok, z_actual = env.approach(
+            candidate.point_3d,
+            approach_dir=approach_dir,
+            target_label=getattr(target, "label", None),
             margin_m=margin_m,
         )
         if not descend_ok:
+            # z-stall recovery 只对 top_down 有意义 (gap 是 z 距离差)
+            # 侧抓失败时直接在当前位置尝试夹取
             gap = float(z_actual) - z_target
-            # ── 工作空间恢复: z-stall 说明手臂在当前底盘位置到达极限 ──
-            # 思路: 底盘靠近物体 → 手臂构型变化 → z 可达范围扩大
-            if gap > 0.01:
+            if is_top_down and gap > 0.01:
+                # ── 工作空间恢复: z-stall 说明手臂在当前底盘位置到达极限 ──
                 logger.info(
                     "[act] z-stall gap=%.3fm, repositioning base closer",
                     gap,
@@ -112,8 +132,9 @@ class ActionExecutor:
                     nudge_target[1] += nudge[1]
                     env.move_arm_to(nudge_target, threshold_m=0.03, max_steps=300)
                 # 底盘靠近后重新下降
-                descend_ok2, z_actual = env.descend(
+                descend_ok2, z_actual = env.approach(
                     candidate.point_3d,
+                    approach_dir=approach_dir,
                     target_label=getattr(target, "label", None),
                     margin_m=margin_m,
                 )
@@ -147,18 +168,25 @@ class ActionExecutor:
                             env,
                         )
             else:
-                # gap <= 1cm: 已经足够近, 直接在当前位置夹取
+                # 1) top_down gap≤1cm 已经足够近, 或
+                # 2) 侧抓 approach 失败 (workspace) → 直接在当前位置夹取试试
+                reason = (
+                    "z-stall close_enough" if is_top_down
+                    else "side approach incomplete"
+                )
                 logger.info(
-                    "[act] z-stall but gap=%.3fm (<=1cm), grasping at current z",
-                    gap,
+                    "[act] %s (gap=%.3fm), grasping at current pose",
+                    reason, gap,
                 )
                 env.close_gripper(target_label=getattr(target, "label", None))
                 lift_ok, final_z = env.lift()
                 if not lift_ok:
                     return self._failed_result(
-                        candidate, "hit_z_floor",
+                        candidate,
+                        "hit_z_floor" if is_top_down else "ik_unreachable",
                         {"z_target": z_target, "z_actual": float(z_actual),
-                         "stage": "descend_close_enough"},
+                         "stage": "approach_incomplete",
+                         "is_top_down": bool(is_top_down)},
                         env,
                     )
         else:
