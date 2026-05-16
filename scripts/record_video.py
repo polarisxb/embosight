@@ -70,23 +70,39 @@ def record_episode(
         actual_object,
     )
 
+    # 多视角模式：camera 可以是逗号分隔的多个相机名
+    cameras = [c.strip() for c in camera.split(",")]
+    img_keys = [f"{c}_image" for c in cameras]
+
+    def _grab_frame(obs: dict) -> np.ndarray | None:
+        imgs = []
+        for key in img_keys:
+            img = obs.get(key)
+            if img is not None:
+                imgs.append(img.copy())
+        if not imgs:
+            return None
+        if len(imgs) == 1:
+            return imgs[0]
+        # 横向拼接多视角
+        return np.concatenate(imgs, axis=1)
+
     # 收集帧的钩子：monkey-patch env.step 来抓帧
     frames: list[np.ndarray] = []
-    img_key = f"{camera}_image"
 
     # 抓初始帧
-    init_img = env._latest_obs.get(img_key)
-    if init_img is not None:
-        frames.append(init_img.copy())
+    init_frame = _grab_frame(env._latest_obs)
+    if init_frame is not None:
+        frames.append(init_frame)
 
     original_step = env._env.step
 
     def _hooked_step(action):
         obs, reward, done, info = original_step(action)
         env._latest_obs = obs
-        img = obs.get(img_key)
-        if img is not None:
-            frames.append(img.copy())
+        frame = _grab_frame(obs)
+        if frame is not None:
+            frames.append(frame)
         return obs, reward, done, info
 
     env._env.step = _hooked_step
@@ -135,17 +151,26 @@ def main():
                         help="Output mp4 path (default: results/videos/<scenario>.mp4)")
     parser.add_argument("--fps", type=int, default=10)
     parser.add_argument("--camera", default="robot0_agentview_center",
-                        help="Camera to record from (use robot0_frontview for 3D overview)")
+                        help="Camera(s) to record, comma-separated for tiled view. "
+                             "e.g. robot0_frontview,robot0_eye_in_hand,robot0_agentview_left")
     parser.add_argument("--resolution", type=int, nargs=2, default=[256, 256],
                         metavar=("W", "H"),
                         help="Render resolution (default: 256 256, use 640 480 or 1280 720 for HD)")
     parser.add_argument("--hd", action="store_true",
                         help="Shortcut for --camera robot0_frontview --resolution 1280 720 --fps 15")
+    parser.add_argument("--multi", action="store_true",
+                        help="Shortcut for 3-camera tiled view: frontview + eye_in_hand + agentview_left")
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args()
 
     logging.basicConfig(level=args.log_level,
                         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
+
+    # --multi 快捷方式：三视角拼接（正面 + 手眼 + 左侧）
+    if args.multi:
+        args.camera = "robot0_frontview,robot0_eye_in_hand,robot0_agentview_left"
+        args.resolution = [480, 480]
+        args.fps = 10
 
     # --hd 快捷方式：3D 全景高清
     if args.hd:
