@@ -352,6 +352,36 @@ class EnvWrapper:
         q_w = s / 2.0
         return np.array([q_xyz[0], q_xyz[1], q_xyz[2], q_w])
 
+    @staticmethod
+    def _quat_delta_to_axis_angle(
+        q_current: np.ndarray, q_target: np.ndarray,
+    ) -> np.ndarray:
+        """Compute axis-angle (rotation vector) to rotate from `q_current` to
+        `q_target`, taking the shortest path.
+
+        Both quaternions are in xyzw convention. The output is a 3-vector
+        suitable for OSC_POSE `action[3:6]` (after frame conversion if needed).
+
+        Args:
+            q_current: current orientation quaternion (xyzw).
+            q_target:  target orientation quaternion (xyzw).
+
+        Returns:
+            3-vector rotation in world frame (same frame as both quats).
+        """
+        from scipy.spatial.transform import Rotation as R
+
+        q_c = np.asarray(q_current, dtype=np.float64)
+        q_t = np.asarray(q_target, dtype=np.float64)
+        # Pick shortest path: if dot < 0, negate target
+        if np.dot(q_c, q_t) < 0:
+            q_t = -q_t
+        r_c = R.from_quat(q_c)
+        r_t = R.from_quat(q_t)
+        # q_delta = q_target * inv(q_current)
+        r_delta = r_t * r_c.inv()
+        return r_delta.as_rotvec().astype(np.float64)
+
     def move_arm_to(
         self,
         target_pos_m,
