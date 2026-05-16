@@ -1622,22 +1622,63 @@ class EnvWrapper:
         """开爪。"""
         self._gripper_action(-1.0, n_steps=10)
 
-    def lift(self, height_m: float = 0.10) -> tuple[bool, float]:
-        """从当前位置抬升 height_m，分阶段控速以避免物体因惯性滑落。
+    def lift(
+        self,
+        height_m: float = 0.10,
+        approach_dir: Optional[np.ndarray] = None,
+    ) -> tuple[bool, float]:
+        """从当前抓取位回退/抬升, 分阶段控速以避免物体滑落。
 
-        阶段1 (慢起): 前 2cm 拆成 4 段 5mm 微步, 每段独立收敛 → 加速度极低
-        阶段2 (正常): 剩余高度一次性抬到位
+        - top_down (approach_dir≈[0,0,-1] 或 None): 直接竖直抬 height_m
+        - 侧抓 (e.g. [1,0,0]): 先沿 -approach_dir 水平回退 height_m,
+          再竖直抬升 height_m → 物体先脱离台面边缘再升空
+
+        Args:
+            height_m: 抬升 / 回退高度
+            approach_dir: 抓取时的接近方向; None 视为 top_down
+
+        Returns:
+            (success, final_eef_z)
         """
+        # 解析方向: None / 接近 [0,0,-1] 时视为 top_down
+        if approach_dir is None:
+            ad = np.array([0.0, 0.0, -1.0], dtype=np.float32)
+        else:
+            ad = np.asarray(approach_dir, dtype=np.float32)
+            n = float(np.linalg.norm(ad))
+            ad = ad / n if n > 1e-6 else np.array([0.0, 0.0, -1.0], dtype=np.float32)
+        is_top_down = (
+            ad[2] < -0.9 and abs(ad[0]) < 0.1 and abs(ad[1]) < 0.1
+        )
+
         try:
             curr = self.get_eef_pos().copy()
             start_z = float(curr[2])
 
-            # 阶段1: 慢起 2cm, 每次 5mm (降低有效加速度)
+            # ── 侧抓: 先水平回退 height_m 沿 -approach_dir ──
+            if not is_top_down:
+                retreat = -ad * float(height_m)
+                # 慢退分 4 段 (类似慢起, 防止物体因惯性脱落)
+                n_micro = 4
+                for k in range(n_micro):
+                    frac = (k + 1) / n_micro
+                    target = np.array(
+                        [curr[0] + retreat[0] * frac,
+                         curr[1] + retreat[1] * frac,
+                         curr[2] + retreat[2] * frac],
+                        dtype=np.float32,
+                    )
+                    self.move_arm_to(target, threshold_m=0.005, max_steps=120)
+                # 更新当前位置作为后续 lift 起点
+                curr = self.get_eef_pos().copy()
+
+            # ── 竖直抬升 height_m ──
+            # 阶段1: 慢起 2cm, 每次 5mm
             gentle_total = min(0.02, height_m)
             micro_step = 0.005
             n_micro = max(1, int(gentle_total / micro_step))
             for k in range(n_micro):
-                target_z = start_z + (k + 1) * micro_step
+                target_z = float(curr[2]) + (k + 1) * micro_step
                 target = np.array(
                     [curr[0], curr[1], target_z], dtype=np.float32
                 )
@@ -1647,12 +1688,15 @@ class EnvWrapper:
             remaining = height_m - gentle_total
             if remaining > 0.005:
                 final_target = np.array(
-                    [curr[0], curr[1], start_z + height_m], dtype=np.float32
+                    [curr[0], curr[1], float(curr[2]) + height_m],
+                    dtype=np.float32,
                 )
                 self.move_arm_to(final_target, threshold_m=0.02, max_steps=200)
 
             final_z = float(self.get_eef_pos()[2])
-            ok = final_z > start_z + height_m * 0.5  # 至少升了一半
+            # 至少升了一半 (top_down 比较 start_z, 侧抓比较回退后的 curr[2])
+            base_z = start_z if is_top_down else float(curr[2])
+            ok = final_z > base_z + height_m * 0.5
             return ok, final_z
         except Exception as e:
             logger.warning(f"[lift] failed: {e}")

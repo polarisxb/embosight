@@ -482,3 +482,65 @@ class TestMoveToPreGrasp:
         ad = moves[-1][1].get("approach_dir")
         assert ad is not None
         np.testing.assert_allclose(np.asarray(ad), [1.0, 0.0, 0.0], atol=1e-6)
+
+
+# ============================================================
+# Task 10: lift uses approach_dir for retreat
+# ============================================================
+
+
+def _make_lift_wrapper(monkeypatch, start_pos=(0.5, 0.0, 0.9)):
+    """Helper: lift mock that tracks current position via move_arm_to targets."""
+    from src.env_wrapper import EnvWrapper
+
+    wrapper = EnvWrapper.__new__(EnvWrapper)
+    state = {"pos": np.array(start_pos, dtype=np.float32)}
+    moves = []
+
+    def fake_move(t, **kw):
+        moves.append(np.array(t, copy=True))
+        state["pos"] = np.asarray(t, dtype=np.float32).copy()
+        return True
+
+    monkeypatch.setattr(wrapper, "move_arm_to", fake_move)
+    monkeypatch.setattr(wrapper, "get_eef_pos",
+                        lambda: state["pos"].copy())
+    return wrapper, moves
+
+
+class TestLiftWithApproachDir:
+    def test_top_down_lift_unchanged(self, monkeypatch):
+        """approach_dir=[0,0,-1] (top_down) → lift should still go straight up."""
+        wrapper, moves = _make_lift_wrapper(monkeypatch)
+        ok, z = wrapper.lift(height_m=0.10,
+                              approach_dir=np.array([0.0, 0.0, -1.0]))
+        assert ok is True
+        # Last target should be (0.5, 0.0, 1.0) = 0.9 + 0.10
+        last = moves[-1]
+        np.testing.assert_allclose(last, [0.5, 0.0, 1.0], atol=1e-6)
+
+    def test_side_lift_retreats_horizontally(self, monkeypatch):
+        """approach_dir=[1,0,0] (+x) → first phase should retreat in -x direction."""
+        wrapper, moves = _make_lift_wrapper(monkeypatch)
+        ok, z = wrapper.lift(height_m=0.10,
+                              approach_dir=np.array([1.0, 0.0, 0.0]))
+        assert ok is True
+        # Some intermediate target should have x < 0.5 (retreated in -x)
+        retreated = [m for m in moves if m[0] < 0.5 - 1e-3]
+        assert len(retreated) >= 1, (
+            f"Expected at least one retreat target with x<0.5, got {moves}"
+        )
+        # Final target z should be at least 5cm above starting z (0.9)
+        last = moves[-1]
+        assert last[2] > 0.9 + 0.05, (
+            f"Final z should be at least 5cm above start, got {last}"
+        )
+
+    def test_default_approach_dir_is_top_down(self, monkeypatch):
+        """Calling lift() without approach_dir should behave like top_down."""
+        wrapper, moves = _make_lift_wrapper(monkeypatch)
+        wrapper.lift(height_m=0.10)
+        # x and y should remain at 0.5 and 0.0 throughout (no horizontal retreat)
+        for m in moves:
+            np.testing.assert_allclose(m[0], 0.5, atol=1e-6)
+            np.testing.assert_allclose(m[1], 0.0, atol=1e-6)

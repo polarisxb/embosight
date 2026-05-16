@@ -63,7 +63,7 @@ class FakeEnv:
         self._gripper_open = True
         return True
 
-    def lift(self) -> tuple[bool, float]:
+    def lift(self, height_m: float = 0.10, **kwargs) -> tuple[bool, float]:
         self.calls.append("lift")
         if self.lift_ok and self.obj_lifts:
             self._lifted = True

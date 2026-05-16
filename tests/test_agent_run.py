@@ -72,7 +72,7 @@ def _make_full_agent(decompose_response, vlm_responses, safety_response,
         def open_gripper(self):
             return True
 
-        def lift(self):
+        def lift(self, height_m: float = 0.10, **kwargs):
             return True, 0.05
 
         def get_eef_pos(self):

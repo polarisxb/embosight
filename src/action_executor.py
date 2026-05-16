@@ -144,7 +144,7 @@ class ActionExecutor:
                         z_actual,
                     )
                     env.close_gripper(target_label=getattr(target, "label", None))
-                    lift_ok, final_z = env.lift()
+                    lift_ok, final_z = env.lift(approach_dir=approach_dir)
                     if not lift_ok:
                         return self._failed_result(
                             candidate, "slipped",
@@ -159,7 +159,7 @@ class ActionExecutor:
                         z_actual,
                     )
                     env.close_gripper(target_label=getattr(target, "label", None))
-                    lift_ok, final_z = env.lift()
+                    lift_ok, final_z = env.lift(approach_dir=approach_dir)
                     if not lift_ok:
                         return self._failed_result(
                             candidate, "hit_z_floor",
@@ -179,7 +179,7 @@ class ActionExecutor:
                     reason, gap,
                 )
                 env.close_gripper(target_label=getattr(target, "label", None))
-                lift_ok, final_z = env.lift()
+                lift_ok, final_z = env.lift(approach_dir=approach_dir)
                 if not lift_ok:
                     return self._failed_result(
                         candidate,
@@ -194,7 +194,7 @@ class ActionExecutor:
             env.close_gripper(target_label=getattr(target, "label", None))
 
             # 4. lift
-            lift_ok, final_z = env.lift()
+            lift_ok, final_z = env.lift(approach_dir=approach_dir)
             if not lift_ok:
                 return self._failed_result(
                     candidate, "slipped",

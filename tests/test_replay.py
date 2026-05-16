@@ -75,7 +75,7 @@ class FakeEnv:
     def open_gripper(self):
         return True
 
-    def lift(self):
+    def lift(self, height_m: float = 0.10, **kwargs):
         return True, 0.05
 
     def get_eef_pos(self):
