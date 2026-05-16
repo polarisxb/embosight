@@ -309,6 +309,49 @@ class EnvWrapper:
         self._base_idx_cache = None
         return None
 
+    # ------------------------------------------------------------------
+    # Orientation control helpers (Tasks 2-4 of orientation-aware-grasping)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _approach_dir_to_quat(approach_dir: np.ndarray) -> np.ndarray:
+        """Compute world-frame gripper quaternion so its local +z axis points
+        in `approach_dir` (i.e., the gripper "looks at" the object).
+
+        The gripper's home orientation in robosuite Panda has local +z pointing
+        forward along the kinematic chain. For top-down grasping, approach_dir
+        = [0, 0, -1] makes the gripper face downward. For side approach from
+        +x, approach_dir = [1, 0, 0] makes it face +x.
+
+        Args:
+            approach_dir: 3D vector in world frame (will be normalized).
+
+        Returns:
+            Quaternion (xyzw, unit length, float64) representing the target
+            gripper rotation in world frame.
+        """
+        from scipy.spatial.transform import Rotation as R
+
+        v = np.asarray(approach_dir, dtype=np.float64)
+        norm = float(np.linalg.norm(v))
+        if norm < 1e-9:
+            return np.array([0.0, 0.0, 0.0, 1.0])
+        v = v / norm
+        z_axis = np.array([0.0, 0.0, 1.0])
+        cross = np.cross(z_axis, v)
+        dot = float(np.dot(z_axis, v))
+        if dot > 1.0 - 1e-9:
+            # Already aligned with +z
+            return np.array([0.0, 0.0, 0.0, 1.0])
+        if dot < -1.0 + 1e-9:
+            # Anti-parallel: rotate 180° around any axis orthogonal to z.
+            # Pick +x as a convention.
+            return R.from_rotvec(np.pi * np.array([1.0, 0.0, 0.0])).as_quat()
+        s = float(np.sqrt(2.0 * (1.0 + dot)))
+        q_xyz = cross / s
+        q_w = s / 2.0
+        return np.array([q_xyz[0], q_xyz[1], q_xyz[2], q_w])
+
     def move_arm_to(
         self,
         target_pos_m,
