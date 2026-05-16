@@ -69,6 +69,9 @@ class ActionExecutor:
                 {"reason": "no_candidate"}, env,
             )
 
+        # 记录物体初始 z（用于 lift 后验证物体是否跟随）
+        obj_z_before = self._get_obj_z(target, env)
+
         # 1. pre-grasp
         if not env.move_to_pre_grasp(candidate):
             return self._failed_result(
@@ -128,6 +131,28 @@ class ActionExecutor:
                     env,
                 )
 
+        # 5. post-lift 物体跟随验证 (防止"夹住后滑落"的假阳性)
+        obj_z_after = self._get_obj_z(target, env)
+        if obj_z_before is not None and obj_z_after is not None:
+            obj_dz = obj_z_after - obj_z_before
+            if obj_dz < 0.02:
+                logger.warning(
+                    "[act] object NOT lifted: z_before=%.3f z_after=%.3f Δ=%.3f",
+                    obj_z_before, obj_z_after, obj_dz,
+                )
+                return self._failed_result(
+                    candidate, "slipped",
+                    {"z_target": z_target, "z_actual": float(z_actual),
+                     "final_z": float(final_z),
+                     "obj_z_before": obj_z_before, "obj_z_after": obj_z_after,
+                     "stage": "post_lift_verify"},
+                    env,
+                )
+            logger.info(
+                "[act] post-lift verified: obj Δz=%.3f (%.3f→%.3f)",
+                obj_dz, obj_z_before, obj_z_after,
+            )
+
         eef = env.get_eef_pos()
         attempt = GraspAttempt(
             timestamp=time.time(),
@@ -178,6 +203,26 @@ class ActionExecutor:
             diagnostic=diag,
         )
         return GraspActionResult(success=False, attempt=attempt)
+
+    @staticmethod
+    def _get_obj_z(target, env) -> float | None:
+        """获取目标物体当前 z 坐标 (通过 sim body position)"""
+        try:
+            label = getattr(target, "label", None)
+            if not label:
+                return None
+            type_map = env._get_obj_type_map()
+            body_name = next(
+                (b for b, c in type_map.items() if c == label), None
+            )
+            if body_name is None:
+                # fallback: obj_main
+                body_name = "obj_main"
+            pos = env._get_body_pos(body_name)
+            return float(pos[2]) if pos is not None else None
+        except Exception as e:
+            logger.debug(f"[_get_obj_z] failed: {e}")
+            return None
 
     @staticmethod
     def _cand_sig(c) -> tuple:
