@@ -459,6 +459,7 @@ class EnvWrapper:
         )
 
         prev_dist = float("inf")
+        prev_ori_err = float("inf")
         stall = 0
         check_interval = 120  # 每 N 步检查一次 stall
         stall_limit = 6
@@ -491,10 +492,12 @@ class EnvWrapper:
                 )
                 return True
 
-            # stall 检测: 放宽间隔和阈值
+            # stall 检测: 位置 OR 朝向有进展就不算 stall
             if step > 0 and step % check_interval == 0:
-                progress = prev_dist - dist
-                if progress < 0.005:
+                pos_progress = prev_dist - dist
+                ori_progress = prev_ori_err - ori_err if target_quat is not None else 0.0
+                making_progress = pos_progress > 0.005 or ori_progress > 0.01
+                if not making_progress:
                     stall += 1
                     if stall >= stall_limit:
                         logger.warning(
@@ -505,6 +508,7 @@ class EnvWrapper:
                 else:
                     stall = max(0, stall - 1)
                 prev_dist = dist
+                prev_ori_err = ori_err
                 if step % (check_interval * 3) == 0:
                     logger.debug(
                         f"[move] step={step} dist={dist:.3f}m "
@@ -1509,8 +1513,8 @@ class EnvWrapper:
             if xy_norm > 0.1:
                 xy_unit = xy_approach / xy_norm
                 base_target = np.array([
-                    float(pre_pos[0]) - xy_unit[0] * 0.4,
-                    float(pre_pos[1]) - xy_unit[1] * 0.4,
+                    float(pre_pos[0]) - xy_unit[0] * 0.25,
+                    float(pre_pos[1]) - xy_unit[1] * 0.25,
                     float(eef[2]),
                 ], dtype=np.float32)
             else:
