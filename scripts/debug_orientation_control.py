@@ -140,7 +140,8 @@ def probe_axis(env, axis_idx: int, magnitude: float = 0.1, n_steps: int = 30):
 
 def main():
     env = EnvWrapper(EnvConfig())
-    env.reset(seed=3)
+    env.seed(3)
+    env.reset()
 
     logger.info("=" * 60)
     logger.info("OSC_POSE ORIENTATION ACTION CONVENTION PROBE")
@@ -195,7 +196,8 @@ def test_live_side_rotation():
     @skip marker once you reach Task 6.
     """
     env = EnvWrapper(EnvConfig())
-    env.reset(seed=3)
+    env.seed(3)
+    env.reset()
 
     q_before = get_gripper_quat_world(env)
     z_world_before = R.from_quat(q_before).apply([0, 0, 1])
