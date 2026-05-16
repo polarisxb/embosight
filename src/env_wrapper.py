@@ -1015,7 +1015,7 @@ class EnvWrapper:
         target_pos: np.ndarray,
         target_body: str,
         step_z: float = 0.01,
-        max_steps: int = 25,
+        max_steps: int = 35,
     ) -> tuple[bool, float]:
         """步进式下降, 指尖接触目标物体即停 (避免硬撞或停太高)
 
@@ -1055,10 +1055,10 @@ class EnvWrapper:
                 )
                 return True, float(curr[2])
 
-            # 收敛检测: 连续 3 步 z 几乎没下降才算 stall (放宽至 0.5mm)
+            # 收敛检测: 连续 5 步 z 几乎没下降才算 stall (放宽至 0.5mm)
             if prev_z is not None and abs(prev_z - curr[2]) < 0.0005:
                 stall_count += 1
-                if stall_count >= 3:
+                if stall_count >= 5:
                     gap = curr[2] - target[2]
                     contact = self._finger_object_contact(target_body)
                     # 如果已足够接近目标 z (< 1cm), 视为成功下降

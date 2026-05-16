@@ -93,18 +93,12 @@ class ActionExecutor:
             margin_m=margin_m,
         )
         if not descend_ok:
-            # ── z-stall recovery: 抬高 5mm 再尝试夹取 ──
-            z_retry = float(z_actual) + 0.005
+            # ── z-stall recovery: 在当前位置尝试夹取 (不再上抬, 上抬会远离物体) ──
+            z_retry = float(z_actual)
             logger.info(
-                "[act] hit_z_floor at z=%.3f, retrying at z=%.3f (+5mm)",
-                z_actual, z_retry,
+                "[act] hit_z_floor at z=%.3f, retrying grasp at current z",
+                z_actual,
             )
-            retry_target = np.array(
-                [float(candidate.point_3d[0]),
-                 float(candidate.point_3d[1]),
-                 z_retry], dtype=np.float32,
-            )
-            env.move_arm_to(retry_target, threshold_m=0.005, max_steps=200)
             env.close_gripper(target_label=getattr(target, "label", None))
             lift_ok, final_z = env.lift()
             if lift_ok:
