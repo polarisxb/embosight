@@ -53,11 +53,12 @@ def record_episode(
     # 覆盖分辨率
     top_cfg.setdefault("simulator", {})["image_width"] = resolution[0]
     top_cfg["simulator"]["image_height"] = resolution[1]
-    # 确保录制相机在列表中
+    # 确保所有录制相机都在环境相机列表中
     cam_list = top_cfg["simulator"].get("camera_names", [])
-    if camera not in cam_list:
-        cam_list.append(camera)
-        top_cfg["simulator"]["camera_names"] = cam_list
+    for cam in [c.strip() for c in camera.split(",")]:
+        if cam not in cam_list:
+            cam_list.append(cam)
+    top_cfg["simulator"]["camera_names"] = cam_list
 
     env = _build_env(top_cfg)
     actual_object, _ = reset_until_expected(
