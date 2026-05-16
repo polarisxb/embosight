@@ -1412,28 +1412,36 @@ class EnvWrapper:
         self._gripper_action(-1.0, n_steps=10)
 
     def lift(self, height_m: float = 0.10) -> tuple[bool, float]:
-        """从当前位置抬升 height_m，分两阶段: 先慢起(减少滑落)再正常抬。"""
-        try:
-            curr = self.get_eef_pos()
-            # 阶段1: 慢起 2cm (小步 + 低速, 降低惯性力)
-            gentle_h = min(0.02, height_m)
-            gentle_target = (
-                np.asarray(curr, dtype=np.float32)
-                + np.array([0.0, 0.0, gentle_h], dtype=np.float32)
-            )
-            self.move_arm_to(gentle_target, threshold_m=0.005, max_steps=120)
+        """从当前位置抬升 height_m，分阶段控速以避免物体因惯性滑落。
 
-            # 阶段2: 正常速度抬到目标高度
-            remaining = height_m - gentle_h
+        阶段1 (慢起): 前 2cm 拆成 4 段 5mm 微步, 每段独立收敛 → 加速度极低
+        阶段2 (正常): 剩余高度一次性抬到位
+        """
+        try:
+            curr = self.get_eef_pos().copy()
+            start_z = float(curr[2])
+
+            # 阶段1: 慢起 2cm, 每次 5mm (降低有效加速度)
+            gentle_total = min(0.02, height_m)
+            micro_step = 0.005
+            n_micro = max(1, int(gentle_total / micro_step))
+            for k in range(n_micro):
+                target_z = start_z + (k + 1) * micro_step
+                target = np.array(
+                    [curr[0], curr[1], target_z], dtype=np.float32
+                )
+                self.move_arm_to(target, threshold_m=0.003, max_steps=80)
+
+            # 阶段2: 剩余高度正常速度
+            remaining = height_m - gentle_total
             if remaining > 0.005:
-                final_target = (
-                    np.asarray(curr, dtype=np.float32)
-                    + np.array([0.0, 0.0, height_m], dtype=np.float32)
+                final_target = np.array(
+                    [curr[0], curr[1], start_z + height_m], dtype=np.float32
                 )
                 self.move_arm_to(final_target, threshold_m=0.02, max_steps=200)
 
             final_z = float(self.get_eef_pos()[2])
-            ok = final_z > curr[2] + height_m * 0.5  # 至少升了一半
+            ok = final_z > start_z + height_m * 0.5  # 至少升了一半
             return ok, final_z
         except Exception as e:
             logger.warning(f"[lift] failed: {e}")
