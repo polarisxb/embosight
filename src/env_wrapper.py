@@ -722,8 +722,16 @@ class EnvWrapper:
         prev_dist = float("inf")
         prev_ori_err = float("inf")
         stall = 0
-        check_interval = 120  # 每 N 步检查一次 stall
-        stall_limit = 6
+        # Phase 7: tighter stall detection (Phase 5 GPU baseline showed
+        # 800-step max_steps was reached with dist unchanged, meaning the
+        # old check (every 120 steps, need 6 confirmations = 720 steps)
+        # never had time to fire. New: every 40 steps, need 3 = 120 steps.
+        check_interval = 40
+        stall_limit = 3
+        # Phase 7: also log dist trajectory at stall to diagnose true
+        # stall (dist not changing) vs slow convergence (dist still
+        # shrinking). recent_dists keeps last 3 values.
+        recent_dists: list[float] = []
         max_ori_step_per_iter = 0.5  # 单步朝向 axis-angle 模长上限 (rad)
 
         for step in range(max_steps):
@@ -757,17 +765,28 @@ class EnvWrapper:
             if step > 0 and step % check_interval == 0:
                 pos_progress = prev_dist - dist
                 ori_progress = prev_ori_err - ori_err if target_quat is not None else 0.0
-                making_progress = pos_progress > 0.005 or ori_progress > 0.01
+                # Phase 7: progress threshold 5mm → 1mm.
+                # OSC near IK/joint limit moves 1-2 mm per check window,
+                # which the old 5mm threshold misclassified as stall-free.
+                making_progress = pos_progress > 0.001 or ori_progress > 0.01
                 if not making_progress:
                     stall += 1
+                    recent_dists.append(dist)
+                    if len(recent_dists) > 3:
+                        recent_dists.pop(0)
                     if stall >= stall_limit:
+                        traj = (
+                            "[" + ", ".join(f"{d:.4f}" for d in recent_dists) + "]"
+                        )
                         logger.warning(
                             f"[move_arm_to] stalled at step={step}, "
-                            f"dist={dist:.4f}m ori_err={ori_err:.4f}rad"
+                            f"dist={dist:.4f}m ori_err={ori_err:.4f}rad "
+                            f"recent_dists={traj}"
                         )
                         return pos_ok and ori_ok
                 else:
                     stall = max(0, stall - 1)
+                    recent_dists.clear()
                 prev_dist = dist
                 prev_ori_err = ori_err
                 if step % (check_interval * 3) == 0:
