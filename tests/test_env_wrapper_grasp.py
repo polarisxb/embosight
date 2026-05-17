@@ -94,6 +94,53 @@ def test_move_to_pre_grasp_accepts_six_cm_boundary() -> None:
     assert env.move_calls[-1][2] >= 0.06
 
 
+class _IsReachableEnv(EnvWrapper):
+    """Minimal stub exposing only get_base_pose for is_reachable tests."""
+    def __init__(self, base_xy=(0.0, 0.0)) -> None:
+        self._base_xy = np.asarray(base_xy, dtype=np.float32)
+
+    def get_base_pose(self):
+        pos = np.array(
+            [float(self._base_xy[0]), float(self._base_xy[1]), 0.0],
+            dtype=np.float32,
+        )
+        return pos, np.eye(3, dtype=np.float32)
+
+
+def test_is_reachable_true_for_close_point() -> None:
+    env = _IsReachableEnv(base_xy=(0.0, 0.0))
+    p = np.array([0.4, 0.3, 0.9], dtype=np.float32)  # horiz=0.5m
+    assert env.is_reachable(p, np.array([0.0, 0.0, -1.0], dtype=np.float32)) is True
+
+
+def test_is_reachable_false_beyond_radius() -> None:
+    env = _IsReachableEnv(base_xy=(0.0, 0.0))
+    # horiz=1.0m > 0.75m threshold
+    p = np.array([0.8, 0.6, 0.9], dtype=np.float32)
+    assert env.is_reachable(p, np.array([0.0, 0.0, -1.0], dtype=np.float32)) is False
+
+
+def test_is_reachable_uses_horizontal_only() -> None:
+    """Z separation should NOT affect reachability — arm has vertical reach."""
+    env = _IsReachableEnv(base_xy=(0.0, 0.0))
+    # horiz=0.5m, large z gap
+    p = np.array([0.5, 0.0, 2.0], dtype=np.float32)
+    assert env.is_reachable(p, np.array([0.0, 0.0, -1.0], dtype=np.float32)) is True
+
+
+def test_is_reachable_falls_back_to_true_on_error() -> None:
+    """Geometry errors should NOT block grasping — preserve old behavior."""
+    class _BadEnv(EnvWrapper):
+        def __init__(self) -> None:
+            pass
+        def get_base_pose(self):
+            raise RuntimeError("simulated failure")
+
+    env = _BadEnv()
+    p = np.array([10.0, 10.0, 0.9], dtype=np.float32)  # would normally be False
+    assert env.is_reachable(p, np.array([0.0, 0.0, -1.0], dtype=np.float32)) is True
+
+
 def test_reset_applies_seed_before_backend_reset(monkeypatch, tmp_path) -> None:
     events = []
 

@@ -1486,9 +1486,36 @@ class EnvWrapper:
     # v1 ActionExecutor / GraspPlanner 适配接口 (Phase 8.5 真 sim 集成)
     # ------------------------------------------------------------------
 
+    # PandaMobile 工作空间约 base 周围 0.65m 半径 (实测).
+    # 阈值 0.75m 略宽, 给 base 二次靠近留余地; 超过此距离 move_arm_to
+    # 几乎肯定 stall 跑满 800 步, 提前剔除候选可省 ~30s/episode budget.
+    _REACH_RADIUS_M: float = 0.75
+
     def is_reachable(self, point_3d, approach_dir) -> bool:
-        """简化 IK 可达性判断: sim 里始终返 True, 由 move_arm_to 失败时捕获。"""
-        return True
+        """几何预过滤候选可达性。
+
+        当前仅基于 base→point 水平距离: 超过 _REACH_RADIUS_M 视为不可达,
+        避免 GraspPlanner 把不可达候选送进 move_to_pre_grasp 浪费步数。
+        approach_dir 暂未用 (留作后续 IK pose 检查接口).
+
+        Returns False 仅在能确证不可达时; 不确定时保守返 True 让
+        move_arm_to 自己判断 (与改动前等价行为)。
+        """
+        try:
+            base_pos, _ = self.get_base_pose()
+            horiz = float(np.linalg.norm(
+                np.asarray(point_3d, dtype=np.float32)[:2] - base_pos[:2]
+            ))
+            if horiz > self._REACH_RADIUS_M:
+                logger.info(
+                    "[is_reachable] False: base→point horiz=%.2fm > %.2fm",
+                    horiz, self._REACH_RADIUS_M,
+                )
+                return False
+            return True
+        except Exception as e:
+            logger.debug("[is_reachable] geometry check failed: %s", e)
+            return True
 
     def move_to_pre_grasp(self, candidate, height_m: float = 0.05) -> bool:
         """移动到 candidate 的 pre-grasp 位置, 朝向对齐 candidate.approach_dir。
