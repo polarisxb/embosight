@@ -259,12 +259,47 @@ class EnvWrapper:
             raise RuntimeError("robot0_eef_quat not in observation keys")
         return np.asarray(q, dtype=np.float64)
 
+    # robosuite mobile robots 上, Robot.base_pos / Robot.base_ori 指向
+    # mount anchor body (e.g. robot0_base, hardcoded 到 (10,10,0)) 而非
+    # 实际 mobile base. 真实位置在 sim 中以 'mobilebase{idn}_base' 命名.
+    # 优先级: mobilebase{idn}_base → robot{idn}_base (若非 fake) → property fallback
+    _MOBILE_BASE_FAKE_XY: tuple[float, float] = (10.0, 10.0)
+
     def get_base_pose(self) -> tuple[np.ndarray, np.ndarray]:
         """获取底盘在世界系的 (位置, 3x3旋转矩阵)
 
         手臂 OSC 用 input_ref_frame='base', 底盘也是 base 系 JointVelocity,
         因此所有 action 都是 base 系增量, 需要把世界系 delta 旋转回 base 系.
+
+        实现说明: robosuite 的 Robot.base_pos 在 PandaOmron / PandaMobile 等
+        mobile 机器人上指向 anchor body (xpos = (10,10,0)), 不是真实底盘位置.
+        先按 sim body name 优先级取真实 xpos/xmat, 实在拿不到才回退到 property.
         """
+        sim = getattr(self._env, "sim", None)
+        if sim is not None:
+            try:
+                robot = self._env.robots[0]
+                idn = getattr(robot, "idn", 0)
+            except Exception:
+                idn = 0
+            for body_name in (
+                f"mobilebase{idn}_base", f"robot{idn}_base",
+            ):
+                try:
+                    bid = sim.model.body_name2id(body_name)
+                except (KeyError, ValueError):
+                    continue
+                pos = np.asarray(sim.data.body_xpos[bid], dtype=np.float32)
+                # 跳过 anchor body 的 fake (10,10,0) 位置
+                fake_xy = np.asarray(self._MOBILE_BASE_FAKE_XY, dtype=np.float32)
+                if np.allclose(pos[:2], fake_xy, atol=0.01):
+                    continue
+                mat = np.asarray(
+                    sim.data.body_xmat[bid], dtype=np.float32,
+                ).reshape(3, 3)
+                return pos, mat
+
+        # Fallback: robosuite property (legacy behavior, may be inaccurate)
         try:
             robot = self._env.robots[0]
             base_pos = np.asarray(robot.base_pos, dtype=np.float32)

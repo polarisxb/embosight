@@ -256,6 +256,100 @@ def test_move_arm_to_default_leaves_gripper_neutral() -> None:
         assert a[env.GRIPPER_IDX] == 0.0
 
 
+class _MockSim:
+    """Tiny MuJoCo-like sim shim for get_base_pose tests."""
+    def __init__(self, bodies: dict[str, tuple[np.ndarray, np.ndarray]]) -> None:
+        # bodies: name -> (xpos[3], xmat[3,3])
+        self._names = list(bodies.keys())
+        self._xpos = {n: bodies[n][0] for n in bodies}
+        self._xmat = {n: bodies[n][1] for n in bodies}
+        outer = self
+
+        class _Model:
+            def body_name2id(self, name):
+                if name not in outer._names:
+                    raise ValueError(name)
+                return outer._names.index(name)
+
+        class _Data:
+            @property
+            def body_xpos(self):
+                return [outer._xpos[n] for n in outer._names]
+
+            @property
+            def body_xmat(self):
+                return [outer._xmat[n].reshape(9) for n in outer._names]
+
+        self.model = _Model()
+        self.data = _Data()
+
+
+class _BasePoseEnv(EnvWrapper):
+    """Stub env wrapping a _MockSim so get_base_pose can be tested without robosuite."""
+    def __init__(self, bodies, fallback_base=(10.0, 10.0, 0.0)) -> None:
+        outer_sim = _MockSim(bodies)
+
+        class _Robot:
+            idn = 0
+            base_pos = np.asarray(fallback_base, dtype=np.float32)
+            base_ori = np.eye(3, dtype=np.float32)
+
+        class _Backend:
+            sim = outer_sim
+            robots = [_Robot()]
+
+        self._env = _Backend()
+
+
+def test_get_base_pose_prefers_mobilebase_body() -> None:
+    """Real mobile base xpos should override the (10,10,0) anchor."""
+    real_pos = np.array([0.78, -2.88, 0.0], dtype=np.float32)
+    real_mat = np.eye(3, dtype=np.float32)
+    fake_pos = np.array([10.0, 10.0, 0.0], dtype=np.float32)
+    env = _BasePoseEnv({
+        "robot0_base": (fake_pos, np.eye(3, dtype=np.float32)),
+        "mobilebase0_base": (real_pos, real_mat),
+    })
+    pos, mat = env.get_base_pose()
+    np.testing.assert_allclose(pos, real_pos, atol=1e-5)
+    np.testing.assert_allclose(mat, real_mat, atol=1e-5)
+
+
+def test_get_base_pose_skips_fake_robot_base() -> None:
+    """If only robot0_base exists and it's at (10,10,0), skip → fallback."""
+    fake_pos = np.array([10.0, 10.0, 0.0], dtype=np.float32)
+    env = _BasePoseEnv(
+        {"robot0_base": (fake_pos, np.eye(3, dtype=np.float32))},
+        fallback_base=(0.5, 0.5, 0.0),
+    )
+    pos, _mat = env.get_base_pose()
+    # Must not return the fake (10,10,0) — must use robot.base_pos fallback
+    np.testing.assert_allclose(pos, [0.5, 0.5, 0.0], atol=1e-5)
+
+
+def test_get_base_pose_uses_robot_base_when_no_mobilebase() -> None:
+    """Static (non-mobile) robot has only robot0_base at real position."""
+    real_pos = np.array([0.0, 0.0, 0.9], dtype=np.float32)
+    env = _BasePoseEnv(
+        {"robot0_base": (real_pos, np.eye(3, dtype=np.float32))},
+    )
+    pos, _mat = env.get_base_pose()
+    np.testing.assert_allclose(pos, real_pos, atol=1e-5)
+
+
+def test_is_reachable_works_after_base_pose_fix() -> None:
+    """E2E: with realistic mobile base at (0.78, -2.88), an object at
+    (0.35, -3.19) — 0.53m horiz away — must be reachable."""
+    real_pos = np.array([0.78, -2.88, 0.0], dtype=np.float32)
+    env = _BasePoseEnv({
+        "robot0_base": (np.array([10.0, 10.0, 0.0], dtype=np.float32),
+                        np.eye(3, dtype=np.float32)),
+        "mobilebase0_base": (real_pos, np.eye(3, dtype=np.float32)),
+    })
+    obj_pos = np.array([0.35, -3.19, 0.94], dtype=np.float32)
+    assert env.is_reachable(obj_pos, np.array([0, 0, -1.0])) is True
+
+
 def test_lift_e2e_keeps_gripper_at_one_throughout() -> None:
     """E2E: from first env.step in lift() to last, gripper stays at 1.0.
 
