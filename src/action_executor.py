@@ -45,7 +45,8 @@ class ActionExecutor:
 
     与老 execute() 区别:
     - 直接接 Hypothesis (不需要 ActionPlan/grounding 中介)
-    - 失败模式结构化: ik_unreachable / hit_z_floor / slipped / verify_mismatch
+    - 失败模式结构化: ik_unreachable / hit_z_floor / slipped_lift /
+      gripper_empty / verify_mismatch
     - verify_grasp 占位由 perception.verify_grasp 注入 (Phase 12)
     """
 
@@ -195,9 +196,11 @@ class ActionExecutor:
                 lift_ok, final_z = env.lift(approach_dir=approach_dir)
                 if not lift_ok:
                     if not grasp_ok:
-                        mode = "gripper_empty"
-                    else:
+                        # 没夹住任何东西 → IK/接近问题
                         mode = "hit_z_floor" if is_top_down else "ik_unreachable"
+                    else:
+                        # 已 grasp_ok 但 lift 失败 → 夹住但拎不起来
+                        mode = "slipped_lift"
                     return self._failed_result(
                         candidate, mode,
                         {"z_target": z_target, "z_actual": float(z_actual),

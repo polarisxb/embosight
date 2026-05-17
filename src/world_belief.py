@@ -86,7 +86,8 @@ class GraspAttempt:
 class GraspStrategy:
     """LLM 选择的抓取策略 (基于安全分类 + 视觉外观)。"""
     strategy: Literal[
-        "top_down", "gentle_side", "handle_grasp", "scoop_under", "refuse",
+        "top_down", "tilted_grasp", "gentle_side", "handle_grasp",
+        "scoop_under", "refuse",
     ]
     approach_axis: str = "z"       # 'z'=从上, 'x'/'y'=从侧面
     reasoning: str = ""            # LLM 推理过程
