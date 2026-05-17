@@ -78,7 +78,7 @@ class GraspPlanner:
 
         if not self.llm or not self._strategy_template:
             # 无 LLM 时, 从未禁止的策略中按优先级选择
-            for fallback in ["tilted_grasp", "top_down", "handle_grasp", "gentle_side"]:
+            for fallback in ["top_down", "tilted_grasp", "handle_grasp", "gentle_side"]:
                 if fallback in available:
                     return GraspStrategy(strategy=fallback, reasoning="no LLM",
                                          speech=f"我来拿{hyp.label}")
@@ -120,7 +120,7 @@ class GraspPlanner:
                 # 后置检查: LLM 仍选了被禁/无效策略 → 覆盖
                 if strat not in available or strat not in all_strategies:
                     old = strat
-                    for fb in ["tilted_grasp", "top_down", "handle_grasp", "gentle_side"]:
+                    for fb in ["top_down", "tilted_grasp", "handle_grasp", "gentle_side"]:
                         if fb in available:
                             strat = fb
                             break
@@ -138,7 +138,7 @@ class GraspPlanner:
             logger.warning("[grasp_planner] strategy selection failed: %s", e)
 
         # fallback: 从未禁止的策略中选
-        for fb in ["tilted_grasp", "top_down", "handle_grasp", "gentle_side"]:
+        for fb in ["top_down", "tilted_grasp", "handle_grasp", "gentle_side"]:
             if fb in available:
                 return GraspStrategy(strategy=fb, reasoning="fallback",
                                      speech=f"我来拿{hyp.label}")

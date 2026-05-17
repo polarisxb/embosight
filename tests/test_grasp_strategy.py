@@ -51,7 +51,7 @@ class TestSelectStrategy:
         assert "fragile" in strategy.reasoning or "cake" in strategy.reasoning
         assert strategy.speech != ""
 
-    def test_fallback_to_tilted_on_invalid_strategy(self):
+    def test_fallback_to_top_down_on_invalid_strategy(self):
         llm = MockLLM(responses=[
             '{"strategy": "invalid_strategy", "reasoning": "test"}'
         ])
@@ -59,14 +59,14 @@ class TestSelectStrategy:
         h = _hyp("apple")
         strategy = planner.select_strategy(h)
 
-        assert strategy.strategy == "tilted_grasp"
+        assert strategy.strategy == "top_down"
 
-    def test_fallback_to_tilted_without_llm(self):
+    def test_fallback_to_top_down_without_llm(self):
         planner = GraspPlanner(vlm=MockVLM([]), env=_FakeEnv(), llm=None)
         h = _hyp("apple")
         strategy = planner.select_strategy(h)
 
-        assert strategy.strategy == "tilted_grasp"
+        assert strategy.strategy == "top_down"
         assert "no LLM" in strategy.reasoning
 
     def test_refuse_strategy(self):
@@ -141,6 +141,14 @@ class TestBannedStrategies:
         advice = "spoon: avoid top_down (slipped x3)"
         strategy = planner.select_strategy(h, memory_advice=advice)
         assert strategy.strategy != "top_down"
+
+    def test_memory_driven_tilted_discovery(self):
+        """记忆系统驱动的策略发现: top_down 被禁 → tilted_grasp 是下一个 fallback"""
+        planner = GraspPlanner(vlm=MockVLM([]), env=_FakeEnv(), llm=None)
+        h = _hyp("spoon")
+        advice = "wooden_spoon: avoid top_down (slipped x5)"
+        strategy = planner.select_strategy(h, memory_advice=advice)
+        assert strategy.strategy == "tilted_grasp"
 
     def test_grasp_point_offset_handle(self):
         planner = GraspPlanner(vlm=MockVLM([]), env=_FakeEnv(), llm=None)
