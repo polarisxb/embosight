@@ -209,6 +209,133 @@ def test_move_arm_to_default_leaves_gripper_neutral() -> None:
         assert a[env.GRIPPER_IDX] == 0.0
 
 
+# ============================================================
+# Phase 3: drive_base opt-in flag tests
+# ============================================================
+
+class _StepActionRecorderWithBase(EnvWrapper):
+    """Like _StepActionRecorder but exposes a base controller (idx=7,8).
+
+    Used to verify the drive_base opt-in: default arm-only must not write
+    to action[base_idx], opt-in must write a non-zero base velocity.
+    """
+    BASE_IDX = 7  # 6 arm + base[7..8] (forward/side) + 1 gripper = 10
+    GRIPPER_IDX = 9
+    ACTION_DIM = 10
+
+    def __init__(self) -> None:
+        self.actions_logged: list[np.ndarray] = []
+        self._eef = np.array([0.5, 0.0, 0.6], dtype=np.float32)
+        self._latest_obs = {"_": True}
+        self._gripper_idx_cache = self.GRIPPER_IDX
+        self._base_idx_cache = self.BASE_IDX
+        outer = self
+
+        class _MockBackend:
+            action_dim = outer.ACTION_DIM
+
+            def step(self, action):
+                a = np.asarray(action, dtype=np.float32).copy()
+                outer.actions_logged.append(a)
+                outer._eef = outer._eef + a[0:3] * 0.5
+                return {}, 0.0, False, {}
+
+        self._env = _MockBackend()
+
+    def get_eef_pos(self) -> np.ndarray:
+        return self._eef.copy()
+
+    def get_base_pose(self):
+        return np.zeros(3, dtype=np.float32), np.eye(3, dtype=np.float64)
+
+    def render(self) -> None:
+        pass
+
+    def reset(self):
+        return {}
+
+
+def test_move_arm_to_default_does_not_drive_base() -> None:
+    """drive_base=False (default) must leave base[7], base[8] at 0 every step."""
+    env = _StepActionRecorderWithBase()
+    # Target far enough (dist=1m > 0.05m threshold) to expose base driving
+    target = np.array([1.5, 0.0, 0.6], dtype=np.float32)
+    env.move_arm_to(target, threshold_m=0.1, max_steps=10)
+
+    assert len(env.actions_logged) > 0
+    for i, a in enumerate(env.actions_logged):
+        assert a[env.BASE_IDX] == 0.0, (
+            f"step {i}: action[base_fwd]={a[env.BASE_IDX]} (expected 0 "
+            f"with drive_base=False)"
+        )
+        assert a[env.BASE_IDX + 1] == 0.0, (
+            f"step {i}: action[base_side]={a[env.BASE_IDX + 1]}"
+        )
+
+
+def test_move_arm_to_drive_base_true_writes_base_action() -> None:
+    """drive_base=True (opt-in) must restore legacy mixed control:
+    base[7]/base[8] should receive non-zero values when dist > 0.05m."""
+    env = _StepActionRecorderWithBase()
+    target = np.array([1.5, 0.0, 0.6], dtype=np.float32)
+    env.move_arm_to(target, threshold_m=0.1, max_steps=10, drive_base=True)
+
+    assert len(env.actions_logged) > 0
+    base_fwds = [a[env.BASE_IDX] for a in env.actions_logged]
+    assert any(abs(v) > 1e-6 for v in base_fwds), (
+        f"drive_base=True did not write any base action: {base_fwds}"
+    )
+
+
+class _PreGraspMoveSpyEnv(EnvWrapper):
+    """Captures move_arm_to kwargs to verify move_to_pre_grasp's internal
+    base approach uses drive_base=True (Phase 3 fallback contract)."""
+
+    def __init__(self) -> None:
+        self.move_calls: list[dict] = []
+        self._eef = np.array([0.0, 0.0, 0.6], dtype=np.float32)
+
+    def get_eef_pos(self) -> np.ndarray:
+        return self._eef.copy()
+
+    def move_arm_to(self, target_pos_m, **kwargs) -> bool:
+        # Record kwargs verbatim so we can assert drive_base is passed
+        self.move_calls.append({"target": np.asarray(target_pos_m).copy(),
+                                **kwargs})
+        return True
+
+    def _gripper_action(self, *_args, **_kwargs) -> None:
+        pass
+
+
+def test_move_to_pre_grasp_passes_drive_base_true_for_base_approach() -> None:
+    """move_to_pre_grasp's internal base approach (line ~1584 in env_wrapper.py)
+    must explicitly pass drive_base=True so that base navigation still works
+    when navigate_base_to is unavailable / failed (Phase 3 fallback)."""
+    env = _PreGraspMoveSpyEnv()
+    candidate = GraspCandidate(
+        point_3d=np.array([0.5, 0.2, 0.9], dtype=np.float32),
+        approach_dir=np.array([1.0, 0.0, 0.0], dtype=np.float32),  # side grasp
+        finger_width_m=0.04,
+        score=0.8,
+    )
+
+    env.move_to_pre_grasp(candidate)
+
+    # First call should be the base approach (eef-height z); must opt-in to base
+    assert len(env.move_calls) >= 1
+    first = env.move_calls[0]
+    assert first.get("drive_base") is True, (
+        f"base approach must pass drive_base=True, got kwargs={first}"
+    )
+    # And the final precision move (last call) should NOT request base driving
+    # (Phase 3 default = arm-only after base is roughly positioned)
+    last = env.move_calls[-1]
+    assert last.get("drive_base", False) is False, (
+        f"final precision move should be arm-only, got kwargs={last}"
+    )
+
+
 def test_lift_e2e_keeps_gripper_at_one_throughout() -> None:
     """E2E: from first env.step in lift() to last, gripper stays at 1.0.
 

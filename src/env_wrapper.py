@@ -412,10 +412,17 @@ class EnvWrapper:
         ori_gain: float = 1.0,
         ori_threshold_rad: float = 0.15,
         gripper_hold: float = 0.0,
+        drive_base: bool = False,
     ) -> bool:
-        """自适应控制: 世界系目标 → base 系增量 → 手臂+底盘协同
+        """自适应控制: 世界系目标 → base 系增量 → 手臂 (默认) 或 手臂+底盘协同 (opt-in)
 
-        关键修正 (相比之前):
+        默认 arm-only: drive_base=False 让 base action 为 0, 避免在
+        navigate_base_to (Phase 2) 未推进前意外驱动 base. 调用方可
+        explicit drive_base=True 恢复 legacy 手臂+底盘混合控制
+        (用于 move_to_pre_grasp 内的 base approach 兼容, navigate 失败
+        时还能推动 base).
+
+        关键 robosuite 行为:
             - 手臂 OSC `input_ref_frame='base'`: action[0:3] 是 base 系增量
             - 底盘 JointVelocity (forward/side): 也是 base 系速度
             - 底盘 action index 通过 _get_base_action_idx() 动态检测
@@ -423,7 +430,8 @@ class EnvWrapper:
 
         策略:
             每步重读 base_ori (因为底盘可能旋转), 把世界系 delta
-            旋转到当前 base 系, 同时驱动手臂和底盘. 步数按距离动态分配.
+            旋转到当前 base 系. 默认只驱动手臂; drive_base=True 时同时
+            驱动底盘. 步数按距离动态分配.
             底盘增益 0.8 (OmronMobileBase frictionloss=250, kv=1000).
 
         Args:
@@ -439,6 +447,10 @@ class EnvWrapper:
                 during lift / retreat after a successful close_gripper to
                 prevent the object from slipping out — RoboCasa's gripper
                 releases force when the action position is 0.
+            drive_base: opt-in base driving. Default False = arm-only
+                (避免 navigate_base_to 未落地前的意外 base 驱动). Set
+                True 恢复 legacy 手臂+底盘混合控制 (仅 move_to_pre_grasp 内
+                的 base approach 调用需要).
 
         Returns:
             True if converged within threshold
@@ -554,8 +566,10 @@ class EnvWrapper:
                 except Exception as e:
                     logger.debug(f"[move_arm_to] ori control skipped: {e}")
 
-            # 底盘: base 系 forward/side 速度
-            if has_base and dist > 0.05:
+            # 底盘: base 系 forward/side 速度 (仅 opt-in)
+            # Phase 3: default drive_base=False let arm-only converge.
+            # navigate_base_to (Phase 2) handles long-distance base motion.
+            if has_base and dist > 0.05 and drive_base:
                 base_gain = min(0.8, dist * 0.8)
                 action[base_idx] = float(dir_base[0]) * base_gain      # forward
                 action[base_idx + 1] = float(dir_base[1]) * base_gain  # side
@@ -1564,7 +1578,13 @@ class EnvWrapper:
                     float(target_pos[1]),
                     float(eef[2]),
                 ], dtype=np.float32)
-            self.move_arm_to(base_target, threshold_m=0.15, max_steps=600)
+            # Phase 3: 明示保留 drive_base=True 作为 navigate_base_to 未落地 /
+            # 失败的兑底. 正常路径下 Phase 4 的 navigate 已让 base 就位,
+            # 此 move_arm_to dist 很小, 几步收敛.
+            self.move_arm_to(
+                base_target, threshold_m=0.15, max_steps=600,
+                drive_base=True,
+            )
         except Exception as e:
             logger.debug(f"[pre_grasp] base approach failed: {e}")
 
