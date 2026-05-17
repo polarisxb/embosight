@@ -2350,11 +2350,18 @@ class EnvWrapper:
             eef_after = self.get_eef_pos()
             eef_delta = float(eef_after[2]) - float(eef_before[2])
 
-            required = float(lift_m) * float(threshold)
+            # Phase 6.2 v2: 用 EEF 实际移动量作为基准 (而非期望 lift_m),
+            # 防 OSC stall 误杀. 例: stall 让 EEF 只升 5mm, object 跟着升 5mm
+            # 是 正常 grasp, 但旧逻辑 (基准 lift_m * threshold = 10mm) 会判 slipped.
+            # 加 5mm 底限避免 EEF 完全未动时 obj_delta=0 假报成功.
+            min_required = 0.005
+            required = max(min_required, eef_delta * float(threshold))
             follows = obj_delta >= required
             logger.info(
                 f"[micro_lift] eef Δz={eef_delta:.4f} obj Δz={obj_delta:.4f} "
-                f"follows={follows} (req>={required:.4f}, target={target_body})"
+                f"follows={follows} (req>={required:.4f} = "
+                f"max({min_required:.4f}, eef_Δz*{threshold:.2f}), "
+                f"target={target_body})"
             )
             return follows
         except Exception as e:

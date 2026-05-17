@@ -359,9 +359,13 @@ def test_micro_lift_returns_false_when_obj_stays():
 
 
 def test_micro_lift_threshold_applied():
-    """obj Δz < lift_m * threshold -> False."""
-    # threshold=0.5, lift_m=0.02 -> 需要 obj_delta >= 0.01
-    # 给 obj_delta=0.005 -> 不达标
+    """obj Δz < eef_delta * threshold (with 5mm floor) -> False.
+
+    Phase 6.2 v2: 用 eef_delta 而非 lift_m 作为基准. 这里 stub 让 EEF
+    完整升 2cm 所以 eef_delta = lift_m, 等价行为.
+    """
+    # threshold=0.5, eef_delta=0.02 -> required = max(0.005, 0.01) = 0.01
+    # 给 obj_delta=0.005 -> 0.005 < 0.01 -> False
     w = _MicroLiftStubWrapper(
         obj_z_delta_after_lift=0.005,
         eef_z_delta_after_lift=0.02,
@@ -369,14 +373,46 @@ def test_micro_lift_threshold_applied():
     assert w.verify_grasp_by_micro_lift(
         "obj_main", lift_m=0.02, threshold=0.5,
     ) is False
-    # 同样 0.005 但 threshold=0.2 -> 需要 obj_delta >= 0.004 -> 达标
+    # threshold=0.5 但 obj_delta=0.012 > 0.01 -> True
     w2 = _MicroLiftStubWrapper(
-        obj_z_delta_after_lift=0.005,
+        obj_z_delta_after_lift=0.012,
         eef_z_delta_after_lift=0.02,
     )
     assert w2.verify_grasp_by_micro_lift(
-        "obj_main", lift_m=0.02, threshold=0.2,
+        "obj_main", lift_m=0.02, threshold=0.5,
     ) is True
+
+
+def test_micro_lift_handles_osc_stall_without_false_negative():
+    """Phase 6.2 v2 regression: OSC stall 让 EEF 只升 5mm, object 也跟着
+    升 5mm -> 应判 True (正常 grasp), 不能误杀 slipped.
+
+    旧逻辑 (基准 lift_m * threshold = 0.01) 会判 False = 误杀.
+    新逻辑 (基准 max(0.005, eef_delta * threshold) = max(0.005, 0.0025) =
+    0.005) 判 0.005 >= 0.005 -> True.
+    """
+    w = _MicroLiftStubWrapper(
+        obj_z_delta_after_lift=0.006,   # object 跟着升 6mm (噪声 + 安全 margin)
+        eef_z_delta_after_lift=0.005,   # OSC stall, EEF 只升 5mm
+    )
+    assert w.verify_grasp_by_micro_lift(
+        "obj_main", lift_m=0.02, threshold=0.5,
+    ) is True
+
+
+def test_micro_lift_min_required_floor_prevents_zero_zero_false_positive():
+    """Phase 6.2 v2: EEF 完全未动 (eef_delta=0) 时 5mm 底限保护.
+
+    没有底限 required = 0, obj_delta=0 >= 0 -> 假报成功 (实际 grasp 可能 fail).
+    有底限 required = 0.005, obj_delta=0 < 0.005 -> 正确 False.
+    """
+    w = _MicroLiftStubWrapper(
+        obj_z_delta_after_lift=0.0,   # object 没动
+        eef_z_delta_after_lift=0.0,   # EEF 也没动 (彻底 stall)
+    )
+    assert w.verify_grasp_by_micro_lift(
+        "obj_main", lift_m=0.02, threshold=0.5,
+    ) is False
 
 
 def test_micro_lift_returns_true_when_body_not_found():
