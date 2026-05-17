@@ -1194,7 +1194,10 @@ class EnvWrapper:
             if self._finger_object_contact(target_body):
                 contact_streak += 1
                 # 需要: (a) 已经下降足够距离 AND (b) 连续 2 帧接触
-                if descended >= min_descend_m and contact_streak >= 2:
+                #        AND (c) 已接近目标 z (1.5cm 内)
+                # 若离目标仍远, 接触可能是碗沿/宽部擦碰, 应继续下降
+                near_target = (curr[2] - target[2]) < 0.015
+                if descended >= min_descend_m and contact_streak >= 2 and near_target:
                     logger.info(
                         f"[descend] contact at step {i}, "
                         f"z={curr[2]:.3f} (target {target[2]:.3f}, "
@@ -1219,15 +1222,14 @@ class EnvWrapper:
                 if stall_count >= 5:
                     gap = curr[2] - target[2]
                     contact = self._finger_object_contact(target_body)
-                    # 如果已足够接近目标 z (< 1cm), 视为成功下降
-                    # (大概率撞到桌面/物体, 接触检测可能不灵敏)
-                    close_enough = gap < 0.01
+                    # 如果已足够接近目标 z (< 1.5cm), 视为成功下降
+                    close_enough = gap < 0.015
                     logger.warning(
                         f"[descend] z stalled at {curr[2]:.3f} for {stall_count} steps "
                         f"(Δ={gap:.3f}m above target). contact={contact}, "
                         f"close_enough={close_enough}"
                     )
-                    return (contact or close_enough), float(curr[2])
+                    return close_enough, float(curr[2])
             else:
                 stall_count = 0
             prev_z = float(curr[2])
