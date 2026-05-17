@@ -40,12 +40,22 @@ def _load_config():
 
 
 def _build_env(config: dict):
-    """Build EnvWrapper with same setup as eval/run_fixed."""
+    """Build EnvWrapper with same setup as scripts/run_agent._build_env."""
     from src.env_wrapper import EnvConfig, EnvWrapper
 
-    env_cfg = EnvConfig(**config["env"])
-    env = EnvWrapper(env_cfg)
-    return env
+    sim_cfg = config.get("simulator", {})
+    cams = sim_cfg.get("camera_names")
+    env_cfg = EnvConfig(
+        env_name=sim_cfg.get("env_name", "PickPlaceCounterToCabinet"),
+        robots=sim_cfg.get("robots", "PandaMobile"),
+        image_width=sim_cfg.get("image_width", 256),
+        image_height=sim_cfg.get("image_height", 256),
+        camera_names=(
+            tuple(cams) if cams
+            else EnvConfig.__dataclass_fields__["camera_names"].default
+        ),
+    )
+    return EnvWrapper(env_cfg)
 
 
 def _probe_joints(env) -> None:
