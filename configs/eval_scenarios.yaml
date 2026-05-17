@@ -19,6 +19,21 @@ scenarios:
     max_resets: 5
     difficulty: easy
 
+  # Validation target: lemon is confirmed present at seed=42 as
+  # distr_counter_main (Run 9 obj_types log). 5-6cm round shape
+  # matches Panda gripper's 8cm max opening perfectly. Used to
+  # validate the full pipeline (Phase 4 navigation + Phase 7
+  # IK regression detection + Phase 8b adaptive offset) on a
+  # geometrically graspable object.
+  - id: fixed_lemon_001
+    env_name: PickPlaceCounterToCabinet
+    seed: 42
+    query: "pick up the lemon"
+    expected_object: lemon
+    user_mode: fake_from_robocasa
+    max_resets: 1
+    difficulty: easy
+
   - id: fixed_seed_discover_002
     env_name: PickPlaceCounterToCabinet
     seed: 43
