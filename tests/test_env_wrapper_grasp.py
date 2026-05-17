@@ -141,6 +141,43 @@ def test_is_reachable_falls_back_to_true_on_error() -> None:
     assert env.is_reachable(p, np.array([0.0, 0.0, -1.0], dtype=np.float32)) is True
 
 
+class _LiftCallRecorder(EnvWrapper):
+    """Records all move_arm_to calls during lift to verify gripper_hold."""
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+        self._eef_z = 0.6  # tracks simulated rise
+
+    def get_eef_pos(self) -> np.ndarray:
+        return np.array([0.5, 0.0, self._eef_z], dtype=np.float32)
+
+    def move_arm_to(self, target_pos_m, **kwargs) -> bool:
+        self.calls.append({
+            "target": np.asarray(target_pos_m).copy(),
+            "gripper_hold": kwargs.get("gripper_hold", 0.0),
+        })
+        # Simulate following the target z so lift's success check passes
+        self._eef_z = float(np.asarray(target_pos_m)[2])
+        return True
+
+
+def test_lift_passes_gripper_hold_to_all_move_calls() -> None:
+    """Regression: every move_arm_to call inside lift() must hold gripper.
+
+    The slipped_lift Δz=0 root cause was move_arm_to clearing the gripper
+    action to 0 mid-lift, releasing the object. This test enforces the
+    contract that lift() always passes gripper_hold=1.0.
+    """
+    env = _LiftCallRecorder()
+    ok, _final_z = env.lift(height_m=0.10, approach_dir=None)
+    assert ok is True
+    assert len(env.calls) > 0, "lift should issue at least one move_arm_to call"
+    for i, c in enumerate(env.calls):
+        assert c["gripper_hold"] == 1.0, (
+            f"call {i} target={c['target']} did not hold gripper "
+            f"(gripper_hold={c['gripper_hold']})"
+        )
+
+
 def test_reset_applies_seed_before_backend_reset(monkeypatch, tmp_path) -> None:
     events = []
 

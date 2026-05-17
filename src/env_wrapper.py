@@ -404,6 +404,7 @@ class EnvWrapper:
         approach_dir: Optional[np.ndarray] = None,
         ori_gain: float = 1.0,
         ori_threshold_rad: float = 0.15,
+        gripper_hold: float = 0.0,
     ) -> bool:
         """自适应控制: 世界系目标 → base 系增量 → 手臂+底盘协同
 
@@ -426,6 +427,11 @@ class EnvWrapper:
             ori_threshold_rad: orientation convergence threshold (radians).
                 When approach_dir is given, loop continues until BOTH
                 position AND orientation converge (or max_steps hit).
+            gripper_hold: per-step gripper command (0 = neutral, 1.0 = keep
+                closed). Default 0 preserves legacy behavior. Set to 1.0
+                during lift / retreat after a successful close_gripper to
+                prevent the object from slipping out — RoboCasa's gripper
+                releases force when the action position is 0.
 
         Returns:
             True if converged within threshold
@@ -546,6 +552,10 @@ class EnvWrapper:
                 base_gain = min(0.8, dist * 0.8)
                 action[base_idx] = float(dir_base[0]) * base_gain      # forward
                 action[base_idx + 1] = float(dir_base[1]) * base_gain  # side
+
+            # 夹爪保持: 抬升期间持续施力, 防止物体滑落
+            if gripper_hold != 0.0:
+                action[self._get_gripper_idx()] = gripper_hold
 
             try:
                 obs, _, _, _ = self._env.step(action)
@@ -1400,10 +1410,13 @@ class EnvWrapper:
                 target_body, max_steps=30, min_close_steps=6
             )
 
-            # 微抬验证: 升 3cm 看物体是否跟随
+            # 微抬验证: 升 3cm 看物体是否跟随 (持续夹紧防滑)
             curr = self.get_eef_pos()
             mini_target = curr + np.array([0.0, 0.0, 0.03], dtype=np.float32)
-            self.move_arm_to(mini_target, threshold_m=0.01, max_steps=120)
+            self.move_arm_to(
+                mini_target, threshold_m=0.01, max_steps=120,
+                gripper_hold=1.0,
+            )
             mini_lift_ok = False
             obj_z_now = _obj_z()
             if obj_z_now is not None and obj_z_before is not None:
@@ -1840,6 +1853,8 @@ class EnvWrapper:
             start_z = float(curr[2])
 
             # ── 侧抓: 先水平回退 height_m 沿 -approach_dir ──
+            # 注意: lift 全程 gripper_hold=1.0 维持夹爪闭合, 防止
+            # close_gripper 后物体在移动期间因夹爪松开而滑落.
             if not is_top_down:
                 retreat = -ad * float(height_m)
                 # 慢退分 4 段 (类似慢起, 防止物体因惯性脱落)
@@ -1852,7 +1867,10 @@ class EnvWrapper:
                          curr[2] + retreat[2] * frac],
                         dtype=np.float32,
                     )
-                    self.move_arm_to(target, threshold_m=0.005, max_steps=120)
+                    self.move_arm_to(
+                        target, threshold_m=0.005, max_steps=120,
+                        gripper_hold=1.0,
+                    )
                 # 更新当前位置作为后续 lift 起点
                 curr = self.get_eef_pos().copy()
 
@@ -1866,7 +1884,10 @@ class EnvWrapper:
                 target = np.array(
                     [curr[0], curr[1], target_z], dtype=np.float32
                 )
-                self.move_arm_to(target, threshold_m=0.003, max_steps=80)
+                self.move_arm_to(
+                    target, threshold_m=0.003, max_steps=80,
+                    gripper_hold=1.0,
+                )
 
             # 阶段2: 剩余高度正常速度
             remaining = height_m - gentle_total
@@ -1875,7 +1896,10 @@ class EnvWrapper:
                     [curr[0], curr[1], float(curr[2]) + height_m],
                     dtype=np.float32,
                 )
-                self.move_arm_to(final_target, threshold_m=0.02, max_steps=200)
+                self.move_arm_to(
+                    final_target, threshold_m=0.02, max_steps=200,
+                    gripper_hold=1.0,
+                )
 
             final_z = float(self.get_eef_pos()[2])
             # 至少升了一半 (top_down 比较 start_z, 侧抓比较回退后的 curr[2])
