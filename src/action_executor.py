@@ -73,26 +73,8 @@ class ActionExecutor:
         # 记录物体初始 z（用于 lift 后验证物体是否跟随）
         obj_z_before = self._get_obj_z(target, env)
 
-        # Phase 4: explicit base navigation (decouples nav from arm control).
-        # Best-effort: if env doesn't implement navigate_base_to (legacy mock)
-        # OR if it returns False/raises, fall through to legacy move_to_pre_grasp
-        # which still has drive_base=True for base approach (Phase 3 fallback).
-        if hasattr(env, "navigate_base_to"):
-            try:
-                env.navigate_base_to(
-                    target_xy=candidate.point_3d[:2],
-                    offset_m=0.45,
-                )
-            except Exception as e:
-                logger.debug(
-                    f"[act] navigate_base_to failed: {e}, falling through"
-                )
-
-        # Phase 8a: lower torso for top_down to extend vertical reach.
-        # Run 7 GPU log: arm bottomed out at z=0.965m vs target z=0.913m,
-        # gap 5.2cm → close_gripper grabbed empty space, lift failed.
-        # Solution: drop torso by (current_min_reach_z - required_target_z),
-        # so arm's reach budget moves down with it.
+        # Parse approach_dir up front for both offset selection and
+        # later descend stages.
         approach_dir = np.asarray(
             getattr(candidate, "approach_dir", [0.0, 0.0, -1.0]),
             dtype=np.float32,
@@ -108,27 +90,41 @@ class ActionExecutor:
             and abs(approach_dir[1]) < 0.1
         )
 
-        if is_top_down and hasattr(env, "set_torso_height"):
+        # Phase 4 + 8b: explicit base navigation with adaptive offset.
+        #
+        # Run 8 GPU baseline showed PandaMobile torso range is [0, 0.34]
+        # (UP only), so lowering torso to extend downward reach is impossible.
+        # The remaining lever is base distance: at horizontal D from target,
+        # Panda's downward reach is √(R²−D²) (R≈0.85m), so smaller D yields
+        # significantly more vertical reach budget.
+        #
+        # Adaptive: low targets (counter-top, z<0.95m) need extra reach
+        # budget → use offset 0.30m. Higher targets work fine at the
+        # standard 0.45m (and 0.30m might collide with cabinet shelves).
+        target_z = float(candidate.point_3d[2])
+        LOW_TARGET_Z = 0.95
+        if is_top_down and target_z < LOW_TARGET_Z:
+            offset_m = 0.30
+            logger.info(
+                "[act] adaptive offset=0.30m (top_down low target_z=%.3f)",
+                target_z,
+            )
+        else:
+            offset_m = 0.45
+
+        # Best-effort: if env doesn't implement navigate_base_to (legacy mock)
+        # OR if it returns False/raises, fall through to legacy move_to_pre_grasp
+        # which still has drive_base=True for base approach (Phase 3 fallback).
+        if hasattr(env, "navigate_base_to"):
             try:
-                current = env.get_torso_height()
-                target_z = float(candidate.point_3d[2])
-                # Empirical from Run 7: nominal arm reach min z ≈ 0.97m at
-                # default torso. Need arm to reach 2cm below grasp target.
-                NOMINAL_REACH_Z = 0.97
-                SAFETY_MARGIN = 0.02
-                required_drop = max(
-                    0.0, NOMINAL_REACH_Z - (target_z - SAFETY_MARGIN)
+                env.navigate_base_to(
+                    target_xy=candidate.point_3d[:2],
+                    offset_m=offset_m,
                 )
-                if current is not None and required_drop > 0.005:
-                    env.set_torso_height(current - required_drop)
-                    logger.info(
-                        "[act] torso lowered: %.3f → %.3f for top_down "
-                        "target_z=%.3f (drop=%.3fm)",
-                        current, current - required_drop,
-                        target_z, required_drop,
-                    )
             except Exception as e:
-                logger.debug(f"[act] torso adjust failed: {e}")
+                logger.debug(
+                    f"[act] navigate_base_to failed: {e}, falling through"
+                )
 
         # 1. pre-grasp
         if not env.move_to_pre_grasp(candidate):

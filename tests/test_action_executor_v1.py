@@ -321,8 +321,9 @@ class TestPhase4NavigateIntegration:
         expected_xy = tuple(c.point_3d[:2].tolist())
         actual_xy = env.navigate_calls[0]["target_xy"]
         assert np.allclose(actual_xy, expected_xy, atol=1e-5)
-        # Defaults match design doc
-        assert env.navigate_calls[0]["offset_m"] == 0.45
+        # Phase 8b adaptive offset: default fixture is top_down z=0.9 (<0.95)
+        # which triggers the close offset 0.30 (gains downward reach).
+        assert env.navigate_calls[0]["offset_m"] == 0.30
         # Pipeline completes successfully (FakeEnv all-green)
         assert result.success is True
 
@@ -362,55 +363,40 @@ class TestPhase4NavigateIntegration:
 
 
 # ============================================================
-# Phase 8a: torso lift integration tests
+# Phase 8b: adaptive navigate offset tests
 # ============================================================
 
-class _TorsoCapturingEnv(_NavCapturingEnv):
-    """FakeEnv extension that records set_torso_height + get_torso_height."""
+class TestPhase8bAdaptiveOffset:
+    """Run 8 baseline showed PandaMobile torso is UP-only ([0, 0.34]), so
+    extending downward reach requires bringing the base closer instead.
+    For low top_down targets (z<0.95), navigate offset drops from 0.45
+    to 0.30 to gain ~8cm vertical reach via Panda IK envelope."""
 
-    def __init__(self, current_torso: float = 0.0, **kwargs):
-        super().__init__(**kwargs)
-        self._torso_h = float(current_torso)
-        self.torso_calls: list[float] = []
-
-    def get_torso_height(self):
-        return self._torso_h
-
-    def set_torso_height(self, height_m: float) -> bool:
-        self.torso_calls.append(float(height_m))
-        self.calls.append("set_torso")
-        self._torso_h = float(height_m)
-        return True
-
-
-class TestPhase8aTorsoLift:
-    def test_top_down_lowers_torso_before_pre_grasp(self):
-        """For top_down approach with low target z, act() should lower torso
-        before pre-grasp so arm can reach down to grasp z."""
+    def test_low_top_down_target_uses_close_offset(self):
+        """top_down + target z<0.95 → offset 0.30m (gains reach)."""
         from src.action_executor import ActionExecutor
         from src.world_belief import DecomposedTask
-        # Target z=0.91 → required drop = 0.97 - (0.91 - 0.02) = 0.08m
-        env = _TorsoCapturingEnv(current_torso=0.0)
+        env = _NavCapturingEnv()
         exe = ActionExecutor(scene_describer=None)
         h, c = _hyp_with_candidate()
-        c.point_3d = np.array([0.5, 0.0, 0.91])  # low counter object
+        c.point_3d = np.array([0.5, 0.0, 0.91])  # counter-height object
         h.position_3d = c.point_3d
         h.grasp_candidates = [c]
 
         exe.act(h, DecomposedTask(primary_target="apple"), env)
 
-        assert env.torso_calls, "set_torso_height must be called for top_down"
-        # set_torso should fire BEFORE pre_grasp
-        assert env.calls.index("set_torso") < env.calls.index("move_to_pre_grasp")
-        # Required drop = 0.97 - (0.91 - 0.02) = 0.08, so target = 0 - 0.08
-        np.testing.assert_allclose(env.torso_calls[0], -0.08, atol=1e-6)
+        assert env.navigate_calls, "navigate_base_to must be called"
+        assert env.navigate_calls[0]["offset_m"] == 0.30, (
+            f"low top_down target should use offset 0.30, "
+            f"got {env.navigate_calls[0]['offset_m']}"
+        )
 
-    def test_high_target_does_not_lower_torso(self):
-        """If target z is high enough that arm can already reach (≥0.97 - 0.02
-        = 0.95), no torso adjustment is needed."""
+    def test_high_top_down_target_uses_standard_offset(self):
+        """top_down + target z>=0.95 → offset 0.45m (standard, avoids
+        cabinet-shelf collision)."""
         from src.action_executor import ActionExecutor
         from src.world_belief import DecomposedTask
-        env = _TorsoCapturingEnv(current_torso=0.0)
+        env = _NavCapturingEnv()
         exe = ActionExecutor(scene_describer=None)
         h, c = _hyp_with_candidate()
         c.point_3d = np.array([0.5, 0.0, 1.20])  # high cabinet object
@@ -419,23 +405,20 @@ class TestPhase8aTorsoLift:
 
         exe.act(h, DecomposedTask(primary_target="apple"), env)
 
-        # required_drop = max(0, 0.97 - 1.18) = 0 → no torso call
-        assert env.torso_calls == [], (
-            f"high target should not trigger torso adjust, got {env.torso_calls}"
-        )
+        assert env.navigate_calls[0]["offset_m"] == 0.45
 
-    def test_side_approach_does_not_lower_torso(self):
-        """Side grasps don't suffer the vertical-reach bottleneck;
-        torso adjustment is gated to top_down only."""
+    def test_side_approach_uses_standard_offset_regardless_of_z(self):
+        """Side / tilted approach is not vertical-reach bottlenecked, so
+        the close-offset rule applies only to top_down."""
         from src.action_executor import ActionExecutor
         from src.world_belief import (
             DecomposedTask, GraspCandidate, Hypothesis,
         )
-        env = _TorsoCapturingEnv(current_torso=0.0)
+        env = _NavCapturingEnv()
         exe = ActionExecutor(scene_describer=None)
         c = GraspCandidate(
-            point_3d=np.array([0.5, 0.0, 0.91]),
-            approach_dir=np.array([1.0, 0.0, 0.0]),  # side
+            point_3d=np.array([0.5, 0.0, 0.91]),  # low z, but side approach
+            approach_dir=np.array([1.0, 0.0, 0.0]),
             finger_width_m=0.04, score=0.9,
             source="side_test",
         )
@@ -448,22 +431,22 @@ class TestPhase8aTorsoLift:
 
         exe.act(h, DecomposedTask(primary_target="apple"), env)
 
-        assert env.torso_calls == [], (
-            f"side approach must not adjust torso, got {env.torso_calls}"
+        assert env.navigate_calls[0]["offset_m"] == 0.45, (
+            "side approach should use standard 0.45 even with low z"
         )
 
-    def test_act_works_without_set_torso_height(self):
-        """Backward compat: legacy mocks lacking set_torso_height still work."""
+    def test_threshold_boundary_z_0p95_is_standard(self):
+        """Boundary check: z == 0.95 should NOT trigger close offset
+        (rule is strict <0.95)."""
         from src.action_executor import ActionExecutor
         from src.world_belief import DecomposedTask
-        env = _NavCapturingEnv()  # has navigate, lacks set_torso_height
-        assert not hasattr(env, "set_torso_height")
+        env = _NavCapturingEnv()
         exe = ActionExecutor(scene_describer=None)
         h, c = _hyp_with_candidate()
-        c.point_3d = np.array([0.5, 0.0, 0.91])
+        c.point_3d = np.array([0.5, 0.0, 0.95])
         h.position_3d = c.point_3d
         h.grasp_candidates = [c]
 
-        result = exe.act(h, DecomposedTask(primary_target="apple"), env)
-        assert result.success is True
-        assert "move_to_pre_grasp" in env.calls
+        exe.act(h, DecomposedTask(primary_target="apple"), env)
+
+        assert env.navigate_calls[0]["offset_m"] == 0.45
