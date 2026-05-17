@@ -21,7 +21,13 @@ import sys
 from pathlib import Path
 
 # Make repo root importable when run as script
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT))
+
+# Load .env (DEEPSEEK_API_KEY etc.) using project utility
+from src.utils import load_dotenv  # noqa: E402
+
+load_dotenv(str(REPO_ROOT / ".env"))
 
 
 def _load_config():
@@ -186,8 +192,10 @@ def _probe_arm_init_qpos(env) -> None:
 
 
 def main() -> int:
+    # load_dotenv at module top already set DEEPSEEK_API_KEY if .env exists.
     if not os.environ.get("DEEPSEEK_API_KEY"):
-        print("WARNING: DEEPSEEK_API_KEY not set. Setting dummy value for probe.")
+        print("WARNING: DEEPSEEK_API_KEY not set (no .env or env). "
+              "Using dummy value for probe (no LLM call needed).")
         os.environ["DEEPSEEK_API_KEY"] = "sk-dummy-probe-only"
 
     print("Loading config and building env (this takes ~30s for first RoboCasa init)...")

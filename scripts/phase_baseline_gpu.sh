@@ -4,9 +4,12 @@
 # Run after Phase 0 (commit 04fe0d8) and Phase 3 (commit dcf9031) have
 # been pushed to GPU server, before implementing Phase 2 (navigate primitive).
 #
-# Usage:
-#   export DEEPSEEK_API_KEY=sk-...
-#   bash scripts/phase_baseline_gpu.sh
+# Usage (either):
+#   1) put DEEPSEEK_API_KEY=sk-... in .env at repo root, then:
+#        bash scripts/phase_baseline_gpu.sh
+#   2) explicit export:
+#        export DEEPSEEK_API_KEY=sk-...
+#        bash scripts/phase_baseline_gpu.sh
 #
 # Outputs:
 #   runs/baseline_phase0/  - Episode logs and memory
@@ -15,11 +18,21 @@
 
 set -euo pipefail
 
+# Auto-load .env from repo root if present (matches scripts/run_agent.py behavior)
+if [[ -f ".env" ]]; then
+    echo "Loading environment from .env ..."
+    set -a
+    # shellcheck disable=SC1091
+    source .env
+    set +a
+fi
+
 export MUJOCO_GL="${MUJOCO_GL:-egl}"
 export PYOPENGL_PLATFORM="${PYOPENGL_PLATFORM:-egl}"
 
 if [[ -z "${DEEPSEEK_API_KEY:-}" ]]; then
-    echo "ERROR: DEEPSEEK_API_KEY env var not set" >&2
+    echo "ERROR: DEEPSEEK_API_KEY not set (checked env and .env)." >&2
+    echo "Either add DEEPSEEK_API_KEY=sk-... to .env or 'export DEEPSEEK_API_KEY=...'" >&2
     exit 1
 fi
 
