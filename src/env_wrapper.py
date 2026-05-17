@@ -456,25 +456,46 @@ class EnvWrapper:
             return False
         x_addr, y_addr, yaw_addr = joints
 
-        # 4. 计算 teleport 目标位置: base 放在 target 后方 offset_m
+        # 4. 计算 teleport 目标位置 (world frame): base 放在 target 后方 offset_m
         direction = target_xy - real_base.astype(np.float64)
         dir_norm = float(np.linalg.norm(direction))
         if dir_norm < 1e-6:
             # 退化: target 和 base 重合, 无方向. 不动 base.
             return True
         dir_unit = direction / dir_norm
-        new_base_xy = target_xy - dir_unit * float(offset_m)
-        # PandaMobile arm 沿 base +x, 此 yaw 让 arm 工作空间覆盖 target
-        target_yaw = float(np.arctan2(dir_unit[1], dir_unit[0]))
+        new_base_xy_world = target_xy - dir_unit * float(offset_m)
+        # PandaMobile arm 沿 base +x, 此 world yaw 让 arm 工作空间覆盖 target
+        target_yaw_world = float(np.arctan2(dir_unit[1], dir_unit[0]))
 
-        # 5. 写 qpos (skip None addrs gracefully)
+        # 5. 关键: qpos 是 anchor-local 坐标, 不是 world!
+        # mujoco mobilebase joints 是 anchor body 的 child:
+        #   world_xy = anchor_xy + R @ (qpos_x, qpos_y, 0)[:2]
+        # 反推: qpos_xy = R.T @ (world_xy - anchor_xy)
+        # 其中 R 是 anchor body 的 3x3 xmat (robot.base_ori).
+        anchor_xyz, anchor_ori = self.get_base_pose()
+        anchor_xy = np.asarray(anchor_xyz, dtype=np.float64)[:2]
+        R2 = np.asarray(anchor_ori, dtype=np.float64)[:2, :2]
+        delta_world = new_base_xy_world - anchor_xy
+        qpos_xy_local = R2.T @ delta_world  # anchor-frame XY
+
+        # yaw 同样要转换: world_yaw = anchor_yaw + qpos_yaw
+        anchor_yaw = float(np.arctan2(
+            float(anchor_ori[1, 0]), float(anchor_ori[0, 0])
+        ))
+        qpos_yaw_local = target_yaw_world - anchor_yaw
+        # wrap to [-π, π] to avoid huge yaw values
+        qpos_yaw_local = float(
+            np.arctan2(np.sin(qpos_yaw_local), np.cos(qpos_yaw_local))
+        )
+
+        # 6. 写 qpos
         try:
             if x_addr is not None:
-                sim.data.qpos[x_addr] = float(new_base_xy[0])
+                sim.data.qpos[x_addr] = float(qpos_xy_local[0])
             if y_addr is not None:
-                sim.data.qpos[y_addr] = float(new_base_xy[1])
+                sim.data.qpos[y_addr] = float(qpos_xy_local[1])
             if yaw_addr is not None:
-                sim.data.qpos[yaw_addr] = target_yaw
+                sim.data.qpos[yaw_addr] = qpos_yaw_local
             # qvel 清零 (避免 teleport 后 base 残留速度)
             for addr in (x_addr, y_addr, yaw_addr):
                 if addr is not None:
@@ -484,7 +505,7 @@ class EnvWrapper:
             logger.warning(f"[navigate] qpos set failed: {e}")
             return False
 
-        # 6. 验证 teleport 实际生效
+        # 7. 验证 teleport 实际生效
         new_real = self._read_real_base_xy()
         if new_real is None:
             return False
@@ -493,8 +514,10 @@ class EnvWrapper:
         ))
         logger.info(
             f"[navigate] teleported: dist {dist:.3f}m → {new_dist:.3f}m "
-            f"(target_yaw={np.degrees(target_yaw):.1f}°, "
-            f"new_base_xy=({float(new_real[0]):.3f}, {float(new_real[1]):.3f}))"
+            f"(world_target_yaw={np.degrees(target_yaw_world):.1f}°, "
+            f"new_base_xy=({float(new_real[0]):.3f}, {float(new_real[1]):.3f}), "
+            f"anchor=({float(anchor_xy[0]):.1f}, {float(anchor_xy[1]):.1f}), "
+            f"anchor_yaw={np.degrees(anchor_yaw):.1f}°)"
         )
         # Tolerance: 15cm beyond ideal offset (teleport precision)
         return new_dist <= offset_m + 0.15

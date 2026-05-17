@@ -33,10 +33,23 @@ def _build_stub_sim(
     include_joints: bool = True,
     include_torso: bool = True,
     extra_bodies: dict | None = None,
+    anchor_xy: tuple[float, float] = (0.0, 0.0),
+    anchor_yaw: float = 0.0,
 ):
     """Build a fake sim object with model / data attributes.
 
-    extra_bodies maps body_name -> xpos[3] (always identity xmat for simplicity).
+    Models the mujoco chain:
+        anchor body (robot0_base, xpos=anchor_xy, xmat=rot_z(anchor_yaw))
+          └─ slide_forward joint (qpos[0], axis=(1,0,0) in anchor frame)
+          └─ slide_side joint    (qpos[1], axis=(0,1,0) in anchor frame)
+          └─ hinge_yaw joint     (qpos[2], axis=(0,0,1) in anchor frame)
+              └─ mobilebase0_base body (real position derived from anchor + qpos)
+
+    sim.forward() recomputes mobilebase0_base xpos as:
+        world_xy = anchor_xy + rot_z(anchor_yaw) @ (qpos[0], qpos[1])
+    so the world<->qpos transform stays consistent with mujoco semantics.
+
+    Initial qpos is back-computed so that mobilebase0_base.xpos matches base_xy.
     """
     # Joints (mirrors Phase 1 probe)
     joints: list[tuple[str, int, int, tuple[float, float, float]]] = []
@@ -56,13 +69,24 @@ def _build_stub_sim(
         "mobilebase0_base": np.array(
             [base_xy[0], base_xy[1], 0.0], dtype=np.float32
         ),
-        "robot0_base": np.array([10.0, 10.0, 0.0], dtype=np.float32),
+        "robot0_base": np.array(
+            [anchor_xy[0], anchor_xy[1], 0.0], dtype=np.float32
+        ),
     }
     if extra_bodies:
         for k, v in extra_bodies.items():
             body_xpos_map[k] = np.asarray(v, dtype=np.float32)
 
     body_names = list(body_xpos_map.keys())
+
+    # Anchor 2x2 rotation (R = rot_z(anchor_yaw))
+    c, s = float(np.cos(anchor_yaw)), float(np.sin(anchor_yaw))
+    R2 = np.array([[c, -s], [s, c]], dtype=np.float64)
+    anchor_xy_np = np.asarray(anchor_xy, dtype=np.float64)
+
+    # Back-compute initial qpos so that sim.forward() leaves base_xy unchanged.
+    # base_xy_world = anchor + R @ (qpos[0], qpos[1]) -> qpos = R.T @ (base_xy - anchor)
+    init_local = R2.T @ (np.asarray(base_xy, dtype=np.float64) - anchor_xy_np)
 
     class _Model:
         njnt = len(joints)
@@ -89,19 +113,26 @@ def _build_stub_sim(
     class _Data:
         def __init__(self):
             self.qpos = np.zeros(qpos_size, dtype=np.float64)
+            # Seed qpos so that initial body_xpos matches base_xy
+            if qpos_size > 0 and include_joints:
+                self.qpos[0] = float(init_local[0])
+                self.qpos[1] = float(init_local[1])
             self.qvel = np.zeros(qpos_size, dtype=np.float64)
-            # body_xpos accessed by [bid] indexing
             self.body_xpos = [body_xpos_map[n].copy() for n in body_names]
 
-        # Reflect qpos -> body_xpos when sim.forward() runs
+        # mujoco-style forward: recompute world_xy = anchor + R @ qpos_local
         def _refresh_base_body_from_qpos(self):
-            forward = float(self.qpos[0]) if qpos_size > 0 else 0.0
-            side = float(self.qpos[1]) if qpos_size > 1 else 0.0
-            # Update only mobilebase0_base (skip anchor)
+            if qpos_size < 2 or not include_joints:
+                return
+            local = np.array(
+                [float(self.qpos[0]), float(self.qpos[1])], dtype=np.float64
+            )
+            world = anchor_xy_np + R2 @ local
             for i, name in enumerate(body_names):
                 if name == "mobilebase0_base":
                     self.body_xpos[i] = np.array(
-                        [forward, side, 0.0], dtype=np.float32
+                        [float(world[0]), float(world[1]), 0.0],
+                        dtype=np.float32,
                     )
 
     class _Sim:
@@ -113,7 +144,6 @@ def _build_stub_sim(
             self.data._refresh_base_body_from_qpos()
 
     sim = _Sim()
-    # Seed data.body_xpos to match initial base_xy (already done in body_xpos_map)
     return sim
 
 
@@ -121,7 +151,12 @@ class _NavStubEnv(EnvWrapper):
     """Minimal EnvWrapper subclass for navigate_base_to tests.
 
     Bypasses __init__ to avoid robosuite. Provides fake sim with adjustable
-    base_xy and mobilebase joint layout.
+    base_xy, mobilebase joint layout, and (critically) an anchor frame
+    so the world<->qpos conversion is exercised correctly.
+
+    By default anchor is (0,0) with identity rotation -> qpos == world XY,
+    matching simple-case tests. Pass `anchor_xy` and `anchor_yaw` to mimic
+    the real RoboCasa PandaMobile setup (anchor at (10,10), yaw=pi).
     """
 
     def __init__(
@@ -130,16 +165,31 @@ class _NavStubEnv(EnvWrapper):
         include_joints: bool = True,
         include_torso: bool = True,
         extra_bodies: dict | None = None,
+        anchor_xy: tuple[float, float] = (0.0, 0.0),
+        anchor_yaw: float = 0.0,
     ) -> None:
         sim = _build_stub_sim(
             base_xy=base_xy,
             include_joints=include_joints,
             include_torso=include_torso,
             extra_bodies=extra_bodies,
+            anchor_xy=anchor_xy,
+            anchor_yaw=anchor_yaw,
+        )
+
+        # Build anchor xmat from yaw (rot_z)
+        c, s = float(np.cos(anchor_yaw)), float(np.sin(anchor_yaw))
+        anchor_xmat = np.array(
+            [[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]],
+            dtype=np.float32,
         )
 
         class _Robot:
             idn = 0
+            base_pos = np.array(
+                [anchor_xy[0], anchor_xy[1], 0.0], dtype=np.float32
+            )
+            base_ori = anchor_xmat
 
         class _Backend:
             pass
@@ -288,3 +338,48 @@ def test_navigate_no_op_too_close_protection() -> None:
     ok = env.navigate_base_to((0.0, 0.0), offset_m=0.45)
     assert ok is True
     np.testing.assert_array_equal(env._env.sim.data.qpos, qpos_before)
+
+
+def test_navigate_with_anchor_at_10_10_yaw_pi_real_robocasa_layout() -> None:
+    """REGRESSION: GPU Phase 5 run 2 showed base teleported to (9.67, 13.05)
+    instead of (0.71, -2.93). Root cause: qpos is anchor-LOCAL, not world.
+
+    Real RoboCasa PandaMobile layout (from Phase 1 probe, docs/07 D.2):
+        anchor robot0_base   xpos=(10, 10, 0)
+        anchor robot0_base   xmat=rot_z(180°)  -> base_ori
+        mobilebase0_base     xpos=(0.775, -2.882, 0)  -> real position
+
+    With this anchor, teleport target world=(0.711, -2.929) must produce:
+        delta_world = (0.711-10, -2.929-10) = (-9.289, -12.929)
+        R2 = rot_z(180°)[:2,:2] = [[-1,0],[0,-1]]
+        qpos_local = R2.T @ delta_world = (9.289, 12.929)
+
+    This test runs the actual navigate_base_to with that exact anchor and
+    verifies the resulting world-space base position is correct.
+    """
+    env = _NavStubEnv(
+        base_xy=(0.775, -2.882),
+        anchor_xy=(10.0, 10.0),
+        anchor_yaw=float(np.pi),
+    )
+    # Sanity: initial body xpos matches base_xy
+    initial_xy = env._read_real_base_xy()
+    assert initial_xy is not None
+    np.testing.assert_allclose(initial_xy, [0.775, -2.882], atol=1e-4)
+
+    ok = env.navigate_base_to((0.346, -3.194), offset_m=0.45)
+    assert ok is True
+
+    # After teleport, real (world) base position should be ~0.45m from target
+    new_xy = env._read_real_base_xy()
+    assert new_xy is not None
+    new_dist = float(np.linalg.norm(new_xy - np.array([0.346, -3.194])))
+    assert abs(new_dist - 0.45) <= 0.05, (
+        f"Expected dist ~0.45m after teleport, got {new_dist:.3f}m, "
+        f"new_xy={tuple(new_xy.tolist())}"
+    )
+    # CRITICAL: must NOT have flown to anchor area (9.x, 1x.x)
+    assert abs(float(new_xy[0])) < 5.0 and abs(float(new_xy[1])) < 5.0, (
+        f"Base flew to anchor area: new_xy={tuple(new_xy.tolist())}. "
+        "world<->qpos transform is broken."
+    )
