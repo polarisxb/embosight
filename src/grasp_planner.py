@@ -69,7 +69,7 @@ class GraspPlanner:
 
         失败 ≥ _FAIL_BAN_THRESHOLD 次的策略会从可选列表中物理删除。
         """
-        all_strategies = {"top_down", "gentle_side", "handle_grasp", "scoop_under", "refuse"}
+        all_strategies = {"tilted_grasp", "top_down", "gentle_side", "handle_grasp", "scoop_under", "refuse"}
         banned = self._parse_banned_strategies(memory_advice)
         available = all_strategies - banned
         if banned:
@@ -78,7 +78,7 @@ class GraspPlanner:
 
         if not self.llm or not self._strategy_template:
             # 无 LLM 时, 从未禁止的策略中按优先级选择
-            for fallback in ["top_down", "handle_grasp", "gentle_side"]:
+            for fallback in ["tilted_grasp", "top_down", "handle_grasp", "gentle_side"]:
                 if fallback in available:
                     return GraspStrategy(strategy=fallback, reasoning="no LLM",
                                          speech=f"我来拿{hyp.label}")
@@ -120,7 +120,7 @@ class GraspPlanner:
                 # 后置检查: LLM 仍选了被禁/无效策略 → 覆盖
                 if strat not in available or strat not in all_strategies:
                     old = strat
-                    for fb in ["top_down", "handle_grasp", "gentle_side"]:
+                    for fb in ["tilted_grasp", "top_down", "handle_grasp", "gentle_side"]:
                         if fb in available:
                             strat = fb
                             break
@@ -138,7 +138,7 @@ class GraspPlanner:
             logger.warning("[grasp_planner] strategy selection failed: %s", e)
 
         # fallback: 从未禁止的策略中选
-        for fb in ["top_down", "handle_grasp", "gentle_side"]:
+        for fb in ["tilted_grasp", "top_down", "handle_grasp", "gentle_side"]:
             if fb in available:
                 return GraspStrategy(strategy=fb, reasoning="fallback",
                                      speech=f"我来拿{hyp.label}")
@@ -150,23 +150,53 @@ class GraspPlanner:
     # ──────────────────────────────────────
 
     _STRATEGY_PARAMS: dict[str, dict] = {
+        "tilted_grasp":  {"approach_dir": "tilted", "finger_width": 0.04, "score": 0.80, "depth_margin": 0.015},
         "top_down":      {"approach_dir": [0, 0, -1.0], "finger_width": 0.04, "score": 0.75, "depth_margin": 0.015},
         "gentle_side":   {"approach_dir": [1, 0,  0.0], "finger_width": 0.06, "score": 0.70, "depth_margin": 0.010},
         "handle_grasp":  {"approach_dir": [1, 0,  0.0], "finger_width": 0.03, "score": 0.70, "depth_margin": 0.015},
         "scoop_under":   {"approach_dir": [0, 0, -0.3], "finger_width": 0.08, "score": 0.65, "depth_margin": 0.020},
     }
 
+    _TILT_ANGLE_DEG = 35  # 倾斜俯冲角 (从垂直方向计)
+
     _SIDE_TILT_Z = -0.47  # 侧抓下倾分量 (归一化后≈25°)
 
-    def _side_approach_dir(self, obj_pos: np.ndarray, env) -> np.ndarray:
-        """计算从机器人指向物体的接近方向, 带 ~15° 下倾。
+    def _tilted_approach_dir(self, obj_pos: np.ndarray, env) -> np.ndarray:
+        """计算 35° 斜俯冲方向: 主要从上方, 略微侧移。
 
-        纯水平接近 (z=0) 会把 Panda 臂逼到关节极限; 下倾 15° 让肘
-        可以高于腕, 可用关节空间大幅增加, 同时符合人体工学。
+        与 _side_approach_dir 的区别:
+        - side: 主要水平 (从侧面), 略微下倾
+        - tilted: 主要垂直 (从上方), 略微侧移
+
+        35° from vertical → sin(35°)≈0.574 水平, cos(35°)≈0.819 垂直
+        工作空间充裕 (仍在物体正上方附近), 手指与竖直物体成 45° → 有摩擦面。
 
         Returns:
             3D unit vector in world frame.
-            Fallback [1, 0, -0.26] (normalized) if positions are too close.
+        """
+        sin_a = np.sin(np.deg2rad(self._TILT_ANGLE_DEG))
+        cos_a = np.cos(np.deg2rad(self._TILT_ANGLE_DEG))
+        try:
+            base_pos = env.get_base_pose()[0]
+        except Exception:
+            base_pos = env.get_eef_pos()
+        delta_xy = obj_pos[:2] - base_pos[:2]
+        d = float(np.linalg.norm(delta_xy))
+        if d < 0.01:
+            raw = np.array([sin_a, 0.0, -cos_a], dtype=np.float32)
+        else:
+            raw = np.array(
+                [delta_xy[0] / d * sin_a, delta_xy[1] / d * sin_a, -cos_a],
+                dtype=np.float32,
+            )
+        return raw / np.linalg.norm(raw)
+
+    def _side_approach_dir(self, obj_pos: np.ndarray, env) -> np.ndarray:
+        """计算从机器人指向物体的侧报接近方向, 带 ~25° 下倾。
+
+        Returns:
+            3D unit vector in world frame.
+            Fallback [1, 0, -0.47] (normalized) if positions are too close.
         """
         try:
             base_pos = env.get_base_pose()[0]  # (3,)
@@ -191,13 +221,19 @@ class GraspPlanner:
             params = self._STRATEGY_PARAMS.get(
                 strategy.strategy, self._STRATEGY_PARAMS["top_down"],
             )
-            # 侧抓方向: 动态计算 robot→object 水平向量
-            raw_ad = np.array(params["approach_dir"], dtype=np.float32)
-            has_xy = max(abs(raw_ad[0]), abs(raw_ad[1])) > 0.1
-            if has_xy:  # 有水平分量 → 动态计算侧抓方向
-                ad = self._side_approach_dir(hyp.position_3d, env)
+            # 接近方向计算
+            raw_ad = params["approach_dir"]
+            if raw_ad == "tilted":
+                ad = self._tilted_approach_dir(hyp.position_3d, env)
+            elif isinstance(raw_ad, (list, np.ndarray)):
+                raw_ad = np.array(raw_ad, dtype=np.float32)
+                has_xy = max(abs(raw_ad[0]), abs(raw_ad[1])) > 0.1
+                if has_xy:  # 有水平分量 → 动态计算侧抓方向
+                    ad = self._side_approach_dir(hyp.position_3d, env)
+                else:
+                    ad = raw_ad
             else:
-                ad = raw_ad
+                ad = self._tilted_approach_dir(hyp.position_3d, env)
 
             # 策略抓点偏移: 细长直立物体的质心处最窄, 需偏移
             grasp_pt = hyp.position_3d.copy()
@@ -206,6 +242,8 @@ class GraspPlanner:
                 grasp_pt[2] += 0.03   # 上移 3cm → 手柄中段
             elif is_upright and strategy.strategy == "top_down":
                 grasp_pt[2] -= 0.015  # 下移 1.5cm → 碗端/宽端
+            elif is_upright and strategy.strategy == "tilted_grasp":
+                grasp_pt[2] -= 0.02   # 下移 2cm → 手柄上段 (避开碗沿)
 
             cands.append(GraspCandidate(
                 point_3d=grasp_pt,

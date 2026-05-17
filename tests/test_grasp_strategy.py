@@ -51,7 +51,7 @@ class TestSelectStrategy:
         assert "fragile" in strategy.reasoning or "cake" in strategy.reasoning
         assert strategy.speech != ""
 
-    def test_fallback_to_top_down_on_invalid_strategy(self):
+    def test_fallback_to_tilted_on_invalid_strategy(self):
         llm = MockLLM(responses=[
             '{"strategy": "invalid_strategy", "reasoning": "test"}'
         ])
@@ -59,14 +59,14 @@ class TestSelectStrategy:
         h = _hyp("apple")
         strategy = planner.select_strategy(h)
 
-        assert strategy.strategy == "top_down"
+        assert strategy.strategy == "tilted_grasp"
 
-    def test_fallback_to_top_down_without_llm(self):
+    def test_fallback_to_tilted_without_llm(self):
         planner = GraspPlanner(vlm=MockVLM([]), env=_FakeEnv(), llm=None)
         h = _hyp("apple")
         strategy = planner.select_strategy(h)
 
-        assert strategy.strategy == "top_down"
+        assert strategy.strategy == "tilted_grasp"
         assert "no LLM" in strategy.reasoning
 
     def test_refuse_strategy(self):
@@ -161,6 +161,28 @@ class TestBannedStrategies:
         assert len(strat_cand) == 1
         # upright → z offset -1.5cm from centroid
         assert strat_cand[0].point_3d[2] < h.position_3d[2]
+
+    def test_tilted_grasp_approach_dir(self):
+        planner = GraspPlanner(vlm=MockVLM([]), env=_FakeEnv(), llm=None)
+        h = _hyp("spoon")
+        h.grasp_strategy = GraspStrategy(strategy="tilted_grasp", speech="斜拿")
+        cands = planner.plan(h)
+        strat_cand = [c for c in cands if c.source == "strategy_tilted_grasp"]
+        assert len(strat_cand) == 1
+        ad = strat_cand[0].approach_dir
+        # mostly vertical (z dominant), some horizontal component
+        assert ad[2] < -0.7    # strong downward component
+        assert max(abs(ad[0]), abs(ad[1])) > 0.3  # non-trivial horizontal
+
+    def test_tilted_grasp_z_offset(self):
+        planner = GraspPlanner(vlm=MockVLM([]), env=_FakeEnv(), llm=None)
+        h = _hyp("spoon")
+        h.grasp_strategy = GraspStrategy(strategy="tilted_grasp", speech="斜拿")
+        cands = planner.plan(h)
+        strat_cand = [c for c in cands if c.source == "strategy_tilted_grasp"]
+        assert len(strat_cand) == 1
+        # upright → z offset -2cm from centroid
+        assert strat_cand[0].point_3d[2] < h.position_3d[2] - 0.01
 
 
 class TestGraspStrategyDataclass:

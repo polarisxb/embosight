@@ -15,7 +15,8 @@ Past experience with this object type: {past_experience}
 If past experience indicates a strategy failure, do NOT repeat that strategy.
 
 Available strategies:
-- top_down: approach from above, standard grip (good for: solid items, sealed packages, fruits, bottles with cap)
+- tilted_grasp: approach at 35° angle from above, angled grip (good for: thin upright objects, spoons, spatulas, utensils standing up)
+- top_down: approach from directly above, standard grip (good for: solid items, sealed packages, fruits, bottles with cap)
 - gentle_side: approach from the side with wide gentle grip (good for: fragile open items, soft food, eggs)
 - handle_grasp: grasp the handle or safe region only (good for: knives, cups with handle, pans)
 - scoop_under: low-angle approach to slide under (good for: flat items, plates, thin objects)

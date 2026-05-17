@@ -1546,6 +1546,101 @@ class EnvWrapper:
             pre_pos, threshold_m=pre_thresh, approach_dir=ad_unit,
         )
 
+    def _approach_along_direction(
+        self,
+        target_pos: np.ndarray,
+        target_body: str,
+        approach_dir: np.ndarray,
+        step_m: float = 0.012,
+        max_steps: int = 30,
+    ) -> tuple[bool, float]:
+        """沿任意方向步进接近, 指尖接触目标即停。
+
+        与 _descend_until_contact 类似, 但适用于任意角度 (倾斜/侧面)。
+        每步沿 approach_dir 前进 step_m, 同时保持夹爪朝向对齐。
+
+        Args:
+            target_pos: 最终接近目标 (含 margin)
+            target_body: 接触检测用的物体 body name
+            approach_dir: 归一化接近方向
+            step_m: 每步前进距离
+            max_steps: 最大步数
+
+        Returns:
+            (contact_ok, final_eef_z)
+        """
+        ad = np.asarray(approach_dir, dtype=np.float32)
+        target = np.asarray(target_pos, dtype=np.float32)
+        start = self.get_eef_pos().copy()
+        start_dist = float(np.linalg.norm(target - start))
+
+        logger.info(
+            f"[approach_dir] start dist={start_dist:.3f}m along {ad}, "
+            f"step={step_m:.3f}m, max_steps={max_steps}"
+        )
+
+        contact_streak = 0
+        min_travel_m = min(0.02, start_dist * 0.3)
+        prev_pos = start.copy()
+        stall_count = 0
+
+        for i in range(max_steps):
+            curr = self.get_eef_pos()
+            traveled = float(np.linalg.norm(curr - start))
+            remaining = float(np.linalg.norm(target - curr))
+
+            # 接触检测
+            if self._finger_object_contact(target_body):
+                contact_streak += 1
+                if traveled >= min_travel_m and contact_streak >= 2:
+                    logger.info(
+                        f"[approach_dir] contact at step {i}, "
+                        f"traveled={traveled:.3f}m, remaining={remaining:.3f}m"
+                    )
+                    return True, float(curr[2])
+            else:
+                contact_streak = 0
+
+            # 到达目标
+            if remaining < 0.008:
+                logger.info(
+                    f"[approach_dir] reached target at step {i}, "
+                    f"remaining={remaining:.3f}m"
+                )
+                return True, float(curr[2])
+
+            # 收敛检测 (stall)
+            move_since_last = float(np.linalg.norm(curr - prev_pos))
+            if move_since_last < 0.001:
+                stall_count += 1
+                if stall_count >= 5:
+                    near_target = remaining < 0.02
+                    logger.warning(
+                        f"[approach_dir] stalled at step {i}, "
+                        f"remaining={remaining:.3f}m, near={near_target}"
+                    )
+                    return near_target, float(curr[2])
+            else:
+                stall_count = 0
+            prev_pos = curr.copy()
+
+            # 步进: 沿 approach_dir 前进一步
+            step_dist = min(step_m, remaining)
+            next_pos = curr + ad * step_dist
+            self.move_arm_to(
+                next_pos, threshold_m=0.005, max_steps=150,
+                approach_dir=ad,
+            )
+
+        # max_steps 用尽
+        final = self.get_eef_pos()
+        remaining = float(np.linalg.norm(target - final))
+        logger.warning(
+            f"[approach_dir] max_steps={max_steps} reached, "
+            f"remaining={remaining:.3f}m"
+        )
+        return remaining < 0.02, float(final[2])
+
     def approach(
         self,
         point_3d,
@@ -1557,8 +1652,10 @@ class EnvWrapper:
     ) -> tuple[bool, float]:
         """方向感知的抓取接近原语。沿 approach_dir 接近 point_3d。
 
-        - top_down (approach_dir≈[0,0,-1]): 等同旧 descend 的接触式下降
-        - 任意方向 (e.g. [1,0,0]): 沿水平方向接近, 同时旋转夹爪朝向
+        路径选择:
+        - top_down (approach_dir≈[0,0,-1]): 接触式逐步下降
+        - 任意方向 + 有接触检测: 沿方向逐步接近 (contact-aware)
+        - 任意方向 + 无接触检测: 单次 move_arm_to (fallback)
 
         Args:
             point_3d: 抓取点 3D 坐标 (世界系)
@@ -1605,7 +1702,14 @@ class EnvWrapper:
                 target, target_body, step_z=step_z, max_steps=max_steps,
             )
 
-        # 任意方向: 用带朝向控制的 move_arm_to
+        # 非 top_down + 有接触检测: 逐步方向接近 (tilted/side 通用)
+        if target_body:
+            return self._approach_along_direction(
+                target, target_body, ad_unit,
+                step_m=0.012, max_steps=max_steps,
+            )
+
+        # fallback: 无接触检测时单次 move_arm_to
         ok = self.move_arm_to(
             target, threshold_m=0.01, max_steps=400,
             approach_dir=ad_unit,
