@@ -1705,10 +1705,24 @@ class EnvWrapper:
 
         # 非 top_down + 有接触检测: 逐步方向接近 (tilted/side 通用)
         if target_body:
-            return self._approach_along_direction(
+            ok, z = self._approach_along_direction(
                 target, target_body, ad_unit,
                 step_m=0.012, max_steps=max_steps,
             )
+            # 倾斜路径因工作空间限制无法到达时, 退化为垂直下降
+            if not ok:
+                curr = self.get_eef_pos()
+                remaining = float(np.linalg.norm(target - curr))
+                if remaining > 0.03:
+                    logger.info(
+                        "[approach] tilted path stalled (remaining=%.3fm), "
+                        "falling back to vertical descent", remaining,
+                    )
+                    return self._descend_until_contact(
+                        target, target_body,
+                        step_z=step_z, max_steps=max_steps,
+                    )
+            return ok, z
 
         # fallback: 无接触检测时单次 move_arm_to
         ok = self.move_arm_to(

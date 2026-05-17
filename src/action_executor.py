@@ -112,10 +112,12 @@ class ActionExecutor:
             margin_m=margin_m,
         )
         if not descend_ok:
-            # z-stall recovery 只对 top_down 有意义 (gap 是 z 距离差)
-            # 侧抓失败时直接在当前位置尝试夹取
-            gap = float(z_actual) - z_target
-            if is_top_down and gap > 0.01:
+            # z-stall recovery: 底盘前进让手臂到达更低 z
+            # 适用于任何有显著垂直分量的 approach (top_down / tilted)
+            z_target_eff = z_target + margin_m * float(approach_dir[2])
+            gap = float(z_actual) - z_target_eff
+            has_downward = float(approach_dir[2]) < -0.5
+            if has_downward and gap > 0.01:
                 # ── 工作空间恢复: z-stall 说明手臂在当前底盘位置到达极限 ──
                 logger.info(
                     "[act] z-stall gap=%.3fm, repositioning base closer",
@@ -131,10 +133,11 @@ class ActionExecutor:
                     nudge_target[0] += nudge[0]
                     nudge_target[1] += nudge[1]
                     env.move_arm_to(nudge_target, threshold_m=0.03, max_steps=300)
-                # 底盘靠近后重新下降
+                # 底盘靠近后重新下降 (强制垂直, 倾斜路径已证明不可达)
+                _vert = np.array([0.0, 0.0, -1.0], dtype=np.float32)
                 descend_ok2, z_actual = env.approach(
                     candidate.point_3d,
-                    approach_dir=approach_dir,
+                    approach_dir=_vert,
                     target_label=getattr(target, "label", None),
                     margin_m=margin_m,
                 )
@@ -144,7 +147,7 @@ class ActionExecutor:
                         z_actual,
                     )
                     env.close_gripper(target_label=getattr(target, "label", None))
-                    lift_ok, final_z = env.lift(approach_dir=approach_dir)
+                    lift_ok, final_z = env.lift(approach_dir=_vert)
                     if not lift_ok:
                         return self._failed_result(
                             candidate, "slipped",
@@ -159,7 +162,7 @@ class ActionExecutor:
                         z_actual,
                     )
                     env.close_gripper(target_label=getattr(target, "label", None))
-                    lift_ok, final_z = env.lift(approach_dir=approach_dir)
+                    lift_ok, final_z = env.lift(approach_dir=_vert)
                     if not lift_ok:
                         return self._failed_result(
                             candidate, "hit_z_floor",
