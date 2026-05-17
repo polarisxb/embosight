@@ -217,3 +217,174 @@ def test_move_arm_to_converges_normally_when_not_stalled():
     assert ok is True, "fast convergence should reach target"
     # Should converge in a few steps (not the whole 50)
     assert len(env.actions_logged) < 30
+
+
+# ======================================================================
+# Phase 7 step 3: IK-unreachable regression detection
+# ======================================================================
+
+
+class _IKBoundaryEnv(EnvWrapper):
+    """Mock env that simulates IK boundary: arm converges to `best_dist`,
+    then drifts away monotonically.
+
+    Mimics Run 6 GPU trajectory:
+        Steps 1..approach_steps: dist decreases toward target by ~1cm/step
+        Steps approach_steps+1..: dist increases by `drift_per_step` each step
+
+    This models the OSC at joint limits: the closest reachable point
+    becomes the "best_dist", further commands drift the arm away.
+    """
+
+    def __init__(
+        self,
+        approach_steps: int = 15,
+        target_xyz: tuple[float, float, float] = (1.0, 0.0, 0.6),
+        drift_per_step: float = 0.0003,  # 0.3mm/step
+        approach_step_size: float = 0.01,  # 1cm/step approach
+    ) -> None:
+        self.actions_logged: list[np.ndarray] = []
+        self._eef = np.array([0.5, 0.0, 0.6], dtype=np.float32)
+        self._target_xyz = np.asarray(target_xyz, dtype=np.float32)
+        self._latest_obs = {"_": True}
+        self._gripper_idx_cache = 7
+        self._step_counter = 0
+        self._approach_steps = approach_steps
+        self._approach_step_size = approach_step_size
+        self._drift = drift_per_step
+        outer = self
+
+        class _Backend:
+            action_dim = 8
+
+            def step(self, action):
+                outer.actions_logged.append(
+                    np.asarray(action, dtype=np.float32).copy()
+                )
+                outer._step_counter += 1
+                direction_to_target = outer._target_xyz - outer._eef
+                n = float(np.linalg.norm(direction_to_target))
+                if n < 1e-6:
+                    return {}, 0.0, False, {}
+                if outer._step_counter <= outer._approach_steps:
+                    # Approach: move toward target by approach_step_size
+                    outer._eef = outer._eef + (
+                        direction_to_target / n * outer._approach_step_size
+                    ).astype(np.float32)
+                else:
+                    # Drift: move AWAY from target
+                    outer._eef = outer._eef - (
+                        direction_to_target / n * outer._drift
+                    ).astype(np.float32)
+                return {}, 0.0, False, {}
+
+        self._env = _Backend()
+
+    def get_eef_pos(self) -> np.ndarray:
+        return self._eef.copy()
+
+    def get_base_pose(self):
+        return np.zeros(3, dtype=np.float32), np.eye(3, dtype=np.float64)
+
+    def _get_base_action_idx(self):
+        return None
+
+    def render(self) -> None:
+        pass
+
+    def reset(self):
+        return {}
+
+
+def test_move_arm_to_detects_ik_unreachable_regression_breaks_fast():
+    """Phase 7 step 3: when arm reaches its IK boundary and drifts back,
+    move_arm_to must break QUICKLY (regression > 5mm from best), NOT
+    wait for 3 consecutive stall windows (~160+ steps).
+
+    Run 6 GPU log: arm reached best ~0.38m, drifted back to 0.41m by
+    step 720 — 720 steps wasted. With regression detection, break
+    fires shortly after gate (40 steps) once 5mm regress accumulates.
+    """
+    env = _IKBoundaryEnv(
+        approach_steps=15,
+        target_xyz=(1.0, 0.0, 0.6),  # init eef at (0.5, 0, 0.6), dist=0.5m
+        drift_per_step=0.0003,  # 0.3mm/step → 5mm drift in ~17 steps
+    )
+    target = np.array([1.0, 0.0, 0.6], dtype=np.float32)
+    ok = env.move_arm_to(target, threshold_m=0.02, max_steps=800)
+    assert ok is False, "IK-unreachable target should not converge"
+    n_steps = len(env.actions_logged)
+    # Regression check first fires at step > check_interval (40); needs
+    # 5mm regress accumulated from best at step 15. Expected ~41-50.
+    assert 40 < n_steps < 200, (
+        f"IK regression detection failed: ran {n_steps} steps "
+        f"(expected 40<n<200; Run 6 baseline was 720)"
+    )
+
+
+def test_move_arm_to_regression_log_emitted():
+    """Phase 7 step 3: regression detection emits a warning containing
+    'IK-unreachable regression' so GPU logs can distinguish it from
+    plain stall (dist not changing) failures."""
+    import logging
+    env = _IKBoundaryEnv()  # uses approach_steps=15, drift=0.0003
+    target = np.array([1.0, 0.0, 0.6], dtype=np.float32)
+    captured: list[str] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            captured.append(record.getMessage())
+
+    log = logging.getLogger("src.env_wrapper")
+    handler = _Capture()
+    log.addHandler(handler)
+    log.setLevel(logging.WARNING)
+    try:
+        env.move_arm_to(target, threshold_m=0.02, max_steps=800)
+    finally:
+        log.removeHandler(handler)
+
+    regress_msgs = [
+        m for m in captured if "IK-unreachable regression" in m
+    ]
+    assert len(regress_msgs) == 1, (
+        f"expected 1 IK regression warning, got {len(regress_msgs)}: {captured}"
+    )
+    assert "best=" in regress_msgs[0]
+    assert "regress=" in regress_msgs[0]
+
+
+def test_move_arm_to_regression_does_not_fire_when_stuck_from_start():
+    """Phase 7 step 3 guard: when arm never makes meaningful progress
+    from init_dist, regression detection must NOT fire (gate 3 of 4:
+    init_dist - best_dist must exceed min_progress_for_regress=1cm).
+
+    Stall detection should fire instead, which is the correct semantic
+    for a fully-stuck arm (different from IK-unreachable boundary).
+    """
+    import logging
+    env = _StallEnv()  # EEF never moves
+    target = np.array([1.0, 0.0, 0.6], dtype=np.float32)
+    captured: list[str] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            captured.append(record.getMessage())
+
+    log = logging.getLogger("src.env_wrapper")
+    handler = _Capture()
+    log.addHandler(handler)
+    log.setLevel(logging.WARNING)
+    try:
+        env.move_arm_to(target, threshold_m=0.005, max_steps=800)
+    finally:
+        log.removeHandler(handler)
+
+    regress_msgs = [m for m in captured if "IK-unreachable regression" in m]
+    stall_msgs = [m for m in captured if "stalled at step" in m]
+    assert len(regress_msgs) == 0, (
+        f"regression must NOT fire when arm is fully stuck: {captured}"
+    )
+    assert len(stall_msgs) == 1, (
+        f"stall detection should fire instead, got: {captured}"
+    )

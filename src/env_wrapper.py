@@ -771,6 +771,25 @@ class EnvWrapper:
         # shrinking). recent_dists keeps last 3 values.
         recent_dists: list[float] = []
         max_ori_step_per_iter = 0.5  # 单步朝向 axis-angle 模长上限 (rad)
+        # Phase 7 step 3: IK-unreachable regression detection.
+        #
+        # Run 6 GPU log showed arm makes progress for ~600 steps, hits IK
+        # boundary at best_dist ~0.38m, then oscillates with dist regressing
+        # 0.02m before stall detection fires (step 720). The arm CANNOT
+        # un-do regression because its closest reachable point is fixed.
+        # Detect this directly: if current dist exceeds best_dist by a
+        # meaningful margin, target is unreachable — break immediately.
+        #
+        # Threshold rationale:
+        # - 5mm margin tolerates jitter / overshoot near IK boundary
+        # - require best_dist itself to be > threshold (else converged)
+        # - require best_dist to have meaningfully decreased from init_dist
+        #   (avoid bailing on initial controller transient before any motion)
+        # - small step floor (check_interval=40) skips the controller's
+        #   first integration window
+        best_dist = float("inf")
+        regress_margin = 0.005  # 5mm regress from best → unreachable
+        min_progress_for_regress = 0.01  # 1cm progress from init before arming
 
         for step in range(max_steps):
             current = self.get_eef_pos()
@@ -798,6 +817,35 @@ class EnvWrapper:
                     f"ori_err={ori_err:.4f}rad"
                 )
                 return True
+
+            # Phase 7 step 3: track best dist for IK-unreachable detection
+            if dist < best_dist:
+                best_dist = dist
+
+            # IK-unreachable regression: if we've moved past best by margin
+            # AND best itself is meaningfully outside threshold, target is
+            # likely IK-unreachable from current base/torso pose. Break to
+            # let action_executor mark grasp as ik_unreachable.
+            #
+            # Gates:
+            # 1. step > check_interval (40) — skip controller's first window
+            # 2. best_dist outside threshold + regress_margin
+            # 3. best_dist actually progressed from init_dist by >= 1cm
+            #    (proves arm CAN move; not a "stuck from start" case)
+            # 4. current dist exceeds best by >= 5mm (the regression itself)
+            if (
+                step > check_interval
+                and best_dist > threshold_m + regress_margin
+                and (init_dist - best_dist) > min_progress_for_regress
+                and dist > best_dist + regress_margin
+            ):
+                logger.warning(
+                    f"[move_arm_to] IK-unreachable regression at step={step}: "
+                    f"dist={dist:.4f}m best={best_dist:.4f}m "
+                    f"regress={dist - best_dist:.4f}m > {regress_margin:.4f}m "
+                    f"(init_dist={init_dist:.4f}m, progress={init_dist-best_dist:.4f}m)"
+                )
+                return False
 
             # stall 检测: 位置 OR 朝向有进展就不算 stall
             if step > 0 and step % check_interval == 0:
