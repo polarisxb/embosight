@@ -769,6 +769,74 @@ class TestPerReasonBan:
         assert fbr["gripper_empty"] == 1
 
 
+class TestProvenStrategy:
+    """get_proven_strategy returns the best zero-failure strategy."""
+
+    def _make_dir(self, strategies: dict, code_version=None) -> Path:
+        import yaml
+        from src.memory_manager import GRASP_CODE_VERSION
+        d = Path(tempfile.mkdtemp()) / "memory"
+        d.mkdir()
+        (d / "index.yaml").write_text(yaml.dump({
+            "domains": {"grasp": str(d / "grasp_experience.yaml")},
+        }), encoding="utf-8")
+        (d / "grasp_experience.yaml").write_text(yaml.dump({
+            "code_version": code_version or GRASP_CODE_VERSION,
+            "entries": [{
+                "object_type": "wooden_spoon",
+                "strategies": strategies,
+            }],
+        }), encoding="utf-8")
+        return d
+
+    def test_returns_zero_failure_strategy(self):
+        from src.memory_manager import MemoryManager
+        d = self._make_dir({
+            "top_down": {"successes": 0, "failures": 2,
+                         "failures_by_reason": {"slipped_lift": 2}},
+            "handle_grasp": {"successes": 3, "failures": 0,
+                             "failures_by_reason": {}},
+        })
+        mm = MemoryManager(memory_dir=d)
+        assert mm.get_proven_strategy("wooden_spoon") == "handle_grasp"
+
+    def test_picks_highest_success_count(self):
+        from src.memory_manager import MemoryManager
+        d = self._make_dir({
+            "handle_grasp": {"successes": 1, "failures": 0,
+                             "failures_by_reason": {}},
+            "tilted_grasp": {"successes": 5, "failures": 0,
+                             "failures_by_reason": {}},
+        })
+        mm = MemoryManager(memory_dir=d)
+        assert mm.get_proven_strategy("wooden_spoon") == "tilted_grasp"
+
+    def test_none_when_all_have_failures(self):
+        from src.memory_manager import MemoryManager
+        d = self._make_dir({
+            "top_down": {"successes": 10, "failures": 1,
+                         "failures_by_reason": {"slipped_lift": 1}},
+        })
+        mm = MemoryManager(memory_dir=d)
+        assert mm.get_proven_strategy("wooden_spoon") is None
+
+    def test_none_when_stale(self):
+        from src.memory_manager import MemoryManager
+        d = self._make_dir(
+            {"handle_grasp": {"successes": 5, "failures": 0,
+                              "failures_by_reason": {}}},
+            code_version="v0.0-old",
+        )
+        mm = MemoryManager(memory_dir=d)
+        assert mm.get_proven_strategy("wooden_spoon") is None
+
+    def test_none_when_no_entry(self):
+        from src.memory_manager import MemoryManager
+        d = self._make_dir({})
+        mm = MemoryManager(memory_dir=d)
+        assert mm.get_proven_strategy("apple") is None
+
+
 class TestGraspPlannerWithMemory:
     """grasp_planner uses memory.get_banned_strategies when memory= passed."""
 
@@ -829,3 +897,58 @@ class TestGraspPlannerWithMemory:
             memory=mm,
         )
         assert strat.strategy == "top_down"
+
+    def test_proven_strategy_skips_llm(self):
+        """When memory has a proven winner, planner uses it directly."""
+        import yaml
+        from src.grasp_planner import GraspPlanner
+        from src.memory_manager import GRASP_CODE_VERSION, MemoryManager
+        from src.world_belief import Hypothesis, Pose
+        d = Path(tempfile.mkdtemp()) / "memory"
+        d.mkdir()
+        (d / "index.yaml").write_text(yaml.dump({
+            "domains": {"grasp": str(d / "grasp_experience.yaml")},
+        }), encoding="utf-8")
+        (d / "grasp_experience.yaml").write_text(yaml.dump({
+            "code_version": GRASP_CODE_VERSION,
+            "entries": [{
+                "object_type": "wooden_spoon",
+                "strategies": {
+                    "top_down": {"successes": 0, "failures": 2,
+                                 "failures_by_reason": {"slipped_lift": 2}},
+                    "handle_grasp": {"successes": 1, "failures": 0,
+                                     "failures_by_reason": {}},
+                },
+            }],
+        }), encoding="utf-8")
+        mm = MemoryManager(memory_dir=d)
+
+        class _FakeEnv:
+            def is_reachable(self, *a, **kw):
+                return True
+            def get_eef_pos(self):
+                import numpy as np
+                return np.array([0, 0, 1])
+            def get_base_pose(self):
+                import numpy as np
+                return np.array([0, 0, 0]), np.eye(3)
+
+        import numpy as np
+        h = Hypothesis(
+            object_id="obj_0",
+            label="wooden_spoon",
+            label_alternatives=[("wooden_spoon", 1.0)],
+            label_entropy=0.0,
+            position_3d=np.array([0.5, 0.0, 0.1]),
+            position_std_m=0.01,
+            pose_estimate=Pose(
+                position=np.array([0.5, 0.0, 0.1]),
+                rotation_quat=np.array([0, 0, 0, 1]),
+                upright=True,
+            ),
+            safety_dist={"safe": 1.0},
+        )
+        planner = GraspPlanner(vlm=None, env=_FakeEnv(), llm=None)
+        strat = planner.select_strategy(h, memory_advice="", memory=mm)
+        assert strat.strategy == "handle_grasp"
+        assert "proven" in strat.reasoning

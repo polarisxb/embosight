@@ -90,6 +90,26 @@ class GraspPlanner:
             logger.info("[grasp_planner] banned strategies (fail≥%d): %s",
                         _FAIL_BAN_THRESHOLD, banned)
 
+        # ── Proven strategy fast-path ──
+        # If memory has a strategy that succeeded before with 0 failures,
+        # skip LLM and reuse it directly. Avoids wasting attempts on
+        # strategies that keep failing before reaching the one that works.
+        if memory is not None:
+            try:
+                proven = memory.get_proven_strategy(hyp.label)
+                if proven and proven in available:
+                    logger.info(
+                        "[grasp_planner] proven strategy '%s' from memory "
+                        "(skipping LLM)", proven,
+                    )
+                    return GraspStrategy(
+                        strategy=proven,
+                        reasoning=f"memory: proven success, 0 failures",
+                        speech=f"我来拿{hyp.label}",
+                    )
+            except Exception as e:
+                logger.warning("[grasp_planner] get_proven_strategy failed: %s", e)
+
         if not self.llm or not self._strategy_template:
             # 无 LLM 时, 从未禁止的策略中按优先级选择
             for fallback in ["top_down", "tilted_grasp", "handle_grasp", "gentle_side"]:

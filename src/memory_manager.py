@@ -272,6 +272,33 @@ class MemoryManager:
             return banned
         return banned
 
+    def get_proven_strategy(self, object_type: str) -> Optional[str]:
+        """Return the best proven strategy for object_type, or None.
+
+        A strategy is 'proven' if it has ≥1 success and 0 total failures.
+        Among proven strategies, the one with the most successes wins.
+        Returns None if data is stale, retired, or no qualifying strategy.
+        """
+        entries = self._load_domain("grasp")
+        if self._stale.get("grasp", False):
+            return None
+        obj_key = object_type.lower().strip()
+        for entry in entries:
+            if entry.get("object_type", "").lower().strip() != obj_key:
+                continue
+            if entry.get("retired"):
+                return None
+            best_name: Optional[str] = None
+            best_succ = 0
+            for strat, data in entry.get("strategies", {}).items():
+                succ = int(data.get("successes", 0))
+                fail = int(data.get("failures", 0))
+                if succ > 0 and fail == 0 and succ > best_succ:
+                    best_succ = succ
+                    best_name = strat
+            return best_name
+        return None
+
     def is_grasp_memory_stale(self) -> bool:
         """Return True if loaded grasp data is from a different code_version."""
         # ensure load happened
