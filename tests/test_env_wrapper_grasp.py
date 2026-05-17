@@ -178,6 +178,105 @@ def test_lift_passes_gripper_hold_to_all_move_calls() -> None:
         )
 
 
+# ============================================================
+# E2E mock: action vectors actually sent to env.step during lift
+# ============================================================
+
+class _StepActionRecorder(EnvWrapper):
+    """Captures every action vector that move_arm_to sends to env.step.
+
+    Bypasses __init__ to avoid robosuite. Provides only the surface that
+    move_arm_to + lift need:
+      - _env.action_dim, _env.step (records action)
+      - get_eef_pos (advances toward target each step)
+      - _get_gripper_idx, _get_base_action_idx
+      - get_base_pose, render, _latest_obs
+    """
+    GRIPPER_IDX = 7  # 6 arm pose + 1 (no base in this mock)
+    ACTION_DIM = 8
+
+    def __init__(self) -> None:
+        self.actions_logged: list[np.ndarray] = []
+        self._eef = np.array([0.5, 0.0, 0.6], dtype=np.float32)
+        self._latest_obs = {"_": True}
+        self._gripper_idx_cache = self.GRIPPER_IDX
+        outer = self
+
+        class _MockBackend:
+            action_dim = outer.ACTION_DIM
+
+            def step(self, action):
+                a = np.asarray(action, dtype=np.float32).copy()
+                outer.actions_logged.append(a)
+                # Advance eef toward target so move_arm_to converges.
+                # action[0:3] is the base-frame delta in env_wrapper.py.
+                outer._eef = outer._eef + a[0:3] * 0.5
+                return {}, 0.0, False, {}
+
+        self._env = _MockBackend()
+
+    def get_eef_pos(self) -> np.ndarray:
+        return self._eef.copy()
+
+    def get_base_pose(self):
+        return np.zeros(3, dtype=np.float32), np.eye(3, dtype=np.float64)
+
+    def _get_base_action_idx(self):
+        return None  # this mock has no base
+
+    def render(self) -> None:
+        pass
+
+    def reset(self):
+        return {}
+
+
+def test_move_arm_to_writes_gripper_hold_to_action() -> None:
+    """move_arm_to(gripper_hold=1.0) must put 1.0 at gripper_idx every step."""
+    env = _StepActionRecorder()
+    target = np.array([0.6, 0.0, 0.65], dtype=np.float32)
+    env.move_arm_to(target, threshold_m=0.001, max_steps=20, gripper_hold=1.0)
+
+    assert len(env.actions_logged) > 0
+    for i, a in enumerate(env.actions_logged):
+        assert a[env.GRIPPER_IDX] == 1.0, (
+            f"step {i} action[gripper]={a[env.GRIPPER_IDX]} (expected 1.0); "
+            f"object would slip"
+        )
+
+
+def test_move_arm_to_default_leaves_gripper_neutral() -> None:
+    """Legacy contract: default gripper_hold=0.0 must NOT touch gripper_idx."""
+    env = _StepActionRecorder()
+    target = np.array([0.6, 0.0, 0.65], dtype=np.float32)
+    env.move_arm_to(target, threshold_m=0.001, max_steps=20)  # no gripper_hold
+
+    assert len(env.actions_logged) > 0
+    for a in env.actions_logged:
+        assert a[env.GRIPPER_IDX] == 0.0
+
+
+def test_lift_e2e_keeps_gripper_at_one_throughout() -> None:
+    """E2E: from first env.step in lift() to last, gripper stays at 1.0.
+
+    This is the strongest defense against the slipped_lift bug — even if
+    someone refactors move_arm_to or lift in the future, this test catches
+    any sequence of env.step calls that lets the gripper go neutral.
+    """
+    env = _StepActionRecorder()
+    ok, _z = env.lift(height_m=0.10, approach_dir=None)
+    assert ok is True
+
+    assert len(env.actions_logged) > 0, (
+        "lift should issue at least one env.step call"
+    )
+    for i, a in enumerate(env.actions_logged):
+        assert a[env.GRIPPER_IDX] == 1.0, (
+            f"env.step #{i} during lift had gripper={a[env.GRIPPER_IDX]}; "
+            f"this would release the object mid-lift"
+        )
+
+
 def test_reset_applies_seed_before_backend_reset(monkeypatch, tmp_path) -> None:
     events = []
 
