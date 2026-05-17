@@ -429,11 +429,20 @@ class EnvWrapper:
 
         dist = float(np.linalg.norm(target_xy - real_base.astype(np.float64)))
 
-        # 2. 已在 reach 范围内 → no-op
-        if dist <= offset_m + 0.10:
-            logger.debug(
-                f"[navigate] already in range (dist={dist:.3f}m "
-                f"<= offset+0.10={offset_m + 0.10:.3f}m), no-op"
+        # 2. No-op 条件 (Phase 5 calibrated based on GPU baseline data):
+        #    a) 太近 (<= 0.10m) - 撞物风险, 不动
+        #    b) 已在最优范围 [offset_m - 0.05, offset_m + 0.05] - 避免不必要 teleport
+        # 注意: GPU baseline 显示 dist=0.529m (offset+0.08) 时 arm OSC 仍 stall.
+        # 旧阈值 (offset_m + 0.10 = 0.55m) 把这个 case 错误地 mask 成 no-op.
+        if dist <= 0.10:
+            logger.info(
+                f"[navigate] too close, no-op (dist={dist:.3f}m <= 0.10m)"
+            )
+            return True
+        if abs(dist - offset_m) <= 0.05:
+            logger.info(
+                f"[navigate] near optimal, no-op "
+                f"(dist={dist:.3f}m, offset={offset_m:.3f}m, |Δ|<=0.05)"
             )
             return True
 

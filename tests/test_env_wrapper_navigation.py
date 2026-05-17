@@ -244,3 +244,47 @@ def test_navigate_handles_baseline_scenario_correctly() -> None:
     assert new_dist <= 0.45 + 0.15, (
         f"baseline scenario: new_dist {new_dist:.3f}m exceeded tolerance"
     )
+
+
+def test_navigate_baseline_borderline_dist_must_teleport() -> None:
+    """Phase 5 regression: dist=0.529m (baseline tupperware) MUST teleport,
+    not be masked as no-op.
+
+    Pre-fix: threshold = offset_m + 0.10 = 0.55m, 0.529 ≤ 0.55 → no-op.
+    Post-fix: threshold = abs(dist - offset_m) ≤ 0.05, |0.529-0.45|=0.079
+              > 0.05 → teleport.
+    """
+    env = _NavStubEnv(base_xy=(0.775, -2.882))
+    qpos_before = env._env.sim.data.qpos.copy()
+    ok = env.navigate_base_to((0.346, -3.194), offset_m=0.45)
+    assert ok is True
+    # qpos MUST have changed (teleport happened)
+    qpos_after = env._env.sim.data.qpos
+    assert not np.allclose(qpos_before, qpos_after), (
+        "Expected teleport for borderline dist 0.529m, but qpos unchanged"
+    )
+    # And the resulting base position should be within ±0.05m of offset_m
+    new_xy = env._read_real_base_xy()
+    new_dist = float(np.linalg.norm(new_xy - np.array([0.346, -3.194])))
+    assert abs(new_dist - 0.45) <= 0.05, (
+        f"Expected dist ~0.45m after teleport, got {new_dist:.3f}m"
+    )
+
+
+def test_navigate_no_op_in_optimal_band() -> None:
+    """When dist already in [offset_m - 0.05, offset_m + 0.05], skip teleport."""
+    # Place base at exactly offset_m (0.45m) from target
+    env = _NavStubEnv(base_xy=(0.45, 0.0))
+    qpos_before = env._env.sim.data.qpos.copy()
+    ok = env.navigate_base_to((0.0, 0.0), offset_m=0.45)
+    assert ok is True
+    np.testing.assert_array_equal(env._env.sim.data.qpos, qpos_before)
+
+
+def test_navigate_no_op_too_close_protection() -> None:
+    """When dist <= 0.10m, skip teleport to avoid collision."""
+    env = _NavStubEnv(base_xy=(0.05, 0.0))  # dist 0.05m to origin
+    qpos_before = env._env.sim.data.qpos.copy()
+    ok = env.navigate_base_to((0.0, 0.0), offset_m=0.45)
+    assert ok is True
+    np.testing.assert_array_equal(env._env.sim.data.qpos, qpos_before)
