@@ -126,6 +126,26 @@ class ActionExecutor:
                     f"[act] navigate_base_to failed: {e}, falling through"
                 )
 
+        # Phase 9: raise torso to max before pre_grasp.
+        #
+        # After navigate_base_to teleport, the arm is in home config with
+        # torso at initial height (often 0). For counter-top objects
+        # (z≈0.93m), the EEF in home config sits at z≈0.6m — BELOW the
+        # counter surface. OSC tries a straight-line path to the pre_pos
+        # above the counter → counter collision blocks all motion → arm
+        # stalls at dist≈0.35m forever.
+        #
+        # Raising torso to max (0.34m) lifts the arm assembly so the EEF
+        # starts ABOVE the counter, giving OSC a clear path.
+        if hasattr(env, "set_torso_height"):
+            try:
+                torso_info = env._get_torso_joint_info()
+                if torso_info is not None:
+                    _, _, hi = torso_info
+                    env.set_torso_height(hi)  # raise to max
+            except Exception as e:
+                logger.debug(f"[act] torso raise failed: {e}")
+
         # 1. pre-grasp
         if not env.move_to_pre_grasp(candidate):
             return self._failed_result(

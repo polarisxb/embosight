@@ -520,6 +520,13 @@ class EnvWrapper:
         except Exception as e:
             logger.warning(f"[torso] set qpos failed: {e}")
             return False
+        # Sync obs (same rationale as navigate_base_to step 6b)
+        try:
+            sync_action = np.zeros(self._env.action_dim, dtype=np.float32)
+            obs, _, _, _ = self._env.step(sync_action)
+            self._latest_obs = obs
+        except Exception:
+            pass
         actual = float(sim.data.qpos[addr])
         logger.info(
             f"[torso] set height: requested={height_m:.3f} "
@@ -647,6 +654,18 @@ class EnvWrapper:
         except Exception as e:
             logger.warning(f"[navigate] qpos set failed: {e}")
             return False
+
+        # 6b. Sync observation state with post-teleport physics.
+        #
+        # CRITICAL: sim.forward() 更新了 body positions 但 _latest_obs 仍是
+        # teleport 前的旧值. get_eef_pos() 读 _latest_obs → move_arm_to
+        # 用旧 EEF 算 delta → action 方向错. 一个 zero-action step 同步 obs.
+        try:
+            sync_action = np.zeros(self._env.action_dim, dtype=np.float32)
+            obs, _, _, _ = self._env.step(sync_action)
+            self._latest_obs = obs
+        except Exception as e:
+            logger.debug(f"[navigate] obs sync step failed: {e}")
 
         # 7. 验证 teleport 实际生效
         new_real = self._read_real_base_xy()
@@ -851,15 +870,18 @@ class EnvWrapper:
             if np.linalg.norm(ad) > 1e-6:
                 target_quat = self._approach_dir_to_quat(ad)
 
-        init_dist = float(np.linalg.norm(target - self.get_eef_pos()))
+        eef_start = self.get_eef_pos()
+        init_dist = float(np.linalg.norm(target - eef_start))
         if init_dist < threshold_m and target_quat is None:
             return True
         if init_dist > 0.5:
             max_steps = max(max_steps, int(init_dist * 1500))
-        logger.debug(
-            f"[move] target={target}, init_dist={init_dist:.3f}m, "
-            f"max_steps={max_steps}, base_idx={base_idx}, "
-            f"approach_dir={approach_dir}"
+        # Phase 9 diagnostic: log EEF + target at start to verify obs
+        # freshness and workspace feasibility.
+        logger.info(
+            f"[move_arm_to] START eef={eef_start.tolist()} "
+            f"target={target.tolist()} init_dist={init_dist:.4f}m "
+            f"max_steps={max_steps} drive_base={drive_base}"
         )
 
         prev_dist = float("inf")
