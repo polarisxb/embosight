@@ -1624,12 +1624,13 @@ class EnvWrapper:
                 stall_count = 0
             prev_pos = curr.copy()
 
-            # 步进: 沿 approach_dir 前进一步
+            # 步进: 沿 approach_dir 前进一步 (仅位置, 不强制朝向)
+            # 朝向由 pre_grasp 决定; 这里只沿倾斜路径推进位置,
+            # 避免手臂因朝向无法收敛而 stall.
             step_dist = min(step_m, remaining)
             next_pos = curr + ad * step_dist
             self.move_arm_to(
                 next_pos, threshold_m=0.005, max_steps=150,
-                approach_dir=ad,
             )
 
         # max_steps 用尽
