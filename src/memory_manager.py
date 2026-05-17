@@ -24,7 +24,11 @@ logger = logging.getLogger(__name__)
 # Bump when grasp execution semantics change in a way that invalidates
 # historical strategy success/failure judgements.
 # v6.1: stall+contact accepts position; reposition uses margin-adjusted gap.
-GRASP_CODE_VERSION = "v6.1"
+# v6.2: navigate_base_to teleport before grasp (Phase 2+4 refactor). Pre-v6.2
+#       "ik_unreachable" failures were mostly base-nav stalls, not real IK
+#       limits; retiring stale entries forces fast-path to re-learn from
+#       clean post-navigate data.
+GRASP_CODE_VERSION = "v6.2"
 GRASP_SCHEMA_VERSION = 2
 
 # Failure reason taxonomy (used by ban logic + analytics).

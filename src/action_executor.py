@@ -73,6 +73,21 @@ class ActionExecutor:
         # 记录物体初始 z（用于 lift 后验证物体是否跟随）
         obj_z_before = self._get_obj_z(target, env)
 
+        # Phase 4: explicit base navigation (decouples nav from arm control).
+        # Best-effort: if env doesn't implement navigate_base_to (legacy mock)
+        # OR if it returns False/raises, fall through to legacy move_to_pre_grasp
+        # which still has drive_base=True for base approach (Phase 3 fallback).
+        if hasattr(env, "navigate_base_to"):
+            try:
+                env.navigate_base_to(
+                    target_xy=candidate.point_3d[:2],
+                    offset_m=0.45,
+                )
+            except Exception as e:
+                logger.debug(
+                    f"[act] navigate_base_to failed: {e}, falling through"
+                )
+
         # 1. pre-grasp
         if not env.move_to_pre_grasp(candidate):
             return self._failed_result(

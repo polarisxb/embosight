@@ -273,3 +273,89 @@ class TestStructure:
         )]
         result = exe.act(h, DecomposedTask(primary_target="apple"), env)
         assert result.success is False
+
+
+# ============================================================
+# Phase 4: navigate_base_to integration tests
+# ============================================================
+
+class _NavCapturingEnv(FakeEnv):
+    """FakeEnv extension that records navigate_base_to calls."""
+    def __init__(self, navigate_return=True, navigate_raises=False, **kwargs):
+        super().__init__(**kwargs)
+        self.navigate_calls: list[dict] = []
+        self._navigate_return = navigate_return
+        self._navigate_raises = navigate_raises
+
+    def navigate_base_to(self, target_xy, offset_m: float = 0.45) -> bool:
+        self.navigate_calls.append({
+            "target_xy": tuple(np.asarray(target_xy).tolist()),
+            "offset_m": float(offset_m),
+        })
+        self.calls.append("navigate")
+        if self._navigate_raises:
+            raise RuntimeError("simulated navigate failure")
+        return self._navigate_return
+
+
+class TestPhase4NavigateIntegration:
+    def test_act_calls_navigate_before_pre_grasp(self):
+        """navigate_base_to must be invoked before move_to_pre_grasp.
+
+        This is the core Phase 4 contract: explicit nav decoupled from arm OSC.
+        """
+        from src.action_executor import ActionExecutor
+        from src.world_belief import DecomposedTask
+        env = _NavCapturingEnv()
+        exe = ActionExecutor(scene_describer=None)
+        h, c = _hyp_with_candidate()
+
+        result = exe.act(h, DecomposedTask(primary_target="apple"), env)
+
+        assert "navigate" in env.calls, "navigate_base_to must be called"
+        assert "move_to_pre_grasp" in env.calls, "pre_grasp must still run"
+        # Ordering: navigate strictly before pre_grasp
+        assert env.calls.index("navigate") < env.calls.index("move_to_pre_grasp")
+        # Navigate target == candidate.point_3d[:2]
+        assert len(env.navigate_calls) == 1
+        expected_xy = tuple(c.point_3d[:2].tolist())
+        actual_xy = env.navigate_calls[0]["target_xy"]
+        assert np.allclose(actual_xy, expected_xy, atol=1e-5)
+        # Defaults match design doc
+        assert env.navigate_calls[0]["offset_m"] == 0.45
+        # Pipeline completes successfully (FakeEnv all-green)
+        assert result.success is True
+
+    def test_act_falls_through_when_navigate_raises(self):
+        """If navigate raises, act() must NOT crash — fall through to legacy
+        pre_grasp path (which still has drive_base=True internal fallback)."""
+        from src.action_executor import ActionExecutor
+        from src.world_belief import DecomposedTask
+        env = _NavCapturingEnv(navigate_raises=True)
+        exe = ActionExecutor(scene_describer=None)
+        h, _ = _hyp_with_candidate()
+
+        # Must not raise; pre_grasp still runs.
+        result = exe.act(h, DecomposedTask(primary_target="apple"), env)
+        assert "navigate" in env.calls
+        assert "move_to_pre_grasp" in env.calls
+        # End-to-end still succeeds because FakeEnv's pre_grasp is all-green
+        assert result.success is True
+
+    def test_act_works_without_navigate_base_to_method(self):
+        """Legacy mocks without navigate_base_to must still work.
+
+        The hasattr() guard in act() lets pre-Phase-4 test fixtures continue
+        to pass without any modification (backward compatibility)."""
+        from src.action_executor import ActionExecutor
+        from src.world_belief import DecomposedTask
+        # Plain FakeEnv has no navigate_base_to attribute
+        env = FakeEnv()
+        assert not hasattr(env, "navigate_base_to")
+        exe = ActionExecutor(scene_describer=None)
+        h, _ = _hyp_with_candidate()
+
+        result = exe.act(h, DecomposedTask(primary_target="apple"), env)
+        # Pipeline runs end-to-end as before Phase 4
+        assert result.success is True
+        assert "move_to_pre_grasp" in env.calls
