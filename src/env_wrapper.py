@@ -303,6 +303,33 @@ class EnvWrapper:
         Returns:
             (2,) np.float32 with world XY, or None if no real body found.
         """
+        pose = self._read_real_base_pose()
+        if pose is None:
+            return None
+        return pose[0][:2].copy()
+
+    def _read_real_base_pose(
+        self,
+    ) -> Optional[tuple[np.ndarray, np.ndarray]]:
+        """读取 mobile base 真实 world (xpos, xmat) (绕开 anchor (10,10,0)).
+
+        Phase 7 step 2: 解决 move_arm_to 用 anchor frame 但 OSC 在 actual
+        base frame 应用 action 的 36° 旋转偏差 bug.
+
+        Anchor body (e.g. 'robot0_base'):
+        - xpos = (10, 10, 0) (hardcoded mount anchor)
+        - xmat = R(yaw=-180°) (固定)
+
+        Real mobile base body (e.g. 'mobilebase0_base'):
+        - xpos = 真实世界位置 (随 navigate qpos 更新)
+        - xmat = 真实世界朝向 (随 navigate yaw qpos 更新)
+
+        OSC controller is mounted on the mobile base, so action[0:3] is
+        interpreted in the actual mobile base frame, NOT the anchor frame.
+
+        Returns:
+            (xpos:(3,), xmat:(3,3)) np.float32 if real body found, else None.
+        """
         sim = getattr(self._env, "sim", None)
         if sim is None:
             return None
@@ -310,17 +337,28 @@ class EnvWrapper:
             idn = self._env.robots[0].idn
         except Exception:
             idn = 0
+        anchor = np.asarray(self._MOBILE_BASE_ANCHOR_XY, dtype=np.float32)
         for body_name in (f"mobilebase{idn}_base", f"robot{idn}_base"):
             try:
                 bid = sim.model.body_name2id(body_name)
             except (KeyError, ValueError):
                 continue
             xpos = np.asarray(sim.data.body_xpos[bid], dtype=np.float32)
-            # Skip the anchor body (10,10,0)
-            anchor = np.asarray(self._MOBILE_BASE_ANCHOR_XY, dtype=np.float32)
+            # Skip the anchor body (xpos hardcoded to (10,10,0))
             if np.allclose(xpos[:2], anchor, atol=0.01):
                 continue
-            return xpos[:2].copy()
+            # body_xmat 在某些 mock / 旧 robosuite 上不存在 → fall back identity
+            body_xmat_arr = getattr(sim.data, "body_xmat", None)
+            if body_xmat_arr is None:
+                xmat = np.eye(3, dtype=np.float32)
+            else:
+                try:
+                    xmat = np.asarray(
+                        body_xmat_arr[bid], dtype=np.float32
+                    ).reshape(3, 3)
+                except (IndexError, TypeError, ValueError):
+                    xmat = np.eye(3, dtype=np.float32)
+            return xpos.copy(), xmat.copy()
         return None
 
     def _get_mobilebase_joint_addrs(
@@ -795,8 +833,21 @@ class EnvWrapper:
                         f"ori={ori_err:.3f}rad stall={stall}/{stall_limit}"
                     )
 
-            # 世界系 → base 系 (核心修正)
-            _, base_ori = self.get_base_pose()
+            # 世界系 → actual mobile base 系 (Phase 7 step 2 关键修正)
+            #
+            # Bug history: get_base_pose() 返回 anchor 的 ori (hardcoded
+            # yaw=-180°), 但 OSC controller 挂在 actual mobile base 上, action
+            # 在 actual base frame 应用. navigate 后 actual base yaw=-144°,
+            # 与 anchor -180° 偏 36°, 导致 arm 朝错方向走 (Run 5 log:
+            # recent_dists=[0.3416, 0.3470, 0.3580] dist 反向增大).
+            #
+            # 修复: 直接读 sim.data.body_xmat 拿真实 base ori. 失败时 fall
+            # back 到 anchor (legacy 行为, 兼容 mock env / robosuite 旧版).
+            real_pose = self._read_real_base_pose()
+            if real_pose is not None:
+                base_ori = real_pose[1]
+            else:
+                _, base_ori = self.get_base_pose()
             delta_base = base_ori.T @ delta_world  # 3D vector in base frame
 
             dir_base = delta_base / max(dist, 1e-6)
