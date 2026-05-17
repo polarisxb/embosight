@@ -288,3 +288,108 @@ def test_strict_robosuite_path_handles_dict_gripper():
     assert w._finger_object_contact("obj_main", bilateral=True) is True
     # 传入的应该是 fake_right_gripper, 不是整个 dict
     assert check_grasp_mock.call_args[0][0] is fake_right_gripper
+
+
+# ======================================================================
+# Phase 6.2: verify_grasp_by_micro_lift unit tests
+# ======================================================================
+
+
+class _MicroLiftStubWrapper(EnvWrapper):
+    """EnvWrapper subclass that stubs out get_eef_pos / _get_body_pos /
+    move_arm_to for micro-lift testing."""
+
+    def __init__(
+        self,
+        eef_z_start: float = 0.95,
+        obj_z_start: float = 0.94,
+        obj_z_delta_after_lift: float = 0.02,  # how much obj follows
+        eef_z_delta_after_lift: float = 0.02,  # how much EEF actually rose
+        get_body_pos_returns_none: bool = False,
+        raise_on_move: bool = False,
+    ):
+        self._eef_z = eef_z_start
+        self._obj_z = obj_z_start
+        self._obj_z_delta = obj_z_delta_after_lift
+        self._eef_z_delta_actual = eef_z_delta_after_lift
+        self._return_none = get_body_pos_returns_none
+        self._raise_on_move = raise_on_move
+        # provide a fake _env / _latest_obs so move_arm_to doesn't crash
+        # (but we override move_arm_to entirely)
+        self._env = MagicMock()
+        self._latest_obs = {}
+
+    def get_eef_pos(self) -> np.ndarray:
+        return np.array([0.0, 0.0, self._eef_z], dtype=np.float32)
+
+    def _get_body_pos(self, body_name: str):
+        if self._return_none:
+            return None
+        return np.array([0.0, 0.0, self._obj_z], dtype=np.float32)
+
+    def move_arm_to(self, target, **kwargs):
+        if self._raise_on_move:
+            raise RuntimeError("simulated move failure")
+        # Simulate partial completion based on stub config
+        self._eef_z += self._eef_z_delta_actual
+        self._obj_z += self._obj_z_delta
+        return True
+
+
+def test_micro_lift_returns_true_when_obj_follows():
+    """obj 跟随 lift_m * threshold 比例 -> True."""
+    w = _MicroLiftStubWrapper(
+        obj_z_delta_after_lift=0.02,  # full 2cm follow
+        eef_z_delta_after_lift=0.02,
+    )
+    assert w.verify_grasp_by_micro_lift(
+        "obj_main", lift_m=0.02, threshold=0.5,
+    ) is True
+
+
+def test_micro_lift_returns_false_when_obj_stays():
+    """obj Δz=0 -> False (slipped)."""
+    w = _MicroLiftStubWrapper(
+        obj_z_delta_after_lift=0.0,  # obj doesn't move
+        eef_z_delta_after_lift=0.02,
+    )
+    assert w.verify_grasp_by_micro_lift(
+        "obj_main", lift_m=0.02, threshold=0.5,
+    ) is False
+
+
+def test_micro_lift_threshold_applied():
+    """obj Δz < lift_m * threshold -> False."""
+    # threshold=0.5, lift_m=0.02 -> 需要 obj_delta >= 0.01
+    # 给 obj_delta=0.005 -> 不达标
+    w = _MicroLiftStubWrapper(
+        obj_z_delta_after_lift=0.005,
+        eef_z_delta_after_lift=0.02,
+    )
+    assert w.verify_grasp_by_micro_lift(
+        "obj_main", lift_m=0.02, threshold=0.5,
+    ) is False
+    # 同样 0.005 但 threshold=0.2 -> 需要 obj_delta >= 0.004 -> 达标
+    w2 = _MicroLiftStubWrapper(
+        obj_z_delta_after_lift=0.005,
+        eef_z_delta_after_lift=0.02,
+    )
+    assert w2.verify_grasp_by_micro_lift(
+        "obj_main", lift_m=0.02, threshold=0.2,
+    ) is True
+
+
+def test_micro_lift_returns_true_when_body_not_found():
+    """无法读 obj pos -> 保守 True (上游用 post-lift Δz 兜底)."""
+    w = _MicroLiftStubWrapper(get_body_pos_returns_none=True)
+    assert w.verify_grasp_by_micro_lift(
+        "nonexistent_body", lift_m=0.02, threshold=0.5,
+    ) is True
+
+
+def test_micro_lift_returns_true_on_exception():
+    """move_arm_to 抛异常 -> 保守 True (不阻断后续 lift)."""
+    w = _MicroLiftStubWrapper(raise_on_move=True)
+    assert w.verify_grasp_by_micro_lift(
+        "obj_main", lift_m=0.02, threshold=0.5,
+    ) is True

@@ -165,6 +165,13 @@ class ActionExecutor:
                     grasp_ok = env.close_gripper(
                         target_label=getattr(target, "label", None)
                     )
+                    # Phase 6.2: early micro-lift slip detection
+                    failed = self._verify_grasp_via_micro_lift(
+                        env, target, candidate, grasp_ok,
+                        stage="lift_after_reposition",
+                    )
+                    if failed is not None:
+                        return failed
                     lift_ok, final_z = env.lift(approach_dir=_vert)
                     if not lift_ok:
                         return self._failed_result(
@@ -184,6 +191,13 @@ class ActionExecutor:
                     grasp_ok = env.close_gripper(
                         target_label=getattr(target, "label", None)
                     )
+                    # Phase 6.2: early micro-lift slip detection
+                    failed = self._verify_grasp_via_micro_lift(
+                        env, target, candidate, grasp_ok,
+                        stage="descend_reposition_failed",
+                    )
+                    if failed is not None:
+                        return failed
                     lift_ok, final_z = env.lift(approach_dir=_vert)
                     if not lift_ok:
                         return self._failed_result(
@@ -208,6 +222,13 @@ class ActionExecutor:
                 grasp_ok = env.close_gripper(
                     target_label=getattr(target, "label", None)
                 )
+                # Phase 6.2: early micro-lift slip detection
+                failed = self._verify_grasp_via_micro_lift(
+                    env, target, candidate, grasp_ok,
+                    stage="approach_incomplete",
+                )
+                if failed is not None:
+                    return failed
                 lift_ok, final_z = env.lift(approach_dir=approach_dir)
                 if not lift_ok:
                     if not grasp_ok:
@@ -229,6 +250,13 @@ class ActionExecutor:
             grasp_ok = env.close_gripper(
                 target_label=getattr(target, "label", None)
             )
+
+            # 3.5 Phase 6.2: early micro-lift slip detection
+            failed = self._verify_grasp_via_micro_lift(
+                env, target, candidate, grasp_ok, stage="lift",
+            )
+            if failed is not None:
+                return failed
 
             # 4. lift
             lift_ok, final_z = env.lift(approach_dir=approach_dir)
@@ -314,6 +342,84 @@ class ActionExecutor:
             diagnostic=diag,
         )
         return GraspActionResult(success=False, attempt=attempt)
+
+    def _verify_grasp_via_micro_lift(
+        self,
+        env,
+        target,
+        candidate,
+        grasp_ok: bool,
+        stage: str,
+    ) -> "GraspActionResult | None":
+        """Phase 6.2: 关爪后早期 slip 检测 (设计 docs/09 §5).
+
+        若 grasp 不稳 (obj 不跟随 2cm micro-lift), 立即 return slipped_lift,
+        省下后续 ~20s 完整 lift 浪费.
+
+        统一覆盖 act() 的 4 个 close+lift 分支:
+          - lift_after_reposition (base 靠近后 grasp)
+          - descend_reposition_failed (靠近无效, 强行 grasp)
+          - approach_incomplete (z-stall / side 失败时 grasp)
+          - lift (正常路径)
+
+        Returns:
+            failed GraspActionResult 若 micro-lift 检出 slip
+            None 若 (a) grasp_ok=False (没夹住就跳过 verify)
+                   (b) env 没有该 API (backward compat)
+                   (c) target body 解析失败 (defer to post-lift Δz)
+                   (d) micro-lift 通过 (object follows)
+                   (e) micro-lift 抛异常 (保守 continue, 不 block)
+        """
+        if not grasp_ok:
+            return None
+        if not hasattr(env, "verify_grasp_by_micro_lift"):
+            return None
+        try:
+            target_body = self._resolve_target_body(target, env)
+            if not target_body:
+                return None
+            follows = env.verify_grasp_by_micro_lift(
+                target_body, lift_m=0.02, threshold=0.5,
+            )
+            if not follows:
+                return self._failed_result(
+                    candidate, "slipped_lift",
+                    {
+                        "stage": "micro_lift_verify",
+                        "branch": stage,
+                        "reason": "object_not_following",
+                        "threshold": 0.5,
+                        "lift_m": 0.02,
+                    },
+                    env,
+                )
+            return None
+        except Exception as e:
+            logger.debug(
+                f"[act] micro_lift error: {e}, continuing to full lift"
+            )
+            return None
+
+    @staticmethod
+    def _resolve_target_body(target, env) -> str | None:
+        """获取 Hypothesis.label 对应的 sim body name.
+
+        通过 env._get_obj_type_map() 反查 (body_name -> category) 的字典.
+        与 _get_obj_z 用的解析逻辑保持一致.
+        """
+        try:
+            label = getattr(target, "label", None)
+            if not label:
+                return None
+            if not hasattr(env, "_get_obj_type_map"):
+                return None
+            type_map = env._get_obj_type_map()
+            for body, cat in type_map.items():
+                if cat == label:
+                    return body
+            return None
+        except Exception:
+            return None
 
     @staticmethod
     def _get_obj_z(target, env) -> float | None:

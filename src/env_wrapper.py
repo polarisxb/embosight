@@ -2211,6 +2211,78 @@ class EnvWrapper:
         """开爪。"""
         self._gripper_action(-1.0, n_steps=10)
 
+    def verify_grasp_by_micro_lift(
+        self,
+        target_body: str,
+        lift_m: float = 0.02,
+        threshold: float = 0.5,
+        max_steps: int = 80,
+    ) -> bool:
+        """Phase 6.2: 关爪后做微抬, 检查 object 是否跟随 (early slip detection).
+
+        业界标准 early slip detection: 在大 lift 之前快速验证 grasp 稳固性.
+        若 micro-lift 失败, 立即放弃当前 attempt, 省下 ~20s lift_arm 浪费.
+
+        EEF 状态语义 (见 docs/09 §5):
+            成功 -> EEF 已升 lift_m, 调用方可继续 lift(height - lift_m)
+            失败 -> EEF 已升 lift_m, gripper 空; release_and_retreat 会处理
+
+        Args:
+            target_body: sim body name (e.g. "obj_main")
+            lift_m: 微抬高度 (默认 2cm, 设计 §11.2)
+            threshold: object Δz 必须 >= lift_m * threshold (默认 50%)
+            max_steps: move_arm_to 步数上限
+
+        Returns:
+            True 若 object 跟随成功 (or 无法读 obj 时保守 True 让上游兜底).
+            False 若 slipped (object Δz < lift_m * threshold).
+        """
+        try:
+            obj_pos_before = self._get_body_pos(target_body)
+            if obj_pos_before is None:
+                logger.info(
+                    f"[micro_lift] cannot read obj z for {target_body}, "
+                    "skip (defer to post-lift Δz)"
+                )
+                return True
+            obj_z_before = float(obj_pos_before[2])
+            eef_before = self.get_eef_pos().copy()
+
+            target = np.array(
+                [float(eef_before[0]), float(eef_before[1]),
+                 float(eef_before[2]) + float(lift_m)],
+                dtype=np.float32,
+            )
+
+            # gripper_hold=1.0 保持夹爪闭合, 防止松开导致 slip
+            self.move_arm_to(
+                target,
+                threshold_m=0.005,
+                max_steps=max_steps,
+                gripper_hold=1.0,
+            )
+
+            obj_pos_after = self._get_body_pos(target_body)
+            if obj_pos_after is None:
+                return True
+            obj_z_after = float(obj_pos_after[2])
+            obj_delta = obj_z_after - obj_z_before
+            eef_after = self.get_eef_pos()
+            eef_delta = float(eef_after[2]) - float(eef_before[2])
+
+            required = float(lift_m) * float(threshold)
+            follows = obj_delta >= required
+            logger.info(
+                f"[micro_lift] eef Δz={eef_delta:.4f} obj Δz={obj_delta:.4f} "
+                f"follows={follows} (req>={required:.4f}, target={target_body})"
+            )
+            return follows
+        except Exception as e:
+            logger.warning(
+                f"[micro_lift] failed: {e}, conservative pass (defer to post-lift)"
+            )
+            return True
+
     def lift(
         self,
         height_m: float = 0.10,
