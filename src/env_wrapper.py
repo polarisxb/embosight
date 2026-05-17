@@ -1222,6 +1222,15 @@ class EnvWrapper:
                 if stall_count >= 5:
                     gap = curr[2] - target[2]
                     contact = self._finger_object_contact(target_body)
+                    # 关键: stall + contact → 工作空间极限处已接触到目标
+                    # 必须接受当前位置, 不能 reposition (横向移动 EEF 会推开物体)
+                    if contact:
+                        logger.info(
+                            f"[descend] z stalled at {curr[2]:.3f} WITH contact "
+                            f"(Δ={gap:.3f}m above target). Accepting "
+                            f"(workspace limit + in contact with target)."
+                        )
+                        return True, float(curr[2])
                     # 如果已足够接近目标 z (< 1.5cm), 视为成功下降
                     close_enough = gap < 0.015
                     logger.warning(
