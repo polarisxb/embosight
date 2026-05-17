@@ -1012,7 +1012,18 @@ class EnvWrapper:
                 action[0:3] = dir_base * step_size
 
             # 手臂朝向: 把世界系 axis-angle 转到 base 系, 再 clamp + scale
-            if target_quat is not None and ori_err > ori_threshold_rad:
+            #
+            # Phase 9 fix: 只在位置足够近时启用朝向控制. Run 10 暴露:
+            # navigate 旋转 base ~180° → target_quat 的 roll 分量偏移 ~60-180°
+            # 与 30cm 位移同时控制 → OSC 死锁 (800步 dist 几乎不变).
+            # 先 position-only 收敛到 0.15m 内, 再叠加 orientation,
+            # 此时关节变化小, OSC 能同时收敛.
+            _ORI_ACTIVATION_DIST = 0.15  # 距离阈值: 低于此值才启用朝向
+            if (
+                target_quat is not None
+                and ori_err > ori_threshold_rad
+                and dist < _ORI_ACTIVATION_DIST
+            ):
                 try:
                     # ori_delta_world 已在上面计算
                     ori_delta_base = base_ori.T @ ori_delta_world
