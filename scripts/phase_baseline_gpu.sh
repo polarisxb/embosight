@@ -36,12 +36,11 @@ if [[ -z "${DEEPSEEK_API_KEY:-}" ]]; then
     exit 1
 fi
 
-# Validate we are on Phase 0 + Phase 3 commits
-HEAD_SUMMARY=$(git log --oneline -1)
-echo "Current HEAD: $HEAD_SUMMARY"
-if ! git log --oneline -3 | grep -q "Phase 3"; then
-    echo "WARNING: Phase 3 commit not detected in last 3 commits."
-    echo "Make sure you have pulled latest from main."
+# Show current HEAD for record
+echo "Current HEAD: $(git log --oneline -1)"
+if ! git log --oneline -10 | grep -q "Phase 3"; then
+    echo "WARNING: Phase 3 commit not detected in last 10 commits."
+    echo "Make sure you have pulled latest from main (commit dcf9031 or later)."
 fi
 
 echo
@@ -54,11 +53,10 @@ echo
 echo "================================================================"
 echo "Phase 0.5: Baseline measurement on fixed_seed_discover_001"
 echo "================================================================"
-mkdir -p runs/baseline_phase0
+mkdir -p runs/baseline_phase0/memory
 python -m eval.run_fixed \
     --scenario fixed_seed_discover_001 \
     --memory-dir runs/baseline_phase0/memory \
-    --output runs/baseline_phase0/episode \
     --log-level INFO \
     2>&1 | tee /tmp/baseline.log
 

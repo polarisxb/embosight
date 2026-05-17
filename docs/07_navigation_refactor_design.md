@@ -1151,12 +1151,58 @@ sim.forward()
 - 平均 step count
 - DEEPSEEK token 消耗
 
-### D.2 Phase 1 Probe Results (空)
+### D.2 Phase 1 Probe Results (GPU 2026-05-17)
 
-预留：
-- mobilebase joint 命名清单
-- qpos / qvel addrs
-- joint axis
+**执行命令**: `bash scripts/phase_baseline_gpu.sh` (commit `516a3ac`)
+
+**Mobilebase joints (理想化, axis-based 检测可用)**:
+
+| Joint Name | Type | qpos addr | qvel addr | Axis | 用途 |
+|------------|------|-----------|-----------|------|------|
+| `mobilebase0_joint_mobile_forward` | slide (2) | 0 | 0 | (1, 0, 0) | x 平移 |
+| `mobilebase0_joint_mobile_side` | slide (2) | 1 | 1 | (0, 1, 0) | y 平移 |
+| `mobilebase0_joint_mobile_yaw` | hinge (3) | 2 | 2 | (0, 0, 1) | z 旋转 |
+| `mobilebase0_joint_torso_height` | slide (2) | 3 | 3 | (0, 0, 1) | torso z (arm 高度) ⚠ 同轴 |
+
+**重要**: torso joint axis 与 yaw 同方向 (0,0,1)，但 type 不同 (slide vs hinge)。Phase 2 必须用 **(type, axis)** 联合判断, 不能只看 axis:
+- `jtype==2 + axis[2]>0.9` → torso (不写)
+- `jtype==3 + axis[2]>0.9` → yaw
+
+**Arm joints**: `robot0_joint1..7` 标准 panda 7-DOF, qpos[4..10]
+
+**Action vector layout** (action_dim=12):
+
+| Range | Part | Controller | Dim |
+|-------|------|------------|-----|
+| `[0:6]` | right | OperationalSpaceController | 6 (Δpos[3] + Δori[3]) |
+| `[6:7]` | torso | JointPositionController | 1 |
+| `[7:10]` | base | MobileBaseJointVelocityController | 3 (forward, side, yaw) |
+| `[10:12]` | right_gripper | SimpleGripController | 2 |
+
+**重要**: `_get_base_action_idx()` 返回 7. base dim=3 (含 yaw)，但 Phase 3 `move_arm_to` 只写 `action[7]/[8]` (forward/side)，不写 yaw — 等价 legacy 行为。
+
+**Base pose 真相**:
+
+```
+robot.base_pos (anchor):    (10.0, 10.0, 0.0)
+robot.base_ori (xmat):      [[-1, 0, 0], [0, -1, 0], [0, 0, 1]]  ← rot_z(180°)
+
+body 'mobilebase0_base':    xpos = (0.775, -2.882, 0.0)   ← real position
+                            xmat row0 = (-1, 0, 0)         ← same rot_z(180°)
+```
+
+**Phase 2 选型决策**:
+- ✅ Standard axis (1,0,0)/(0,1,0)/(0,0,1) → 用 axis-based 检测（设计文档原方案）
+- ✅ Joint type 区分 slide/hinge 必要 (torso vs yaw 同 axis)
+- ✅ `_read_real_base_xy` 用 `mobilebase{idn}_base` body lookup（已确认 found）
+- ✅ teleport 用 `sim.data.qpos[0..2]` 直接 set (forward, side, yaw)
+- ⏸ torso (qpos[3]) Phase 2 v1 不动；Phase 5 若 arm 够不到高/低物体再加
+
+**Init qpos (arm home pose, 备用)**:
+```
+robot.init_qpos = (-0.01613, -1.03447, -0.02398, -2.27551, 0.03932, 1.51639, 0.69616)
+```
+对应 qpos[4..10] (PandaMobile arm 7-DOF).
 
 ---
 
