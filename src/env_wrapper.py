@@ -330,11 +330,14 @@ class EnvWrapper:
         Returns:
             (xpos:(3,), xmat:(3,3)) np.float32 if real body found, else None.
         """
-        sim = getattr(self._env, "sim", None)
+        env = getattr(self, "_env", None)
+        if env is None:
+            return None
+        sim = getattr(env, "sim", None)
         if sim is None:
             return None
         try:
-            idn = self._env.robots[0].idn
+            idn = env.robots[0].idn
         except Exception:
             idn = 0
         anchor = np.asarray(self._MOBILE_BASE_ANCHOR_XY, dtype=np.float32)
@@ -2247,35 +2250,59 @@ class EnvWrapper:
         target_pos = np.asarray(candidate.point_3d, dtype=np.float32)
         pre_pos = target_pos - ad_unit * float(height_m)
 
-        # 底盘先靠近: 用 pre_pos 的 xy, 但 z 保持当前 eef 高度避免硬碰撞
+        # 底盘先靠近: Phase 4 navigate_base_to 已就位时跳过 (避免 legacy
+        # 硬编码 base_target 把 base 拉到物体另一侧引发 IK regression).
+        #
+        # Run 10 GPU log 暴露的 bug: legacy base_target=(target.x-0.4, target.y)
+        # 假设 Phase 4 把 base 放在 -x 方向, 但 Phase 4 实际根据当前
+        # base→target 方向放置. 若 Phase 4 把 base 放 +x 侧, 此硬编码
+        # 会强行把 base 拉到 -x 侧 = 绕物体 70cm = IK 立即崩.
         try:
             eef = self.get_eef_pos()
-            # 底盘前置点: pre_pos.xy 再后退 0.4m 沿 -approach_dir.xy
-            xy_approach = np.array(
-                [ad_unit[0], ad_unit[1], 0.0], dtype=np.float32,
+            target_xy = np.array(
+                [float(target_pos[0]), float(target_pos[1])],
+                dtype=np.float64,
             )
-            xy_norm = float(np.linalg.norm(xy_approach))
-            if xy_norm > 0.1:
-                xy_unit = xy_approach / xy_norm
-                base_target = np.array([
-                    float(pre_pos[0]) - xy_unit[0] * 0.10,
-                    float(pre_pos[1]) - xy_unit[1] * 0.10,
-                    float(eef[2]),
-                ], dtype=np.float32)
+            real_base = self._read_real_base_xy()
+            base_already_close = (
+                real_base is not None
+                and float(np.linalg.norm(
+                    real_base.astype(np.float64) - target_xy
+                )) < 0.60
+            )
+            if base_already_close:
+                # Phase 4 navigate 已把 base 放在合适位置 (0.30-0.45m offset).
+                # 跳过 legacy base_approach, 直接交给后续 arm-only 精调.
+                logger.info(
+                    f"[pre_grasp] base already positioned by Phase 4 "
+                    f"(dist={float(np.linalg.norm(real_base.astype(np.float64) - target_xy)):.3f}m), "
+                    f"skipping legacy base_approach"
+                )
             else:
-                # top_down 等纯垂直接近: 维持原行为, 底盘前置 0.4m
-                base_target = np.array([
-                    float(target_pos[0]) - 0.4,
-                    float(target_pos[1]),
-                    float(eef[2]),
-                ], dtype=np.float32)
-            # Phase 3: 明示保留 drive_base=True 作为 navigate_base_to 未落地 /
-            # 失败的兑底. 正常路径下 Phase 4 的 navigate 已让 base 就位,
-            # 此 move_arm_to dist 很小, 几步收敛.
-            self.move_arm_to(
-                base_target, threshold_m=0.15, max_steps=600,
-                drive_base=True,
-            )
+                # Legacy fallback: navigate_base_to 不可用 (mock env) 或
+                # 失败. 用 approach_dir 计算 base_target 推进底盘.
+                xy_approach = np.array(
+                    [ad_unit[0], ad_unit[1], 0.0], dtype=np.float32,
+                )
+                xy_norm = float(np.linalg.norm(xy_approach))
+                if xy_norm > 0.1:
+                    xy_unit = xy_approach / xy_norm
+                    base_target = np.array([
+                        float(pre_pos[0]) - xy_unit[0] * 0.10,
+                        float(pre_pos[1]) - xy_unit[1] * 0.10,
+                        float(eef[2]),
+                    ], dtype=np.float32)
+                else:
+                    # top_down 纯垂直: legacy 硬编码 -x 方向 0.4m
+                    base_target = np.array([
+                        float(target_pos[0]) - 0.4,
+                        float(target_pos[1]),
+                        float(eef[2]),
+                    ], dtype=np.float32)
+                self.move_arm_to(
+                    base_target, threshold_m=0.15, max_steps=600,
+                    drive_base=True,
+                )
         except Exception as e:
             logger.debug(f"[pre_grasp] base approach failed: {e}")
 
