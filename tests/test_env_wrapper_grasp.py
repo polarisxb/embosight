@@ -301,18 +301,37 @@ class _BasePoseEnv(EnvWrapper):
         self._env = _Backend()
 
 
-def test_get_base_pose_prefers_mobilebase_body() -> None:
+def test_get_base_pose_prefers_mobilebase_body_pos() -> None:
     """Real mobile base xpos should override the (10,10,0) anchor."""
     real_pos = np.array([0.78, -2.88, 0.0], dtype=np.float32)
-    real_mat = np.eye(3, dtype=np.float32)
     fake_pos = np.array([10.0, 10.0, 0.0], dtype=np.float32)
     env = _BasePoseEnv({
         "robot0_base": (fake_pos, np.eye(3, dtype=np.float32)),
-        "mobilebase0_base": (real_pos, real_mat),
+        "mobilebase0_base": (real_pos, np.eye(3, dtype=np.float32)),
     })
-    pos, mat = env.get_base_pose()
+    pos, _mat = env.get_base_pose()
     np.testing.assert_allclose(pos, real_pos, atol=1e-5)
-    np.testing.assert_allclose(mat, real_mat, atol=1e-5)
+
+
+def test_get_base_pose_returns_identity_ori_even_when_base_rotated() -> None:
+    """Critical contract: ori must be identity regardless of mobilebase xmat.
+
+    robosuite arm OSC and mobile base controllers internally assume base
+    frame = identity (anchor body frame), not the actual mobilebase rotation.
+    Using mobilebase xmat caused move_arm_to to drive base in the OPPOSITE
+    direction in kitchen scenarios where mobilebase is rotated 180° around z.
+    """
+    real_pos = np.array([0.78, -2.88, 0.0], dtype=np.float32)
+    rotated_xmat = np.array([
+        [-1.0, 0.0, 0.0],
+        [0.0, -1.0, 0.0],
+        [0.0, 0.0, 1.0],
+    ], dtype=np.float32)  # rot_z(180°) — what kitchen mobilebase actually has
+    env = _BasePoseEnv({
+        "mobilebase0_base": (real_pos, rotated_xmat),
+    })
+    _pos, mat = env.get_base_pose()
+    np.testing.assert_allclose(mat, np.eye(3), atol=1e-6)
 
 
 def test_get_base_pose_skips_fake_robot_base() -> None:
@@ -348,6 +367,24 @@ def test_is_reachable_works_after_base_pose_fix() -> None:
     })
     obj_pos = np.array([0.35, -3.19, 0.94], dtype=np.float32)
     assert env.is_reachable(obj_pos, np.array([0, 0, -1.0])) is True
+
+
+def test_world_to_base_vec_is_identity_passthrough() -> None:
+    """With ori = identity, world_to_base_vec must be a no-op (rotation-wise).
+
+    This is the critical invariant that makes move_arm_to drive base in the
+    correct direction. If this fails, base will move opposite of intent.
+    """
+    env = _BasePoseEnv({
+        "mobilebase0_base": (
+            np.array([1.0, 2.0, 0.0], dtype=np.float32),
+            # Even with rotated xmat, ori must be identity → vec passes through
+            np.array([[-1.0, 0, 0], [0, -1.0, 0], [0, 0, 1.0]], dtype=np.float32),
+        ),
+    })
+    v = np.array([0.5, -0.3, 0.1], dtype=np.float32)
+    out = env.world_to_base_vec(v)
+    np.testing.assert_allclose(out, v, atol=1e-6)
 
 
 def test_lift_e2e_keeps_gripper_at_one_throughout() -> None:

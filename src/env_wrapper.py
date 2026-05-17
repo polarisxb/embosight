@@ -259,23 +259,29 @@ class EnvWrapper:
             raise RuntimeError("robot0_eef_quat not in observation keys")
         return np.asarray(q, dtype=np.float64)
 
-    # robosuite mobile robots 上, Robot.base_pos / Robot.base_ori 指向
-    # mount anchor body (e.g. robot0_base, hardcoded 到 (10,10,0)) 而非
-    # 实际 mobile base. 真实位置在 sim 中以 'mobilebase{idn}_base' 命名.
-    # 优先级: mobilebase{idn}_base → robot{idn}_base (若非 fake) → property fallback
+    # robosuite mobile robots 上, Robot.base_pos 指向 mount anchor body
+    # (e.g. robot0_base, hardcoded 到 (10,10,0)) 而非实际 mobile base.
+    # 真实位置在 sim 中以 'mobilebase{idn}_base' 命名.
     _MOBILE_BASE_FAKE_XY: tuple[float, float] = (10.0, 10.0)
 
     def get_base_pose(self) -> tuple[np.ndarray, np.ndarray]:
         """获取底盘在世界系的 (位置, 3x3旋转矩阵)
 
-        手臂 OSC 用 input_ref_frame='base', 底盘也是 base 系 JointVelocity,
-        因此所有 action 都是 base 系增量, 需要把世界系 delta 旋转回 base 系.
-
-        实现说明: robosuite 的 Robot.base_pos 在 PandaOmron / PandaMobile 等
-        mobile 机器人上指向 anchor body (xpos = (10,10,0)), 不是真实底盘位置.
-        先按 sim body name 优先级取真实 xpos/xmat, 实在拿不到才回退到 property.
+        关键 robosuite 行为不对称:
+            - Robot.base_pos / 'robot0_base' xpos 是 anchor body 在 (10,10,0),
+              不是真实 mobile base 位置 → 我们读 'mobilebase{idn}_base' xpos.
+            - Robot.base_ori / mobilebase 的 xmat 报告了 base 真实旋转 (例如
+              kitchen 场景里通常是绕 z 转 180°). 但 robosuite 的 arm OSC
+              (input_ref_frame='base') 与 mobile base controller (JointVelocity
+              forward/side) 在内部都假设 base frame = identity (用 anchor body
+              frame), 不会旋转. 实测: 给 forward=0.8 命令时, base 在 world +x
+              方向移动, 与 mobilebase xmat 报告的 -x forward 完全相反.
+            - 因此本函数返回 pos = 真实 mobile base xpos, ori = identity. 这样
+              base_ori.T @ delta_world = delta_world, 与 robosuite controllers
+              的实际假设一致, 避免 forward 命令把 base 推向反方向.
         """
         sim = getattr(self._env, "sim", None)
+        identity = np.eye(3, dtype=np.float32)
         if sim is not None:
             try:
                 robot = self._env.robots[0]
@@ -294,20 +300,17 @@ class EnvWrapper:
                 fake_xy = np.asarray(self._MOBILE_BASE_FAKE_XY, dtype=np.float32)
                 if np.allclose(pos[:2], fake_xy, atol=0.01):
                     continue
-                mat = np.asarray(
-                    sim.data.body_xmat[bid], dtype=np.float32,
-                ).reshape(3, 3)
-                return pos, mat
+                # 注意: 故意返回 identity, 不返回 mobilebase xmat (见 docstring)
+                return pos, identity
 
-        # Fallback: robosuite property (legacy behavior, may be inaccurate)
+        # Fallback: robosuite property pos, identity ori
         try:
             robot = self._env.robots[0]
             base_pos = np.asarray(robot.base_pos, dtype=np.float32)
-            base_ori = np.asarray(robot.base_ori, dtype=np.float32)  # 3x3
-            return base_pos, base_ori
+            return base_pos, identity
         except Exception as e:
-            logger.warning(f"[base_pose] fallback to identity: {e}")
-            return np.zeros(3, dtype=np.float32), np.eye(3, dtype=np.float32)
+            logger.warning(f"[base_pose] fallback to (zero, identity): {e}")
+            return np.zeros(3, dtype=np.float32), identity
 
     def world_to_base_vec(self, vec_world: np.ndarray) -> np.ndarray:
         """世界系向量 → 底盘局部系 (R.T @ v)"""
