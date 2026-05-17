@@ -259,58 +259,27 @@ class EnvWrapper:
             raise RuntimeError("robot0_eef_quat not in observation keys")
         return np.asarray(q, dtype=np.float64)
 
-    # robosuite mobile robots 上, Robot.base_pos 指向 mount anchor body
-    # (e.g. robot0_base, hardcoded 到 (10,10,0)) 而非实际 mobile base.
-    # 真实位置在 sim 中以 'mobilebase{idn}_base' 命名.
-    _MOBILE_BASE_FAKE_XY: tuple[float, float] = (10.0, 10.0)
-
     def get_base_pose(self) -> tuple[np.ndarray, np.ndarray]:
-        """获取底盘在世界系的 (位置, 3x3旋转矩阵)
+        """获取底盘在世界系的 (位置, 3x3旋转矩阵).
 
-        关键 robosuite 行为不对称:
-            - Robot.base_pos / 'robot0_base' xpos 是 anchor body 在 (10,10,0),
-              不是真实 mobile base 位置 → 我们读 'mobilebase{idn}_base' xpos.
-            - Robot.base_ori / mobilebase 的 xmat 报告了 base 真实旋转 (例如
-              kitchen 场景里通常是绕 z 转 180°). 但 robosuite 的 arm OSC
-              (input_ref_frame='base') 与 mobile base controller (JointVelocity
-              forward/side) 在内部都假设 base frame = identity (用 anchor body
-              frame), 不会旋转. 实测: 给 forward=0.8 命令时, base 在 world +x
-              方向移动, 与 mobilebase xmat 报告的 -x forward 完全相反.
-            - 因此本函数返回 pos = 真实 mobile base xpos, ori = identity. 这样
-              base_ori.T @ delta_world = delta_world, 与 robosuite controllers
-              的实际假设一致, 避免 forward 命令把 base 推向反方向.
+        NOTE: 在 robosuite mobile robots 上, Robot.base_pos 指向 mount anchor
+        body (e.g. robot0_base, hardcoded 到 (10,10,0)), 不是真实 mobile base
+        位置. 这是已知的 robosuite limitation - 留作 placeholder, 由未来的
+        navigate_base_to primitive (Phase 2) 用 sim.data.body_xpos 直接读取
+        真实位置.
+
+        当前 caller (move_arm_to / world_to_base_vec / action_executor nudge)
+        在 navigate primitive 落地前接受此 anchor 近似 - 行为与 EmboSight
+        提交 4dd11be 之前 (Layer 1 几何过滤引入之前) 完全一致.
         """
-        sim = getattr(self._env, "sim", None)
-        identity = np.eye(3, dtype=np.float32)
-        if sim is not None:
-            try:
-                robot = self._env.robots[0]
-                idn = getattr(robot, "idn", 0)
-            except Exception:
-                idn = 0
-            for body_name in (
-                f"mobilebase{idn}_base", f"robot{idn}_base",
-            ):
-                try:
-                    bid = sim.model.body_name2id(body_name)
-                except (KeyError, ValueError):
-                    continue
-                pos = np.asarray(sim.data.body_xpos[bid], dtype=np.float32)
-                # 跳过 anchor body 的 fake (10,10,0) 位置
-                fake_xy = np.asarray(self._MOBILE_BASE_FAKE_XY, dtype=np.float32)
-                if np.allclose(pos[:2], fake_xy, atol=0.01):
-                    continue
-                # 注意: 故意返回 identity, 不返回 mobilebase xmat (见 docstring)
-                return pos, identity
-
-        # Fallback: robosuite property pos, identity ori
         try:
             robot = self._env.robots[0]
             base_pos = np.asarray(robot.base_pos, dtype=np.float32)
-            return base_pos, identity
+            base_ori = np.asarray(robot.base_ori, dtype=np.float32)
+            return base_pos, base_ori
         except Exception as e:
             logger.warning(f"[base_pose] fallback to (zero, identity): {e}")
-            return np.zeros(3, dtype=np.float32), identity
+            return np.zeros(3, dtype=np.float32), np.eye(3, dtype=np.float32)
 
     def world_to_base_vec(self, vec_world: np.ndarray) -> np.ndarray:
         """世界系向量 → 底盘局部系 (R.T @ v)"""
@@ -1537,36 +1506,18 @@ class EnvWrapper:
     # v1 ActionExecutor / GraspPlanner 适配接口 (Phase 8.5 真 sim 集成)
     # ------------------------------------------------------------------
 
-    # PandaMobile 工作空间约 base 周围 0.65m 半径 (实测).
-    # 阈值 0.75m 略宽, 给 base 二次靠近留余地; 超过此距离 move_arm_to
-    # 几乎肯定 stall 跑满 800 步, 提前剔除候选可省 ~30s/episode budget.
-    _REACH_RADIUS_M: float = 0.75
-
     def is_reachable(self, point_3d, approach_dir) -> bool:
-        """几何预过滤候选可达性。
+        """候选可达性 placeholder.
 
-        当前仅基于 base→point 水平距离: 超过 _REACH_RADIUS_M 视为不可达,
-        避免 GraspPlanner 把不可达候选送进 move_to_pre_grasp 浪费步数。
-        approach_dir 暂未用 (留作后续 IK pose 检查接口).
+        Returns True unconditionally (legacy contract). Acts as a placeholder
+        for a future geometric / IK / navigation-aware filter. The current
+        contract is preserved so GraspPlanner.plan() does not prune candidates
+        based on stale base pose info.
 
-        Returns False 仅在能确证不可达时; 不确定时保守返 True 让
-        move_arm_to 自己判断 (与改动前等价行为)。
+        Re-enable plan: introduce navigate_base_to primitive (Phase 2) first,
+        then turn this into a proper reachability check.
         """
-        try:
-            base_pos, _ = self.get_base_pose()
-            horiz = float(np.linalg.norm(
-                np.asarray(point_3d, dtype=np.float32)[:2] - base_pos[:2]
-            ))
-            if horiz > self._REACH_RADIUS_M:
-                logger.info(
-                    "[is_reachable] False: base→point horiz=%.2fm > %.2fm",
-                    horiz, self._REACH_RADIUS_M,
-                )
-                return False
-            return True
-        except Exception as e:
-            logger.debug("[is_reachable] geometry check failed: %s", e)
-            return True
+        return True
 
     def move_to_pre_grasp(self, candidate, height_m: float = 0.05) -> bool:
         """移动到 candidate 的 pre-grasp 位置, 朝向对齐 candidate.approach_dir。
