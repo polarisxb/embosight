@@ -1389,14 +1389,50 @@ class EnvWrapper:
         # 无法检测时保守返回 True (不因检测失败阻止后续流程)
         return True
 
-    def _finger_object_contact(self, target_body: str) -> bool:
-        """检查夹爪指尖是否与指定物体的 geom 处于接触
+    def _finger_object_contact(
+        self,
+        target_body: str,
+        bilateral: bool = False,
+    ) -> bool:
+        """检查夹爪指尖是否与指定物体的 geom 处于接触.
 
-        通过遍历 `sim.data.contact[0:ncon]`, 判断每个接触对中:
-        是否一边是 target body 的 geom, 另一边是 finger geom.
+        Phase 6.1: 支持两种语义 (设计文档 docs/09 §4):
 
-        相比 `_check_grasp_contact` (`is_grasping` 任意物体即 True),
-        此方法**特定到目标物体**, 用于下降阶段的早停判断.
+        - bilateral=False (default, lenient): 任意一指与 object 接触即 True.
+          用于 descend / approach 阶段早停 (gripper OPEN, 两指张开 ~8cm,
+          物理上不可能两侧同时碰一个 5cm 物体). **保 backward compat**:
+          所有现有 callsite 沿用此模式.
+
+        - bilateral=True (strict): left_fingerpad AND right_fingerpad 都
+          必须与 object 接触. 用于 close_gripper 的 grasp 确认, 防止
+          "fingertip 擦边" false positive (robosuite._check_grasp 标准).
+
+        Strict 模式三层 fallback:
+          Path 1: env._check_grasp(gripper, object_geoms)  ← robosuite 官方
+          Path 2: 本地 geom name left/right 分组
+          降级:   _lenient_finger_contact (避免 API 异常永久 reject)
+        """
+        if not bilateral:
+            return self._lenient_finger_contact(target_body)
+        # Strict bilateral
+        result = self._strict_grasp_via_robosuite(target_body)
+        if result is not None:
+            return result
+        result = self._strict_grasp_bilateral_local(target_body)
+        if result is not None:
+            return result
+        # 降级到 lenient (避免不规范命名 gripper 上 close_gripper 永远 reject)
+        logger.debug(
+            f"[grasp_check] strict bilateral unavailable for {target_body}, "
+            "falling back to lenient"
+        )
+        return self._lenient_finger_contact(target_body)
+
+    def _lenient_finger_contact(self, target_body: str) -> bool:
+        """Phase 6.1 lenient mode: 任意一指 contact 即 True.
+
+        从 Phase 5 _finger_object_contact 整体抽出, 逻辑完全不变.
+        用于 descend / approach 早停 (gripper OPEN).
         """
         sim = self._env.sim
         try:
@@ -1424,6 +1460,113 @@ class EnvWrapper:
         except Exception as e:
             logger.debug(f"[finger_contact] {target_body}: {e}")
         return False
+
+    def _strict_grasp_via_robosuite(
+        self, target_body: str,
+    ) -> Optional[bool]:
+        """Phase 6.1 strict path 1: 调 robosuite ManipulationEnv._check_grasp.
+
+        业界标准 (manipulation_env.py): 要求 left_fingerpad AND right_fingerpad
+        两组 geom 都与 object_geoms 有 contact.
+
+        Returns:
+            True / False if API 可用且成功执行
+            None 若 API 不存在 / important_geoms 缺失 / 任何异常 → caller fallback
+        """
+        try:
+            env = self._env
+            if not hasattr(env, "_check_grasp"):
+                return None
+            robot = env.robots[0]
+            gripper = robot.gripper
+            # PandaMobile / dual-arm: gripper 可能是 dict {'right': GripperModel}
+            if isinstance(gripper, dict):
+                gripper = gripper.get("right") or next(
+                    iter(gripper.values()), None,
+                )
+            if gripper is None or not hasattr(gripper, "important_geoms"):
+                return None
+            if "left_fingerpad" not in gripper.important_geoms:
+                return None
+            # robosuite API 接受 geom NAME 列表
+            obj_geom_ids = self._get_body_geom_ids(target_body)
+            obj_geom_names = []
+            for gid in obj_geom_ids:
+                try:
+                    name = env.sim.model.geom_id2name(gid)
+                except Exception:
+                    name = None
+                if name:
+                    obj_geom_names.append(name)
+            if not obj_geom_names:
+                return None
+            result = bool(env._check_grasp(gripper, obj_geom_names))
+            logger.debug(
+                f"[grasp_check] robosuite API: {target_body} -> {result}"
+            )
+            return result
+        except Exception as e:
+            logger.debug(f"[grasp_check] robosuite API failed: {e}")
+            return None
+
+    def _strict_grasp_bilateral_local(
+        self, target_body: str,
+    ) -> Optional[bool]:
+        """Phase 6.1 strict path 2: 本地 bilateral 判定.
+
+        基于 geom name 中 'left'/'right' 关键字分组. 要求两组都有 contact.
+
+        Returns:
+            True / False 若能区分左右且完成判定
+            None 若无法区分左右 → caller fallback to lenient
+        """
+        sim = self._env.sim
+        try:
+            obj_geoms = self._get_body_geom_ids(target_body)
+            if not obj_geoms:
+                return False
+
+            pad_kw = ("finger_pad", "fingerpad", "fingertip", "pad", "tip")
+            left_geoms: set[int] = set()
+            right_geoms: set[int] = set()
+            for i in range(sim.model.ngeom):
+                try:
+                    name = (sim.model.geom_id2name(i) or "").lower()
+                except Exception:
+                    name = ""
+                if not any(kw in name for kw in pad_kw):
+                    continue
+                if "left" in name or "_l_" in name or name.endswith("_l"):
+                    left_geoms.add(i)
+                elif "right" in name or "_r_" in name or name.endswith("_r"):
+                    right_geoms.add(i)
+
+            if not left_geoms or not right_geoms:
+                return None  # 无法区分, caller fallback
+
+            left_touch = right_touch = False
+            for i in range(sim.data.ncon):
+                c = sim.data.contact[i]
+                g1, g2 = int(c.geom1), int(c.geom2)
+                if g1 in obj_geoms:
+                    opp = g2
+                elif g2 in obj_geoms:
+                    opp = g1
+                else:
+                    continue
+                if opp in left_geoms:
+                    left_touch = True
+                if opp in right_geoms:
+                    right_touch = True
+                if left_touch and right_touch:
+                    logger.debug(
+                        f"[grasp_check] local bilateral: {target_body} -> True"
+                    )
+                    return True
+            return False
+        except Exception as e:
+            logger.debug(f"[grasp_check] local bilateral failed: {e}")
+            return None
 
     def _descend_until_contact(
         self,
@@ -1557,7 +1700,11 @@ class EnvWrapper:
             except Exception as e:
                 logger.warning(f"[close_gripper] step {i} failed: {e}")
                 return False
-            target_contact = self._finger_object_contact(target_body)
+            # Phase 6.1: 用 strict bilateral 模式 (双侧 fingerpad 必须接触),
+            # 防止 "fingertip 擦边" 的 false positive (设计文档 docs/09 §4).
+            target_contact = self._finger_object_contact(
+                target_body, bilateral=True,
+            )
             generic_grasp = self._check_grasp_contact()
             if not confirmed and i >= min_close_steps and target_contact and generic_grasp:
                 logger.info(f"[close_gripper] contact at step {i}, squeezing {squeeze_steps} more")
