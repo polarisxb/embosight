@@ -529,3 +529,303 @@ class TestSafetyPriorReader:
         from src.memory_manager import MemoryManager
         mm = MemoryManager(memory_dir=Path(tempfile.mkdtemp()))
         assert mm.get_safety_prior("knife") is None
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Schema v2 / code_version / per-reason ban (added 2026-05-17)
+# ──────────────────────────────────────────────────────────────────────
+
+class TestSchemaV2:
+    """v1 entries auto-migrate to v2 dict shape on load."""
+
+    def _make_v1_dir(self) -> Path:
+        import yaml
+        d = Path(tempfile.mkdtemp()) / "memory"
+        d.mkdir()
+        (d / "index.yaml").write_text(yaml.dump({
+            "version": 1,
+            "domains": {"grasp": str(d / "grasp_experience.yaml")},
+        }), encoding="utf-8")
+        (d / "grasp_experience.yaml").write_text(yaml.dump({
+            "entries": [{
+                "object_type": "wooden_spoon",
+                "best_strategy": "handle_grasp",
+                "failed": [
+                    {"strategy": "top_down", "reason": "slipped", "count": 3},
+                ],
+                "total_attempts": 4,
+                "success_count": 1,
+            }],
+        }), encoding="utf-8")
+        return d
+
+    def test_v1_entry_migrates_strategies_dict(self):
+        from src.memory_manager import MemoryManager
+        d = self._make_v1_dir()
+        mm = MemoryManager(memory_dir=d)
+        entries = mm._load_domain("grasp")
+        e = entries[0]
+        # v1 fields preserved
+        assert e["best_strategy"] == "handle_grasp"
+        assert len(e["failed"]) == 1
+        # v2 dict generated
+        assert "strategies" in e
+        assert e["strategies"]["top_down"]["failures"] == 3
+        assert e["strategies"]["top_down"]["failures_by_reason"]["slipped"] == 3
+        assert e["strategies"]["handle_grasp"]["successes"] == 1
+
+    def test_v2_entry_passes_through(self):
+        """Already-v2 entries are not re-migrated (idempotent)."""
+        import yaml
+        from src.memory_manager import MemoryManager
+        d = Path(tempfile.mkdtemp()) / "memory"
+        d.mkdir()
+        (d / "index.yaml").write_text(yaml.dump({
+            "domains": {"grasp": str(d / "grasp_experience.yaml")},
+        }), encoding="utf-8")
+        (d / "grasp_experience.yaml").write_text(yaml.dump({
+            "schema_version": 2,
+            "entries": [{
+                "object_type": "spoon",
+                "strategies": {
+                    "top_down": {"successes": 0, "failures": 2,
+                                 "failures_by_reason": {"slipped_lift": 2}},
+                },
+            }],
+        }), encoding="utf-8")
+        mm = MemoryManager(memory_dir=d)
+        e = mm._load_domain("grasp")[0]
+        assert e["strategies"]["top_down"]["failures_by_reason"]["slipped_lift"] == 2
+
+
+class TestCodeVersionInvalidation:
+    def _make_dir_with_code_version(self, cv: str) -> Path:
+        import yaml
+        d = Path(tempfile.mkdtemp()) / "memory"
+        d.mkdir()
+        (d / "index.yaml").write_text(yaml.dump({
+            "domains": {"grasp": str(d / "grasp_experience.yaml")},
+        }), encoding="utf-8")
+        (d / "grasp_experience.yaml").write_text(yaml.dump({
+            "code_version": cv,
+            "entries": [{
+                "object_type": "wooden_spoon",
+                "strategies": {
+                    "top_down": {"successes": 0, "failures": 5,
+                                 "failures_by_reason": {"slipped_lift": 5}},
+                },
+            }],
+        }), encoding="utf-8")
+        return d
+
+    def test_matching_code_version_keeps_data_authoritative(self):
+        from src.memory_manager import MemoryManager, GRASP_CODE_VERSION
+        d = self._make_dir_with_code_version(GRASP_CODE_VERSION)
+        mm = MemoryManager(memory_dir=d)
+        assert mm.is_grasp_memory_stale() is False
+        assert mm.is_strategy_banned("wooden_spoon", "top_down") is True
+
+    def test_mismatched_code_version_flags_stale_disables_ban(self):
+        from src.memory_manager import MemoryManager
+        d = self._make_dir_with_code_version("v0.0-bug-era")
+        mm = MemoryManager(memory_dir=d)
+        assert mm.is_grasp_memory_stale() is True
+        # ban logic disabled -- previous bugs shouldn't poison fresh runs
+        assert mm.is_strategy_banned("wooden_spoon", "top_down") is False
+        assert mm.get_banned_strategies("wooden_spoon") == set()
+
+    def test_save_resets_stale_flag(self):
+        """Saving with current code stamps the file with current version,
+        clearing stale on subsequent reads."""
+        import yaml
+        from src.memory_manager import (
+            GRASP_CODE_VERSION, MemoryEntry, MemoryManager,
+        )
+        d = self._make_dir_with_code_version("v0.0-bug-era")
+        mm = MemoryManager(memory_dir=d)
+        assert mm.is_grasp_memory_stale() is True
+
+        mm.record_event(MemoryEntry(
+            step=1, domain="grasp", event="strategy_succeeded",
+            context={"strategy": "handle_grasp"}, lesson="x",
+        ))
+        mm.consolidate(success=True, object_type="wooden_spoon")
+
+        # Verify file now has current code_version
+        with open(d / "grasp_experience.yaml", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+        assert data["code_version"] == GRASP_CODE_VERSION
+
+        # Fresh load: stale flag should be cleared
+        mm2 = MemoryManager(memory_dir=d)
+        assert mm2.is_grasp_memory_stale() is False
+
+
+class TestPerReasonBan:
+    def _make_dir_with_strategies(self, strategies: dict) -> Path:
+        import yaml
+        from src.memory_manager import GRASP_CODE_VERSION
+        d = Path(tempfile.mkdtemp()) / "memory"
+        d.mkdir()
+        (d / "index.yaml").write_text(yaml.dump({
+            "domains": {"grasp": str(d / "grasp_experience.yaml")},
+        }), encoding="utf-8")
+        (d / "grasp_experience.yaml").write_text(yaml.dump({
+            "code_version": GRASP_CODE_VERSION,
+            "entries": [{
+                "object_type": "wooden_spoon",
+                "strategies": strategies,
+            }],
+        }), encoding="utf-8")
+        return d
+
+    def test_three_failures_one_reason_bans(self):
+        from src.memory_manager import MemoryManager
+        d = self._make_dir_with_strategies({
+            "top_down": {"successes": 0, "failures": 3,
+                         "failures_by_reason": {"slipped_lift": 3}},
+        })
+        mm = MemoryManager(memory_dir=d)
+        assert mm.is_strategy_banned("wooden_spoon", "top_down") is True
+
+    def test_three_distinct_reasons_each_one_does_not_ban(self):
+        """Per-reason threshold: 3 different fail modes (each x1) should NOT ban.
+        Prevents conflating distinct failure modes.
+        """
+        from src.memory_manager import MemoryManager
+        d = self._make_dir_with_strategies({
+            "top_down": {"successes": 0, "failures": 3,
+                         "failures_by_reason": {
+                             "slipped_lift": 1,
+                             "slipped_descend": 1,
+                             "gripper_empty": 1,
+                         }},
+        })
+        mm = MemoryManager(memory_dir=d)
+        assert mm.is_strategy_banned("wooden_spoon", "top_down") is False
+
+    def test_retired_entry_disables_ban(self):
+        from src.memory_manager import MemoryManager
+        d = self._make_dir_with_strategies({
+            "top_down": {"successes": 0, "failures": 5,
+                         "failures_by_reason": {"slipped_lift": 5}},
+        })
+        # patch entry to add retired flag
+        import yaml
+        with open(d / "grasp_experience.yaml", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+        data["entries"][0]["retired"] = True
+        with open(d / "grasp_experience.yaml", "w", encoding="utf-8") as f:
+            yaml.dump(data, f)
+        mm = MemoryManager(memory_dir=d)
+        assert mm.is_strategy_banned("wooden_spoon", "top_down") is False
+        assert mm.get_banned_strategies("wooden_spoon") == set()
+
+    def test_get_banned_strategies_collects_all(self):
+        from src.memory_manager import MemoryManager
+        d = self._make_dir_with_strategies({
+            "top_down": {"successes": 0, "failures": 3,
+                         "failures_by_reason": {"slipped_lift": 3}},
+            "handle_grasp": {"successes": 1, "failures": 1,
+                             "failures_by_reason": {"slipped_lift": 1}},
+            "tilted_grasp": {"successes": 0, "failures": 4,
+                             "failures_by_reason": {"unreachable": 4}},
+        })
+        mm = MemoryManager(memory_dir=d)
+        banned = mm.get_banned_strategies("wooden_spoon")
+        assert banned == {"top_down", "tilted_grasp"}
+        assert "handle_grasp" not in banned
+
+    def test_consolidate_writes_failures_by_reason(self):
+        from src.memory_manager import (
+            GRASP_CODE_VERSION, MemoryEntry, MemoryManager,
+        )
+        import yaml
+        d = Path(tempfile.mkdtemp()) / "memory"
+        d.mkdir()
+        (d / "index.yaml").write_text(yaml.dump({
+            "domains": {"grasp": str(d / "grasp_experience.yaml")},
+        }), encoding="utf-8")
+        (d / "grasp_experience.yaml").write_text(
+            yaml.dump({"entries": []}), encoding="utf-8",
+        )
+        mm = MemoryManager(memory_dir=d)
+        for reason in ["slipped_lift", "slipped_lift", "gripper_empty"]:
+            mm.record_event(MemoryEntry(
+                step=1, domain="grasp", event="strategy_failed",
+                context={"strategy": "top_down", "failure": reason},
+                lesson="x",
+            ))
+        mm.consolidate(success=False, object_type="wooden_spoon")
+
+        # File should have both v2 strategies dict + v1 failed list
+        with open(d / "grasp_experience.yaml", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+        assert data["code_version"] == GRASP_CODE_VERSION
+        e = data["entries"][0]
+        assert e["strategies"]["top_down"]["failures"] == 3
+        fbr = e["strategies"]["top_down"]["failures_by_reason"]
+        assert fbr["slipped_lift"] == 2
+        assert fbr["gripper_empty"] == 1
+
+
+class TestGraspPlannerWithMemory:
+    """grasp_planner uses memory.get_banned_strategies when memory= passed."""
+
+    def test_stale_memory_does_not_ban(self):
+        """Bug-era data with mismatched code_version should not influence ban."""
+        import yaml
+        from src.grasp_planner import GraspPlanner
+        from src.memory_manager import MemoryManager
+        from src.world_belief import Hypothesis, Pose
+        d = Path(tempfile.mkdtemp()) / "memory"
+        d.mkdir()
+        (d / "index.yaml").write_text(yaml.dump({
+            "domains": {"grasp": str(d / "grasp_experience.yaml")},
+        }), encoding="utf-8")
+        (d / "grasp_experience.yaml").write_text(yaml.dump({
+            "code_version": "v0.0-bug-era",
+            "entries": [{
+                "object_type": "wooden_spoon",
+                "strategies": {
+                    "top_down": {"successes": 0, "failures": 5,
+                                 "failures_by_reason": {"slipped_lift": 5}},
+                },
+            }],
+        }), encoding="utf-8")
+        mm = MemoryManager(memory_dir=d)
+
+        class _FakeEnv:
+            def is_reachable(self, *a, **kw):
+                return True
+            def get_eef_pos(self):
+                import numpy as np
+                return np.array([0, 0, 1])
+            def get_base_pose(self):
+                import numpy as np
+                return np.array([0, 0, 0]), np.eye(3)
+
+        import numpy as np
+        h = Hypothesis(
+            object_id="obj_0",
+            label="wooden_spoon",
+            label_alternatives=[("wooden_spoon", 1.0)],
+            label_entropy=0.0,
+            position_3d=np.array([0.5, 0.0, 0.1]),
+            position_std_m=0.01,
+            pose_estimate=Pose(
+                position=np.array([0.5, 0.0, 0.1]),
+                rotation_quat=np.array([0, 0, 0, 1]),
+                upright=True,
+            ),
+            safety_dist={"safe": 1.0},
+        )
+        planner = GraspPlanner(vlm=None, env=_FakeEnv(), llm=None)
+        # legacy regex fallback would ban top_down, but structured API knows
+        # the data is stale -> top_down available again
+        strat = planner.select_strategy(
+            h,
+            memory_advice="wooden_spoon: avoid top_down (slipped_lift x5)",
+            memory=mm,
+        )
+        assert strat.strategy == "top_down"

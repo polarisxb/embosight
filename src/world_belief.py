@@ -70,7 +70,11 @@ class GraspAttempt:
         "hit_z_floor",                # OSC 卡 z, 没下到目标深度
         "ik_unreachable",             # 工作空间外
         "collision",                  # 撞到其他物体
-        "slipped",                    # 关爪后物体掉了
+        "slipped",                    # 旧名: 关爪后物体掉了 (back-compat, 保留)
+        "slipped_lift",               # 关爪 confirmed 但 lift 时滑落
+        "slipped_descend",            # 接近时接触丢失 (e.g. 物体被推开)
+        "gripper_empty",              # close_gripper 没检测到接触
+        "unreachable",                # IK / 工作空间限制 (slipped_descend 别名)
         "verify_mismatch",            # post-grasp VLM 说抓错了
         "timeout",                    # OSC 步数耗尽
     ]

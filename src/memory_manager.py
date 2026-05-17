@@ -3,6 +3,12 @@
 Working memory: in-process list, written in real-time during episode.
 Long-term memory: YAML files in memory/ dir, consolidated after episode.
 
+Schema versioning (since 2026-05-17):
+- schema_version: structural format version (currently 2)
+- code_version: bump when grasp-execution semantics change. On code_version
+  mismatch the data is loaded but flagged stale -- no banning is applied,
+  preventing bug-era failures from poisoning fresh runs.
+
 Design: docs/superpowers/specs/2026-05-11-dual-store-memory-design.md
 """
 from __future__ import annotations
@@ -14,6 +20,25 @@ from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+# Bump when grasp execution semantics change in a way that invalidates
+# historical strategy success/failure judgements.
+# v6.1: stall+contact accepts position; reposition uses margin-adjusted gap.
+GRASP_CODE_VERSION = "v6.1"
+GRASP_SCHEMA_VERSION = 2
+
+# Failure reason taxonomy (used by ban logic + analytics).
+# Refined 2026-05-17 to distinguish lift slip from descend slip.
+FAILURE_REASONS = {
+    "slipped_lift",      # grasp confirmed but object did not lift
+    "slipped_descend",   # contact lost during approach (e.g. object pushed)
+    "gripper_empty",     # close_gripper found no contact
+    "unreachable",       # IK / workspace limit before any contact
+    "hit_z_floor",       # legacy: descend stalled, no contact
+    "slipped",           # legacy: pre-refinement reason, kept for back-compat
+}
+
+_FAIL_BAN_THRESHOLD = 3  # per (strategy, reason) tuple
 
 
 @dataclass
@@ -39,6 +64,11 @@ class MemoryManager:
         self.working_memory: list[MemoryEntry] = []
         self._long_term: dict[str, list[dict]] = {}
         self._domain_files: dict[str, Path] = {}
+        # Per-domain stale flag: set True when on-disk code_version mismatches
+        # current GRASP_CODE_VERSION. Stale data is loaded for visibility but
+        # is NOT used by is_strategy_banned() -- preventing bug-era failures
+        # from poisoning fresh runs.
+        self._stale: dict[str, bool] = {}
         self._load_index()
 
     # ── Load (index + domain files) ──
@@ -70,12 +100,68 @@ class MemoryManager:
             with open(fpath, encoding="utf-8") as f:
                 data = yaml.safe_load(f) or {}
             entries = data.get("entries", []) or []
+            # Code-version invalidation (grasp domain only for now).
+            if domain == "grasp":
+                file_code_version = data.get("code_version")
+                if file_code_version and file_code_version != GRASP_CODE_VERSION:
+                    logger.warning(
+                        "[memory] grasp data is stale "
+                        "(file code_version=%s, current=%s) -- "
+                        "loaded for visibility but ban logic disabled",
+                        file_code_version, GRASP_CODE_VERSION,
+                    )
+                    self._stale[domain] = True
+                else:
+                    self._stale[domain] = False
+            # In-place migrate v1 entries to v2 dict shape so downstream
+            # code can rely on `strategies: {name: {...}}` consistently.
+            if domain == "grasp":
+                entries = [self._migrate_grasp_entry_v1_to_v2(e) for e in entries]
             self._long_term[domain] = entries
             return entries
         except Exception as e:
             logger.warning("[memory] failed to load %s: %s", domain, e)
             self._long_term[domain] = []
             return []
+
+    @staticmethod
+    def _migrate_grasp_entry_v1_to_v2(entry: dict) -> dict:
+        """Idempotent v1 -> v2 migration for a single grasp entry.
+
+        v1 shape: {object_type, best_strategy, failed: [{strategy,reason,count}], ...}
+        v2 shape: {object_type, strategies: {name: {successes, failures_by_reason: {reason: count}, ...}}, ...}
+        Already-v2 entries are returned unchanged.
+        """
+        if "strategies" in entry and isinstance(entry["strategies"], dict):
+            return entry
+        strategies: dict[str, dict] = {}
+        for f in entry.get("failed", []) or []:
+            strat = f.get("strategy")
+            if not strat:
+                continue
+            slot = strategies.setdefault(strat, {
+                "successes": 0,
+                "failures": 0,
+                "failures_by_reason": {},
+            })
+            count = int(f.get("count", 1))
+            reason = str(f.get("reason", "unknown"))
+            slot["failures"] += count
+            slot["failures_by_reason"][reason] = (
+                slot["failures_by_reason"].get(reason, 0) + count
+            )
+        best = entry.get("best_strategy")
+        if best:
+            slot = strategies.setdefault(best, {
+                "successes": 0,
+                "failures": 0,
+                "failures_by_reason": {},
+            })
+            slot["successes"] = int(entry.get("success_count", 1)) or 1
+        # Preserve original keys + new strategies dict
+        out = dict(entry)
+        out["strategies"] = strategies
+        return out
 
     # ── Record (real-time, episode 内) ──
 
@@ -101,22 +187,96 @@ class MemoryManager:
         for entry in entries:
             if entry.get("object_type", "").lower().strip() == obj_key:
                 parts = []
-                # 收集失败信息
+                # 收集失败信息 (兼容 v1 failed 列表 + v2 strategies 字典)
                 failed_strategies: set[str] = set()
                 for f in entry.get("failed", []):
                     count = f.get("count", 1)
                     parts.append(
                         f"avoid {f['strategy']} ({f['reason']} x{count})"
                     )
-                    if count >= 3:
+                    if count >= _FAIL_BAN_THRESHOLD:
                         failed_strategies.add(f["strategy"])
+                # v2 path: emit advice from strategies dict if v1 failed list is empty
+                if not parts:
+                    for strat, data in entry.get("strategies", {}).items():
+                        for reason, count in data.get("failures_by_reason", {}).items():
+                            parts.append(f"avoid {strat} ({reason} x{count})")
+                            if count >= _FAIL_BAN_THRESHOLD:
+                                failed_strategies.add(strat)
                 # "prefer X" 仅在 X 没有严重失败时输出, 否则会产生矛盾信号
                 best = entry.get("best_strategy")
+                if not best:
+                    # derive from v2 strategies dict (highest successes wins)
+                    best_succ = 0
+                    for strat, data in entry.get("strategies", {}).items():
+                        s = int(data.get("successes", 0))
+                        if s > best_succ:
+                            best_succ = s
+                            best = strat
                 if best and best not in failed_strategies:
                     parts.insert(0, f"prefer {best}")
+                if self._stale.get("grasp"):
+                    parts.append("(NOTE: prior data marked stale by code_version)")
                 if parts:
                     return f"{object_type}: {', '.join(parts)}"
         return None
+
+    # ── Strategy ban API (replaces grasp_planner regex parsing) ──
+
+    def is_strategy_banned(self, object_type: str, strategy: str) -> bool:
+        """True if (object_type, strategy) should be excluded from selection.
+
+        Rules:
+        - Stale grasp data (code_version mismatch) -> never ban.
+        - Explicitly retired entry -> never ban.
+        - Ban if any single failure_reason count >= _FAIL_BAN_THRESHOLD.
+
+        Per-reason threshold matters: 3 different failure modes (each x1) do
+        NOT trigger ban. Same mode x3 does. Prevents ban-from-conflated-modes.
+        """
+        entries = self._load_domain("grasp")
+        if self._stale.get("grasp", False):
+            return False
+        obj_key = object_type.lower().strip()
+        for entry in entries:
+            if entry.get("object_type", "").lower().strip() != obj_key:
+                continue
+            if entry.get("retired"):
+                return False
+            strat_data = entry.get("strategies", {}).get(strategy)
+            if not strat_data:
+                return False
+            for count in strat_data.get("failures_by_reason", {}).values():
+                if int(count) >= _FAIL_BAN_THRESHOLD:
+                    return True
+            return False
+        return False
+
+    def get_banned_strategies(self, object_type: str) -> set[str]:
+        """All banned strategies for object_type. Empty if stale/missing."""
+        entries = self._load_domain("grasp")
+        if self._stale.get("grasp", False):
+            return set()
+        obj_key = object_type.lower().strip()
+        banned: set[str] = set()
+        for entry in entries:
+            if entry.get("object_type", "").lower().strip() != obj_key:
+                continue
+            if entry.get("retired"):
+                return set()
+            for strat, data in entry.get("strategies", {}).items():
+                for count in data.get("failures_by_reason", {}).values():
+                    if int(count) >= _FAIL_BAN_THRESHOLD:
+                        banned.add(strat)
+                        break
+            return banned
+        return banned
+
+    def is_grasp_memory_stale(self) -> bool:
+        """Return True if loaded grasp data is from a different code_version."""
+        # ensure load happened
+        self._load_domain("grasp")
+        return self._stale.get("grasp", False)
 
     def get_recognition_hints(self, target: str) -> Optional[str]:
         entries = self._load_domain("recognition")
@@ -207,22 +367,39 @@ class MemoryManager:
             target_entry = {
                 "object_type": object_type,
                 "best_strategy": None,
-                "failed": [],
+                "failed": [],         # v1 mirror (kept for human-readable diff)
+                "strategies": {},     # v2 canonical
                 "total_attempts": 0,
                 "success_count": 0,
+                "retired": False,
                 "notes": "",
                 "last_updated": "",
             }
             entries.append(target_entry)
 
+        # ensure v2 dict exists (entries loaded from old files have it via migration)
+        target_entry.setdefault("strategies", {})
+
         for e in events:
             target_entry["total_attempts"] = target_entry.get("total_attempts", 0) + 1
+            strat = e.context.get("strategy", "")
+            slot = target_entry["strategies"].setdefault(strat, {
+                "successes": 0,
+                "failures": 0,
+                "failures_by_reason": {},
+            })
             if e.event == "strategy_succeeded":
                 target_entry["success_count"] = target_entry.get("success_count", 0) + 1
-                target_entry["best_strategy"] = e.context.get("strategy")
+                target_entry["best_strategy"] = strat
+                slot["successes"] = int(slot.get("successes", 0)) + 1
+                # success on a previously-retired entry un-retires it
+                target_entry["retired"] = False
             elif e.event == "strategy_failed":
-                strat = e.context.get("strategy", "")
                 reason = e.context.get("failure", "unknown")
+                slot["failures"] = int(slot.get("failures", 0)) + 1
+                fbr = slot.setdefault("failures_by_reason", {})
+                fbr[reason] = int(fbr.get(reason, 0)) + 1
+                # v1 mirror so existing tools/UIs that read 'failed' still work
                 existing_fail = None
                 for f in target_entry.get("failed", []):
                     if f.get("strategy") == strat and f.get("reason") == reason:
@@ -414,10 +591,20 @@ class MemoryManager:
         try:
             import yaml
             fpath.parent.mkdir(parents=True, exist_ok=True)
+            payload: dict = {"entries": self._long_term.get(domain, [])}
+            # Stamp grasp domain with schema + code versions so future loads
+            # can detect format mismatches and code-era invalidation.
+            if domain == "grasp":
+                payload = {
+                    "schema_version": GRASP_SCHEMA_VERSION,
+                    "code_version": GRASP_CODE_VERSION,
+                    "entries": payload["entries"],
+                }
+                # Saving with current code_version implicitly re-validates the file.
+                self._stale[domain] = False
             with open(fpath, "w", encoding="utf-8") as f:
                 yaml.dump(
-                    {"entries": self._long_term.get(domain, [])},
-                    f, allow_unicode=True, default_flow_style=False,
+                    payload, f, allow_unicode=True, default_flow_style=False,
                     sort_keys=False,
                 )
         except Exception as e:

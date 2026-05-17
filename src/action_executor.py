@@ -146,13 +146,17 @@ class ActionExecutor:
                         "[act] base reposition succeeded, descend reached z=%.3f",
                         z_actual,
                     )
-                    env.close_gripper(target_label=getattr(target, "label", None))
+                    grasp_ok = env.close_gripper(
+                        target_label=getattr(target, "label", None)
+                    )
                     lift_ok, final_z = env.lift(approach_dir=_vert)
                     if not lift_ok:
                         return self._failed_result(
-                            candidate, "slipped",
+                            candidate,
+                            "slipped_lift" if grasp_ok else "gripper_empty",
                             {"z_target": z_target, "z_actual": float(z_actual),
-                             "final_z": float(final_z), "stage": "lift_after_reposition"},
+                             "final_z": float(final_z), "stage": "lift_after_reposition",
+                             "grasp_confirmed": bool(grasp_ok)},
                             env,
                         )
                 else:
@@ -161,13 +165,17 @@ class ActionExecutor:
                         "[act] reposition didn't help (z=%.3f), trying grasp at current z",
                         z_actual,
                     )
-                    env.close_gripper(target_label=getattr(target, "label", None))
+                    grasp_ok = env.close_gripper(
+                        target_label=getattr(target, "label", None)
+                    )
                     lift_ok, final_z = env.lift(approach_dir=_vert)
                     if not lift_ok:
                         return self._failed_result(
-                            candidate, "hit_z_floor",
+                            candidate,
+                            "hit_z_floor" if not grasp_ok else "slipped_lift",
                             {"z_target": z_target, "z_actual": float(z_actual),
-                             "stage": "descend_reposition_failed"},
+                             "stage": "descend_reposition_failed",
+                             "grasp_confirmed": bool(grasp_ok)},
                             env,
                         )
             else:
@@ -181,28 +189,38 @@ class ActionExecutor:
                     "[act] %s (gap=%.3fm), grasping at current pose",
                     reason, gap,
                 )
-                env.close_gripper(target_label=getattr(target, "label", None))
+                grasp_ok = env.close_gripper(
+                    target_label=getattr(target, "label", None)
+                )
                 lift_ok, final_z = env.lift(approach_dir=approach_dir)
                 if not lift_ok:
+                    if not grasp_ok:
+                        mode = "gripper_empty"
+                    else:
+                        mode = "hit_z_floor" if is_top_down else "ik_unreachable"
                     return self._failed_result(
-                        candidate,
-                        "hit_z_floor" if is_top_down else "ik_unreachable",
+                        candidate, mode,
                         {"z_target": z_target, "z_actual": float(z_actual),
                          "stage": "approach_incomplete",
-                         "is_top_down": bool(is_top_down)},
+                         "is_top_down": bool(is_top_down),
+                         "grasp_confirmed": bool(grasp_ok)},
                         env,
                     )
         else:
             # 3. close gripper (正常路径)
-            env.close_gripper(target_label=getattr(target, "label", None))
+            grasp_ok = env.close_gripper(
+                target_label=getattr(target, "label", None)
+            )
 
             # 4. lift
             lift_ok, final_z = env.lift(approach_dir=approach_dir)
             if not lift_ok:
                 return self._failed_result(
-                    candidate, "slipped",
+                    candidate,
+                    "slipped_lift" if grasp_ok else "gripper_empty",
                     {"z_target": z_target, "z_actual": float(z_actual),
-                     "final_z": float(final_z), "stage": "lift"},
+                     "final_z": float(final_z), "stage": "lift",
+                     "grasp_confirmed": bool(grasp_ok)},
                     env,
                 )
 
@@ -216,7 +234,7 @@ class ActionExecutor:
                     obj_z_before, obj_z_after, obj_dz,
                 )
                 return self._failed_result(
-                    candidate, "slipped",
+                    candidate, "slipped_lift",
                     {"z_target": z_target, "z_actual": float(z_actual),
                      "final_z": float(final_z),
                      "obj_z_before": obj_z_before, "obj_z_after": obj_z_after,

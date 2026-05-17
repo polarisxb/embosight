@@ -574,7 +574,9 @@ class EmboSightAgent:
             grasp_advice = self.memory.get_grasp_advice(hyp.label) or ""
             working_advice = self.memory.get_working_summary(domain="grasp")
             memory_advice = "\n".join(filter(None, [grasp_advice, working_advice]))
-            strategy = self.grasp_planner.select_strategy(hyp, memory_advice=memory_advice)
+            strategy = self.grasp_planner.select_strategy(
+                hyp, memory_advice=memory_advice, memory=self.memory,
+            )
             hyp.grasp_strategy = strategy
             logger.info(
                 "[agent] grasp strategy: %s | reason: %s | speech: %s",

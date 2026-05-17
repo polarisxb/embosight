@@ -24,12 +24,13 @@ def _hyp_with_candidate(score=0.9):
 
 class FakeEnv:
     def __init__(self, descend_ok=True, ik_ok=True, lift_ok=True,
-                 final_z=0.05, obj_lifts=True):
+                 final_z=0.05, obj_lifts=True, grasp_ok=True):
         self.descend_ok = descend_ok
         self.ik_ok = ik_ok
         self.lift_ok = lift_ok
         self.final_z = final_z
         self.obj_lifts = obj_lifts
+        self.grasp_ok = grasp_ok
         self._gripper_open = True
         self._lifted = False
         self.calls: list[str] = []
@@ -56,7 +57,7 @@ class FakeEnv:
     def close_gripper(self, target_label=None) -> bool:
         self.calls.append("close")
         self._gripper_open = False
-        return True
+        return self.grasp_ok
 
     def open_gripper(self) -> bool:
         self.calls.append("open")
@@ -118,7 +119,7 @@ class TestAct:
         h, _ = _hyp_with_candidate()
         result = exe.act(h, DecomposedTask(primary_target="apple"), env)
         assert result.success is False
-        assert result.attempt.failure_mode == "slipped"
+        assert result.attempt.failure_mode == "slipped_lift"
 
     def test_hit_z_floor_recovery_obj_lifted(self):
         """descend fails → base reposition → re-descend fails → grasp at current z →
@@ -176,10 +177,10 @@ class TestAct:
         )
 
     def test_hit_z_floor_recovery_fails(self):
-        """descend fails AND lift after reposition also fails → hit_z_floor."""
+        """descend fails AND lift after reposition also fails + gripper empty → hit_z_floor."""
         from src.action_executor import ActionExecutor
         from src.world_belief import DecomposedTask
-        env = FakeEnv(descend_ok=False, lift_ok=False, final_z=0.0)
+        env = FakeEnv(descend_ok=False, lift_ok=False, final_z=0.0, grasp_ok=False)
         exe = ActionExecutor(scene_describer=None)
         h, _ = _hyp_with_candidate()
         result = exe.act(h, DecomposedTask(primary_target="apple"), env)
@@ -193,7 +194,7 @@ class TestAct:
         exe = ActionExecutor(scene_describer=None)
         h, _ = _hyp_with_candidate()
         result = exe.act(h, DecomposedTask(primary_target="apple"), env)
-        assert result.attempt.failure_mode == "slipped"
+        assert result.attempt.failure_mode == "slipped_lift"
 
     def test_no_candidates_returns_failure(self):
         from src.action_executor import ActionExecutor

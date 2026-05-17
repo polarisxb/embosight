@@ -53,9 +53,11 @@ class GraspPlanner:
 
     @staticmethod
     def _parse_banned_strategies(memory_advice: str) -> set[str]:
-        """从 memory_advice 中提取失败次数 ≥ _FAIL_BAN_THRESHOLD 的策略名。
+        """Legacy regex-based ban parser. Kept for back-compat with callers that
+        only have a memory_advice string (no MemoryManager reference).
 
-        识别格式: "avoid <strategy> (<reason> x<N>)"
+        Prefer passing `memory=` to select_strategy() -- the structured API
+        respects code_version invalidation and per-reason thresholds.
         """
         banned: set[str] = set()
         for m in re.finditer(r"avoid\s+(\w+)\s+\([^)]*x(\d+)", memory_advice):
@@ -64,13 +66,25 @@ class GraspPlanner:
                 banned.add(strat)
         return banned
 
-    def select_strategy(self, hyp: Hypothesis, memory_advice: str = "") -> GraspStrategy:
+    def select_strategy(
+        self, hyp: Hypothesis, memory_advice: str = "",
+        memory=None,
+    ) -> GraspStrategy:
         """让 LLM 根据物体外观 + 安全属性选择抓取策略。
 
-        失败 ≥ _FAIL_BAN_THRESHOLD 次的策略会从可选列表中物理删除。
+        Ban source priority (most authoritative first):
+        1. memory.get_banned_strategies(label) -- structured, respects code_version
+        2. _parse_banned_strategies(memory_advice) -- regex fallback
         """
         all_strategies = {"tilted_grasp", "top_down", "gentle_side", "handle_grasp", "scoop_under", "refuse"}
-        banned = self._parse_banned_strategies(memory_advice)
+        if memory is not None:
+            try:
+                banned = set(memory.get_banned_strategies(hyp.label))
+            except Exception as e:
+                logger.warning("[grasp_planner] memory.get_banned_strategies failed: %s", e)
+                banned = self._parse_banned_strategies(memory_advice)
+        else:
+            banned = self._parse_banned_strategies(memory_advice)
         available = all_strategies - banned
         if banned:
             logger.info("[grasp_planner] banned strategies (fail≥%d): %s",
