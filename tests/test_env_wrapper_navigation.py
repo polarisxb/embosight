@@ -383,3 +383,64 @@ def test_navigate_with_anchor_at_10_10_yaw_pi_real_robocasa_layout() -> None:
         f"Base flew to anchor area: new_xy={tuple(new_xy.tolist())}. "
         "world<->qpos transform is broken."
     )
+
+
+# ======================================================================
+# Phase 8a: torso joint API tests
+# ======================================================================
+
+
+def test_get_torso_joint_info_finds_slide_z() -> None:
+    """_get_torso_joint_info should locate the slide+(0,0,1) joint and
+    NOT confuse it with yaw hinge or other joints."""
+    env = _NavStubEnv(base_xy=(0.0, 0.0), include_torso=True)
+    info = env._get_torso_joint_info()
+    assert info is not None
+    addr, lo, hi = info
+    assert addr == 3  # torso is qpos[3] in our stub layout
+    # Stub doesn't model jnt_range -> falls back to default [-1, 1]
+    assert lo == -1.0
+    assert hi == 1.0
+
+
+def test_get_torso_joint_info_returns_none_when_absent() -> None:
+    """When the torso joint is missing, _get_torso_joint_info returns None."""
+    env = _NavStubEnv(base_xy=(0.0, 0.0), include_torso=False)
+    assert env._get_torso_joint_info() is None
+
+
+def test_get_torso_height_reads_qpos() -> None:
+    """get_torso_height returns the current sim.data.qpos[addr]."""
+    env = _NavStubEnv(base_xy=(0.0, 0.0), include_torso=True)
+    # Pre-seed torso qpos[3] to 0.123
+    env._env.sim.data.qpos[3] = 0.123
+    h = env.get_torso_height()
+    assert h is not None
+    assert abs(h - 0.123) < 1e-9
+
+
+def test_set_torso_height_writes_qpos_and_zeros_qvel() -> None:
+    """set_torso_height teleports torso joint, zeros qvel, calls forward."""
+    env = _NavStubEnv(base_xy=(0.0, 0.0), include_torso=True)
+    env._env.sim.data.qvel[3] = 1.5  # nonzero velocity
+    ok = env.set_torso_height(0.05)
+    assert ok is True
+    assert abs(float(env._env.sim.data.qpos[3]) - 0.05) < 1e-9
+    assert abs(float(env._env.sim.data.qvel[3])) < 1e-9
+
+
+def test_set_torso_height_clamps_to_range() -> None:
+    """Out-of-range requests get silently clamped to [lo, hi]."""
+    env = _NavStubEnv(base_xy=(0.0, 0.0), include_torso=True)
+    # stub range falls back to [-1, 1]; request 5.0 should clamp to 1.0
+    env.set_torso_height(5.0)
+    assert abs(float(env._env.sim.data.qpos[3]) - 1.0) < 1e-9
+    env.set_torso_height(-5.0)
+    assert abs(float(env._env.sim.data.qpos[3]) - (-1.0)) < 1e-9
+
+
+def test_set_torso_height_returns_false_when_joint_missing() -> None:
+    """Without a torso joint, set_torso_height fails gracefully."""
+    env = _NavStubEnv(base_xy=(0.0, 0.0), include_torso=False)
+    ok = env.set_torso_height(0.10)
+    assert ok is False

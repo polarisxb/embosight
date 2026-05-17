@@ -423,6 +423,108 @@ class EnvWrapper:
         )
         return result
 
+    def _get_torso_joint_info(
+        self,
+    ) -> Optional[tuple[int, float, float]]:
+        """返回 (qpos_addr, range_lo, range_hi) of mobilebase torso slide.
+
+        PandaMobile 的 torso 是 axis=(0,0,1) slide joint, 与 yaw hinge
+        同轴方向但 type 不同. 用于 Phase 8a (lower torso for top_down
+        grasp to extend vertical reach).
+
+        Returns:
+            tuple (qpos_addr, lower_bound, upper_bound) or None.
+        """
+        cached = getattr(self, "_torso_joint_cache", "uninit")
+        if cached != "uninit":
+            return cached  # type: ignore[return-value]
+
+        sim = getattr(self._env, "sim", None)
+        if sim is None:
+            self._torso_joint_cache = None
+            return None
+
+        for jid in range(sim.model.njnt):
+            name = sim.model.joint_id2name(jid)
+            if not name or "torso" not in name.lower():
+                continue
+            jtype = int(sim.model.jnt_type[jid])
+            axis = sim.model.jnt_axis[jid]
+            if jtype != 2:
+                continue  # not a slide joint
+            if abs(float(axis[2])) < 0.9:
+                continue  # not vertical
+            addr = int(sim.model.jnt_qposadr[jid])
+            try:
+                rng = sim.model.jnt_range[jid]
+                lo, hi = float(rng[0]), float(rng[1])
+            except Exception:
+                lo, hi = -1.0, 1.0
+            result = (addr, lo, hi)
+            self._torso_joint_cache = result
+            logger.info(
+                f"[torso] cached torso joint: qpos={addr}, "
+                f"range=[{lo:.3f}, {hi:.3f}]"
+            )
+            return result
+
+        self._torso_joint_cache = None
+        return None
+
+    def get_torso_height(self) -> Optional[float]:
+        """读当前 torso joint qpos 值. None if joint not found."""
+        info = self._get_torso_joint_info()
+        if info is None:
+            return None
+        sim = getattr(self._env, "sim", None)
+        if sim is None:
+            return None
+        addr = info[0]
+        try:
+            return float(sim.data.qpos[addr])
+        except Exception:
+            return None
+
+    def set_torso_height(self, height_m: float) -> bool:
+        """Teleport torso slide joint to absolute qpos value `height_m`.
+
+        Phase 8a: top_down grasp 前 lower torso → 扩展手臂垂直工作空间.
+        Run 7 数据: arm 触底 z=0.965m vs 目标 z=0.913m, gap 5.2cm.
+        Lower torso 5-10cm 让 arm 触底也下降相同量, 抵消 gap.
+
+        Args:
+            height_m: 期望的 torso qpos 绝对值. 自动 clamp 到 joint range.
+
+        Returns:
+            True 若成功 set qpos. False 若 joint 不存在或 sim 不可用.
+
+        语义: best-effort, sim-only API. 与 navigate_base_to 同模式
+        (bypass controller, 直接写 qpos + sim.forward()).
+        """
+        info = self._get_torso_joint_info()
+        if info is None:
+            logger.debug("[torso] no torso joint, skip set")
+            return False
+        sim = getattr(self._env, "sim", None)
+        if sim is None:
+            return False
+        addr, lo, hi = info
+        clamped = float(np.clip(height_m, lo, hi))
+        try:
+            sim.data.qpos[addr] = clamped
+            sim.data.qvel[addr] = 0.0
+            sim.forward()
+        except Exception as e:
+            logger.warning(f"[torso] set qpos failed: {e}")
+            return False
+        actual = float(sim.data.qpos[addr])
+        logger.info(
+            f"[torso] set height: requested={height_m:.3f} "
+            f"clamped={clamped:.3f} actual={actual:.3f} "
+            f"range=[{lo:.3f}, {hi:.3f}]"
+        )
+        return True
+
     def navigate_base_to(
         self,
         target_xy,
@@ -1815,10 +1917,18 @@ class EnvWrapper:
                 )
                 return True, float(curr[2])
 
-            # 收敛检测: 连续 5 步 z 几乎没下降才算 stall (放宽至 0.5mm)
+            # 收敛检测: 连续 3 步 z 几乎没下降才算 stall (Phase 7d)
+            #
+            # Run 7 GPU log showed 7 descend iters before stall_count=5
+            # fired (each iter ~8s, 56s wasted before exit). Tightening to
+            # 3 means at most ~24s wasted before exit. Threshold 0.5mm
+            # already separates "barely moving" from "slow-but-real" so
+            # 3 vs 5 doesn't increase false positives on legitimate descent
+            # — by iter 3 of <0.5mm change, arm is clearly at workspace
+            # limit (move_arm_to also reports stall internally).
             if prev_z is not None and abs(prev_z - curr[2]) < 0.0005:
                 stall_count += 1
-                if stall_count >= 5:
+                if stall_count >= 3:
                     gap = curr[2] - target[2]
                     contact = self._finger_object_contact(target_body)
                     # 关键: stall + contact → 工作空间极限处已接触到目标

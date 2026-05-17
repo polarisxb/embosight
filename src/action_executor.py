@@ -88,6 +88,48 @@ class ActionExecutor:
                     f"[act] navigate_base_to failed: {e}, falling through"
                 )
 
+        # Phase 8a: lower torso for top_down to extend vertical reach.
+        # Run 7 GPU log: arm bottomed out at z=0.965m vs target z=0.913m,
+        # gap 5.2cm → close_gripper grabbed empty space, lift failed.
+        # Solution: drop torso by (current_min_reach_z - required_target_z),
+        # so arm's reach budget moves down with it.
+        approach_dir = np.asarray(
+            getattr(candidate, "approach_dir", [0.0, 0.0, -1.0]),
+            dtype=np.float32,
+        )
+        ad_norm = float(np.linalg.norm(approach_dir))
+        if ad_norm < 1e-6:
+            approach_dir = np.array([0.0, 0.0, -1.0], dtype=np.float32)
+        else:
+            approach_dir = approach_dir / ad_norm
+        is_top_down = (
+            approach_dir[2] < -0.9
+            and abs(approach_dir[0]) < 0.1
+            and abs(approach_dir[1]) < 0.1
+        )
+
+        if is_top_down and hasattr(env, "set_torso_height"):
+            try:
+                current = env.get_torso_height()
+                target_z = float(candidate.point_3d[2])
+                # Empirical from Run 7: nominal arm reach min z ≈ 0.97m at
+                # default torso. Need arm to reach 2cm below grasp target.
+                NOMINAL_REACH_Z = 0.97
+                SAFETY_MARGIN = 0.02
+                required_drop = max(
+                    0.0, NOMINAL_REACH_Z - (target_z - SAFETY_MARGIN)
+                )
+                if current is not None and required_drop > 0.005:
+                    env.set_torso_height(current - required_drop)
+                    logger.info(
+                        "[act] torso lowered: %.3f → %.3f for top_down "
+                        "target_z=%.3f (drop=%.3fm)",
+                        current, current - required_drop,
+                        target_z, required_drop,
+                    )
+            except Exception as e:
+                logger.debug(f"[act] torso adjust failed: {e}")
+
         # 1. pre-grasp
         if not env.move_to_pre_grasp(candidate):
             return self._failed_result(
@@ -104,22 +146,6 @@ class ActionExecutor:
                 target.grasp_strategy.strategy, {},
             )
             margin_m = params.get("depth_margin", 0.015)
-
-        # 解析候选 approach_dir (默认 top_down)
-        approach_dir = np.asarray(
-            getattr(candidate, "approach_dir", [0.0, 0.0, -1.0]),
-            dtype=np.float32,
-        )
-        ad_norm = float(np.linalg.norm(approach_dir))
-        if ad_norm < 1e-6:
-            approach_dir = np.array([0.0, 0.0, -1.0], dtype=np.float32)
-        else:
-            approach_dir = approach_dir / ad_norm
-        is_top_down = (
-            approach_dir[2] < -0.9
-            and abs(approach_dir[0]) < 0.1
-            and abs(approach_dir[1]) < 0.1
-        )
 
         descend_ok, z_actual = env.approach(
             candidate.point_3d,

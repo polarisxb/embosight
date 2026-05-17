@@ -359,3 +359,111 @@ class TestPhase4NavigateIntegration:
         # Pipeline runs end-to-end as before Phase 4
         assert result.success is True
         assert "move_to_pre_grasp" in env.calls
+
+
+# ============================================================
+# Phase 8a: torso lift integration tests
+# ============================================================
+
+class _TorsoCapturingEnv(_NavCapturingEnv):
+    """FakeEnv extension that records set_torso_height + get_torso_height."""
+
+    def __init__(self, current_torso: float = 0.0, **kwargs):
+        super().__init__(**kwargs)
+        self._torso_h = float(current_torso)
+        self.torso_calls: list[float] = []
+
+    def get_torso_height(self):
+        return self._torso_h
+
+    def set_torso_height(self, height_m: float) -> bool:
+        self.torso_calls.append(float(height_m))
+        self.calls.append("set_torso")
+        self._torso_h = float(height_m)
+        return True
+
+
+class TestPhase8aTorsoLift:
+    def test_top_down_lowers_torso_before_pre_grasp(self):
+        """For top_down approach with low target z, act() should lower torso
+        before pre-grasp so arm can reach down to grasp z."""
+        from src.action_executor import ActionExecutor
+        from src.world_belief import DecomposedTask
+        # Target z=0.91 → required drop = 0.97 - (0.91 - 0.02) = 0.08m
+        env = _TorsoCapturingEnv(current_torso=0.0)
+        exe = ActionExecutor(scene_describer=None)
+        h, c = _hyp_with_candidate()
+        c.point_3d = np.array([0.5, 0.0, 0.91])  # low counter object
+        h.position_3d = c.point_3d
+        h.grasp_candidates = [c]
+
+        exe.act(h, DecomposedTask(primary_target="apple"), env)
+
+        assert env.torso_calls, "set_torso_height must be called for top_down"
+        # set_torso should fire BEFORE pre_grasp
+        assert env.calls.index("set_torso") < env.calls.index("move_to_pre_grasp")
+        # Required drop = 0.97 - (0.91 - 0.02) = 0.08, so target = 0 - 0.08
+        np.testing.assert_allclose(env.torso_calls[0], -0.08, atol=1e-6)
+
+    def test_high_target_does_not_lower_torso(self):
+        """If target z is high enough that arm can already reach (≥0.97 - 0.02
+        = 0.95), no torso adjustment is needed."""
+        from src.action_executor import ActionExecutor
+        from src.world_belief import DecomposedTask
+        env = _TorsoCapturingEnv(current_torso=0.0)
+        exe = ActionExecutor(scene_describer=None)
+        h, c = _hyp_with_candidate()
+        c.point_3d = np.array([0.5, 0.0, 1.20])  # high cabinet object
+        h.position_3d = c.point_3d
+        h.grasp_candidates = [c]
+
+        exe.act(h, DecomposedTask(primary_target="apple"), env)
+
+        # required_drop = max(0, 0.97 - 1.18) = 0 → no torso call
+        assert env.torso_calls == [], (
+            f"high target should not trigger torso adjust, got {env.torso_calls}"
+        )
+
+    def test_side_approach_does_not_lower_torso(self):
+        """Side grasps don't suffer the vertical-reach bottleneck;
+        torso adjustment is gated to top_down only."""
+        from src.action_executor import ActionExecutor
+        from src.world_belief import (
+            DecomposedTask, GraspCandidate, Hypothesis,
+        )
+        env = _TorsoCapturingEnv(current_torso=0.0)
+        exe = ActionExecutor(scene_describer=None)
+        c = GraspCandidate(
+            point_3d=np.array([0.5, 0.0, 0.91]),
+            approach_dir=np.array([1.0, 0.0, 0.0]),  # side
+            finger_width_m=0.04, score=0.9,
+            source="side_test",
+        )
+        h = Hypothesis(
+            object_id="o0", label="apple",
+            label_alternatives=[("apple", 0.9)], label_entropy=0.1,
+            position_3d=c.point_3d, position_std_m=0.02,
+            grasp_candidates=[c],
+        )
+
+        exe.act(h, DecomposedTask(primary_target="apple"), env)
+
+        assert env.torso_calls == [], (
+            f"side approach must not adjust torso, got {env.torso_calls}"
+        )
+
+    def test_act_works_without_set_torso_height(self):
+        """Backward compat: legacy mocks lacking set_torso_height still work."""
+        from src.action_executor import ActionExecutor
+        from src.world_belief import DecomposedTask
+        env = _NavCapturingEnv()  # has navigate, lacks set_torso_height
+        assert not hasattr(env, "set_torso_height")
+        exe = ActionExecutor(scene_describer=None)
+        h, c = _hyp_with_candidate()
+        c.point_3d = np.array([0.5, 0.0, 0.91])
+        h.position_3d = c.point_3d
+        h.grasp_candidates = [c]
+
+        result = exe.act(h, DecomposedTask(primary_target="apple"), env)
+        assert result.success is True
+        assert "move_to_pre_grasp" in env.calls
