@@ -1142,14 +1142,52 @@ sim.forward()
 
 ## 附录 D: Baseline & Probe Results (待填充)
 
-### D.1 Phase 0.5 Baseline (空)
+### D.1 Phase 0.5 Baseline (GPU 2026-05-17, commit `b35574d`)
 
-预留：
-- `fixed_seed_discover_001` episode 结果
-- `max_steps reached` 出现次数
-- 失败模式分布
-- 平均 step count
-- DEEPSEEK token 消耗
+**Scenario**: `fixed_seed_discover_001`  
+**Object**: `tupperware` (seed=42 自动 spawn)  
+**Result**: ❌ Failure (`MAX_STEPS reached` after 13 agent steps, 213.2s wall-time)
+
+**Position data**:
+
+| Entity | World XYZ |
+|--------|-----------|
+| Target tupperware | (0.346, -3.194, 0.943) |
+| Real mobilebase | (0.775, -2.882, 0.000) |
+| **Horizontal dist** | **0.529 m** (close to arm reach edge ~0.65 m) |
+
+**Failure trace**:
+```
+[move_arm_to] max_steps reached, dist=0.4059m ori_err=0.0000rad    ← try 1: top_down
+[move_arm_to] max_steps reached, dist=0.2064m ori_err=0.1622rad    ← try 2: top_down (retry)
+[move_arm_to] max_steps reached, dist=0.1335m ori_err=0.4959rad    ← try 3: tilted_grasp
+```
+
+Three move_arm_to invocations each spent 800 steps but couldn't converge — base navigation failed silently while LLM kept switching strategies.
+
+**Action sequence** (13 steps):
+```
+observe → classify_safety → re_observe → ask_user → classify_safety
+→ plan_grasp_candidates → grasp(top_down)        ← fail 1
+→ plan_grasp_candidates → grasp(top_down)        ← fail 2  
+→ plan_grasp_candidates → re_observe → re_observe → ask_user
+```
+
+LLM correctly tried `top_down → top_down → tilted_grasp` but all hit `ik_unreachable` (which is actually base nav stall, per design doc section 1.2).
+
+**Key metrics**:
+- `[move_arm_to] max_steps reached` count: **3** (each consuming ~55s)
+- `ik_unreachable` count: 3
+- `slipped_lift` count: 0 (gripper never closed)
+- DEEPSEEK 6 calls (~0.8s each)
+- Total wall-time: 213.2s
+
+**Phase 5 expectation** (after Phase 2+4):
+- `max_steps reached` count: → 0-1 (navigate puts base in arm-reach range)
+- `ik_unreachable` count: → 0 for this scenario (base 0.45m from target, arm reach 0.65m)
+- Wall-time: → < 80s (~3x speedup, no 55s stalls)
+
+**Episode log**: `logs/episodes/episode_1779010927_pick_up_the_tupperware.json` (kept on GPU server for diff against Phase 5)
 
 ### D.2 Phase 1 Probe Results (GPU 2026-05-17)
 

@@ -286,6 +286,210 @@ class EnvWrapper:
         _, base_ori = self.get_base_pose()
         return base_ori.T @ np.asarray(vec_world, dtype=np.float32)
 
+    # ------------------------------------------------------------------
+    # Phase 2: navigate_base_to primitive (sim-only teleport)
+    # ------------------------------------------------------------------
+
+    # Anchor body xpos hardcoded by robosuite mobile robots (see Phase 1 probe)
+    _MOBILE_BASE_ANCHOR_XY: tuple[float, float] = (10.0, 10.0)
+
+    def _read_real_base_xy(self) -> Optional[np.ndarray]:
+        """读取 mobile base 真实 world XY (绕开 robot.base_pos anchor (10,10,0)).
+
+        Phase 1 probe 确认在 RoboCasa kitchen 场景 PandaMobile 下:
+        - body 'mobilebase{idn}_base' xpos = 真实位置 (e.g. (0.775, -2.882, 0))
+        - body 'robot{idn}_base' xpos = anchor (10, 10, 0)
+
+        Returns:
+            (2,) np.float32 with world XY, or None if no real body found.
+        """
+        sim = getattr(self._env, "sim", None)
+        if sim is None:
+            return None
+        try:
+            idn = self._env.robots[0].idn
+        except Exception:
+            idn = 0
+        for body_name in (f"mobilebase{idn}_base", f"robot{idn}_base"):
+            try:
+                bid = sim.model.body_name2id(body_name)
+            except (KeyError, ValueError):
+                continue
+            xpos = np.asarray(sim.data.body_xpos[bid], dtype=np.float32)
+            # Skip the anchor body (10,10,0)
+            anchor = np.asarray(self._MOBILE_BASE_ANCHOR_XY, dtype=np.float32)
+            if np.allclose(xpos[:2], anchor, atol=0.01):
+                continue
+            return xpos[:2].copy()
+        return None
+
+    def _get_mobilebase_joint_addrs(
+        self,
+    ) -> Optional[tuple[Optional[int], Optional[int], Optional[int]]]:
+        """返回 mobilebase (x_qpos_addr, y_qpos_addr, yaw_qpos_addr). 缓存.
+
+        Phase 1 probe 显示 PandaMobile 在 RoboCasa 下有 4 个 base joints:
+            mobilebase0_joint_mobile_forward  slide axis=(1,0,0) → x
+            mobilebase0_joint_mobile_side     slide axis=(0,1,0) → y
+            mobilebase0_joint_mobile_yaw      hinge axis=(0,0,1) → yaw
+            mobilebase0_joint_torso_height    slide axis=(0,0,1) → torso (excluded)
+
+        必须用 (type, axis) 联合判断: slide+(0,0,1) 是 torso (不是 yaw),
+        hinge+(0,0,1) 才是 yaw.
+
+        Returns:
+            tuple of three int (or None for missing) -- (x_addr, y_addr, yaw_addr)
+            or None if NO mobilebase joint found at all.
+        """
+        cached = getattr(self, "_mobilebase_joint_cache", "uninit")
+        if cached != "uninit":
+            return cached  # type: ignore[return-value]
+
+        sim = getattr(self._env, "sim", None)
+        if sim is None:
+            self._mobilebase_joint_cache = None
+            return None
+
+        x_addr: Optional[int] = None
+        y_addr: Optional[int] = None
+        yaw_addr: Optional[int] = None
+        found_any = False
+        for jid in range(sim.model.njnt):
+            name = sim.model.joint_id2name(jid)
+            if not name or "mobile" not in name.lower():
+                continue
+            found_any = True
+            jtype = int(sim.model.jnt_type[jid])
+            axis = sim.model.jnt_axis[jid]
+            addr = int(sim.model.jnt_qposadr[jid])
+            if jtype == 2:  # slide
+                if abs(float(axis[0])) > 0.9:
+                    x_addr = addr
+                elif abs(float(axis[1])) > 0.9:
+                    y_addr = addr
+                # slide + z = torso (skip)
+            elif jtype == 3:  # hinge
+                if abs(float(axis[2])) > 0.9:
+                    yaw_addr = addr
+
+        if not found_any:
+            logger.warning("[navigate] no mobilebase joint found")
+            self._mobilebase_joint_cache = None
+            return None
+
+        result = (x_addr, y_addr, yaw_addr)
+        self._mobilebase_joint_cache = result
+        logger.info(
+            f"[navigate] cached mobilebase joints: "
+            f"x_qpos={x_addr} y_qpos={y_addr} yaw_qpos={yaw_addr}"
+        )
+        return result
+
+    def navigate_base_to(
+        self,
+        target_xy,
+        offset_m: float = 0.45,
+    ) -> bool:
+        """把 mobile base teleport 到 target_xy 附近 offset_m 处.
+
+        基于 Phase 1 probe 设计的 sim-only primitive:
+            - 直接 set sim.data.qpos[forward/side/yaw], bypass controller
+            - base yaw 设为指向 target (PandaMobile arm 沿 base +x 朝外,
+              此 yaw 让 arm 工作空间覆盖 target)
+            - sim.forward() 同步 derived state (xpos, xmat, jacobians)
+            - 不动 arm joints / torso, 让 OSC 下一步自适应到新 base 位置
+
+        语义: best-effort, 失败 (joints not found / sim missing) 时返 False,
+        caller 应该 fall through 到 legacy 控制路径.
+
+        Args:
+            target_xy: world XY (2,) of the target object.
+            offset_m: 期望 base 停在 target 后方多少米 (默认 0.45m,
+                PandaMobile arm reach ~0.65m, 留余量给 grasp).
+
+        Returns:
+            True if base successfully teleported / already in range.
+            False if mobilebase joints / sim could not be located.
+
+        NOTE: sim-only API. 真机部署时需要替换为真实 navigation primitive
+              (ROS Navigation Stack / MoveBase / etc).
+        """
+        target_xy = np.asarray(target_xy, dtype=np.float64)[:2]
+
+        sim = getattr(self._env, "sim", None)
+        if sim is None:
+            logger.debug("[navigate] no sim, returning False")
+            return False
+
+        # 1. 读真实 base 位置
+        real_base = self._read_real_base_xy()
+        if real_base is None:
+            logger.warning("[navigate] cannot locate real mobilebase body")
+            return False
+
+        dist = float(np.linalg.norm(target_xy - real_base.astype(np.float64)))
+
+        # 2. 已在 reach 范围内 → no-op
+        if dist <= offset_m + 0.10:
+            logger.debug(
+                f"[navigate] already in range (dist={dist:.3f}m "
+                f"<= offset+0.10={offset_m + 0.10:.3f}m), no-op"
+            )
+            return True
+
+        # 3. 定位 mobilebase joints (缓存)
+        joints = self._get_mobilebase_joint_addrs()
+        if joints is None:
+            logger.warning(
+                "[navigate] mobilebase joints not found, falling through "
+                "(caller should use legacy drive_base=True path)"
+            )
+            return False
+        x_addr, y_addr, yaw_addr = joints
+
+        # 4. 计算 teleport 目标位置: base 放在 target 后方 offset_m
+        direction = target_xy - real_base.astype(np.float64)
+        dir_norm = float(np.linalg.norm(direction))
+        if dir_norm < 1e-6:
+            # 退化: target 和 base 重合, 无方向. 不动 base.
+            return True
+        dir_unit = direction / dir_norm
+        new_base_xy = target_xy - dir_unit * float(offset_m)
+        # PandaMobile arm 沿 base +x, 此 yaw 让 arm 工作空间覆盖 target
+        target_yaw = float(np.arctan2(dir_unit[1], dir_unit[0]))
+
+        # 5. 写 qpos (skip None addrs gracefully)
+        try:
+            if x_addr is not None:
+                sim.data.qpos[x_addr] = float(new_base_xy[0])
+            if y_addr is not None:
+                sim.data.qpos[y_addr] = float(new_base_xy[1])
+            if yaw_addr is not None:
+                sim.data.qpos[yaw_addr] = target_yaw
+            # qvel 清零 (避免 teleport 后 base 残留速度)
+            for addr in (x_addr, y_addr, yaw_addr):
+                if addr is not None:
+                    sim.data.qvel[addr] = 0.0
+            sim.forward()
+        except Exception as e:
+            logger.warning(f"[navigate] qpos set failed: {e}")
+            return False
+
+        # 6. 验证 teleport 实际生效
+        new_real = self._read_real_base_xy()
+        if new_real is None:
+            return False
+        new_dist = float(np.linalg.norm(
+            target_xy - new_real.astype(np.float64)
+        ))
+        logger.info(
+            f"[navigate] teleported: dist {dist:.3f}m → {new_dist:.3f}m "
+            f"(target_yaw={np.degrees(target_yaw):.1f}°, "
+            f"new_base_xy=({float(new_real[0]):.3f}, {float(new_real[1]):.3f}))"
+        )
+        # Tolerance: 15cm beyond ideal offset (teleport precision)
+        return new_dist <= offset_m + 0.15
+
     def render(self) -> None:
         """如果 has_renderer 则刷新可视化窗口"""
         if self.config.has_renderer and self._env is not None:
