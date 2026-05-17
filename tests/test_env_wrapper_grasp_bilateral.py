@@ -393,3 +393,108 @@ def test_micro_lift_returns_true_on_exception():
     assert w.verify_grasp_by_micro_lift(
         "obj_main", lift_m=0.02, threshold=0.5,
     ) is True
+
+
+# ======================================================================
+# Phase 6.3: _gripper_closed_on_empty unit tests
+# ======================================================================
+
+
+class _JawCheckStubWrapper(EnvWrapper):
+    """Minimal wrapper for jaw-width testing."""
+
+    def __init__(
+        self,
+        obs: dict | None = None,
+        sim_qpos: dict[str, float] | None = None,
+        joint_names: list[str] | None = None,
+    ):
+        self._latest_obs = obs
+        if sim_qpos is not None:
+            # Build a minimal sim with joint_name2id + jnt_qposadr
+            joint_to_addr = {}
+            qpos_list = []
+            for jname, jval in sim_qpos.items():
+                joint_to_addr[jname] = len(qpos_list)
+                qpos_list.append(jval)
+
+            class _Model:
+                @staticmethod
+                def joint_name2id(name):
+                    if name not in joint_to_addr:
+                        raise ValueError(name)
+                    return list(joint_to_addr.keys()).index(name)
+
+                @property
+                def jnt_qposadr(self):
+                    return np.array(list(joint_to_addr.values()), dtype=np.int32)
+
+            class _Data:
+                qpos = np.array(qpos_list, dtype=np.float32)
+
+            class _Sim:
+                model = _Model()
+                data = _Data()
+
+            class _Robot:
+                idn = 0
+
+                class _G:
+                    joints = joint_names or list(joint_to_addr.keys())
+
+                gripper = _G()
+
+            class _Env:
+                sim = _Sim()
+                robots = [_Robot()]
+
+            self._env = _Env()
+        else:
+            self._env = MagicMock()
+
+
+def test_gripper_closed_on_empty_returns_true_when_obs_gap_small():
+    """obs.robot0_gripper_qpos 显示 gap < 5mm -> True (jaw 闭到空)."""
+    w = _JawCheckStubWrapper(obs={"robot0_gripper_qpos": [0.001, 0.001]})
+    # gap = 0.002m < 0.005m default
+    assert w._gripper_closed_on_empty() is True
+
+
+def test_gripper_closed_on_empty_returns_false_when_obs_gap_normal():
+    """obs.gripper_qpos 显示 gap >= 5mm -> False (正常 grasp)."""
+    w = _JawCheckStubWrapper(obs={"robot0_gripper_qpos": [0.01, 0.01]})
+    # gap = 0.02m > 0.005m
+    assert w._gripper_closed_on_empty() is False
+
+
+def test_gripper_closed_on_empty_returns_false_when_obs_missing():
+    """obs 无该 key + sim 不可用 -> False (保守不报告 empty)."""
+    w = _JawCheckStubWrapper(obs={})
+    # 没有 sim 走 fallback, 也没有, 最终 False
+    assert w._gripper_closed_on_empty() is False
+
+
+def test_gripper_closed_on_empty_sim_fallback_path():
+    """obs 不可用时走 sim.data.qpos fallback."""
+    w = _JawCheckStubWrapper(
+        obs=None,
+        sim_qpos={"finger_left_joint": 0.001, "finger_right_joint": 0.001},
+    )
+    # 两指 qpos 总和 0.002 < 0.005 -> True
+    assert w._gripper_closed_on_empty() is True
+
+
+def test_close_gripper_skips_confirm_when_jaw_closed_empty():
+    """集成: _close_gripper_until_grasp 内调用 _gripper_closed_on_empty.
+    
+    通过源码 grep 验证 callsite (运行时已被 jaw_check 覆盖).
+    """
+    import inspect
+    from src.env_wrapper import EnvWrapper
+    src = inspect.getsource(EnvWrapper._close_gripper_until_grasp)
+    assert "_gripper_closed_on_empty" in src, (
+        "_close_gripper_until_grasp must consult _gripper_closed_on_empty "
+        "(Phase 6.3 contract)"
+    )
+    # 也要确认 skip 逻辑使用 continue (不是 return)
+    assert "continue" in src

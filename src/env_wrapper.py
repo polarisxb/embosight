@@ -1389,6 +1389,77 @@ class EnvWrapper:
         # 无法检测时保守返回 True (不因检测失败阻止后续流程)
         return True
 
+    def _gripper_closed_on_empty(
+        self, threshold_m: float = 0.005,
+    ) -> bool:
+        """Phase 6.3: 检查 gripper 是否完全闭合 (两指间距 < threshold_m).
+
+        完全闭合 = jaw 撞在一起 = gripper 没夹住任何东西.
+        用作 close_gripper_until_grasp 的额外验证, 防止 jaw closed empty
+        false positive (设计文档 docs/09 §6).
+
+        两层 fallback:
+            Path 1: obs (robosuite 标准 key, 最快)
+            Path 2: sim.data.qpos at gripper joint addrs
+
+        Returns:
+            True 若闭到空 (false positive 风险高, caller 应拒绝 confirm).
+            False 若 jaw 间还有空隙 (正常 grasp) 或检测失败 (保守不报告).
+        """
+        try:
+            # Path 1: obs
+            obs = self._latest_obs or {}
+            for key in ("robot0_gripper_qpos", "gripper_qpos"):
+                qpos = obs.get(key)
+                if qpos is None:
+                    continue
+                qpos_arr = np.asarray(qpos, dtype=np.float32)
+                # Panda parallel jaw: 前两维是两指位置, abs(sum) = 总 gap
+                if qpos_arr.size >= 2:
+                    gap = float(np.abs(qpos_arr[:2]).sum())
+                elif qpos_arr.size == 1:
+                    gap = float(np.abs(qpos_arr[0]))
+                else:
+                    continue
+                logger.debug(f"[jaw_check] gap={gap:.4f}m (key={key})")
+                return gap < threshold_m
+
+            # Path 2: 直接读 sim.data.qpos at gripper joint addrs
+            sim = getattr(self._env, "sim", None)
+            if sim is None:
+                return False
+            try:
+                robot = self._env.robots[0]
+                gripper = getattr(robot, "gripper", None)
+                if isinstance(gripper, dict):
+                    gripper = gripper.get("right") or next(
+                        iter(gripper.values()), None,
+                    )
+                joint_names = list(getattr(gripper, "joints", None) or [])
+            except Exception:
+                joint_names = []
+            if not joint_names:
+                return False
+            total_gap = 0.0
+            n_found = 0
+            for jname in joint_names[:2]:  # 两指
+                try:
+                    jid = sim.model.joint_name2id(jname)
+                    addr = int(sim.model.jnt_qposadr[jid])
+                    total_gap += float(abs(sim.data.qpos[addr]))
+                    n_found += 1
+                except Exception:
+                    continue
+            if n_found == 0:
+                return False
+            logger.debug(
+                f"[jaw_check] gap={total_gap:.4f}m (sim.data fallback)"
+            )
+            return total_gap < threshold_m
+        except Exception as e:
+            logger.debug(f"[jaw_check] failed: {e}")
+            return False
+
     def _finger_object_contact(
         self,
         target_body: str,
@@ -1707,6 +1778,15 @@ class EnvWrapper:
             )
             generic_grasp = self._check_grasp_contact()
             if not confirmed and i >= min_close_steps and target_contact and generic_grasp:
+                # Phase 6.3: 排除 jaw closed-on-empty false positive.
+                # 即使 bilateral contact True, 也可能是 jaw 完全闭合后碰巧
+                # 同时擦到物体两侧但没夹住任何东西. 拒绝 confirm, 继续 squeeze.
+                if self._gripper_closed_on_empty():
+                    logger.warning(
+                        f"[close_gripper] step {i}: bilateral contact "
+                        "detected but jaw closed empty, skipping confirm"
+                    )
+                    continue
                 logger.info(f"[close_gripper] contact at step {i}, squeezing {squeeze_steps} more")
                 confirmed = True
                 squeeze_remaining = squeeze_steps
