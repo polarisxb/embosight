@@ -1,13 +1,7 @@
-"""Phase 7 step 2: tests for _read_real_base_pose and move_arm_to base frame fix.
+"""Tests for real-base pose reading and arm OSC frame handling.
 
-Bug: get_base_pose() returns the anchor body's ori (hardcoded yaw=-180°), but
-the OSC controller is mounted on the actual mobile base (yaw can differ after
-navigate). move_arm_to was using anchor ori to convert world→base, causing a
-yaw-offset (e.g. 36° in Run 5) where arm moved in the wrong direction.
-
-Fix: _read_real_base_pose() reads sim.data.body_xmat for the real mobilebase
-body and returns (xpos, xmat). move_arm_to uses this when available, falling
-back to anchor (legacy) otherwise.
+The arm OSC position action is world/controller-fixed, while the base velocity
+action uses the mobile base frame.
 """
 from __future__ import annotations
 
@@ -192,46 +186,34 @@ def test_read_real_base_pose_returns_none_when_no_sim() -> None:
     assert env._read_real_base_pose() is None
 
 
-def test_real_base_frame_action_corrects_36deg_offset() -> None:
-    """Smoke test that action computed in real-base frame differs meaningfully
-    from action computed in anchor frame (Run 5 actual setup).
-
-    This validates the math: if move_arm_to used anchor (-180°) but OSC
-    interprets in real (-144°), the resulting world delta would be rotated 36°
-    away from intent. Using real base ori, the rotation cancels and the world
-    delta matches intent.
-    """
+def test_arm_position_action_stays_world_frame_after_base_rotation() -> None:
     env = _RealBaseStubEnv(
-        real_base_xy=(0.751, -3.053),
-        real_base_yaw=np.deg2rad(-144.0),
+        real_base_xy=(0.425, -2.861),
+        real_base_yaw=np.deg2rad(177.8),
         anchor_yaw=np.deg2rad(-180.0),
     )
-    real_pose = env._read_real_base_pose()
-    assert real_pose is not None
-    _, real_ori = real_pose
-    _, anchor_ori = env.get_base_pose()
+    captured: list[np.ndarray] = []
+    current = np.array([0.2199, -2.8164, 1.6043], dtype=np.float32)
 
-    # Suppose target is 0.4m in front of robot, slightly to the left
-    delta_world = np.array([-0.405, -0.141, 0.0], dtype=np.float64)
+    class _Backend:
+        action_dim = 12
 
-    # Anchor-frame conversion (the BUG)
-    delta_anchor = anchor_ori.T.astype(np.float64) @ delta_world
-    # Real-frame conversion (the FIX)
-    delta_real = real_ori.T.astype(np.float64) @ delta_world
+        def __init__(self, base_backend):
+            self.sim = base_backend.sim
+            self.robots = base_backend.robots
 
-    # OSC interprets action in real base frame; world delta achieved is:
-    achieved_world_via_anchor = real_ori.astype(np.float64) @ delta_anchor
-    achieved_world_via_real = real_ori.astype(np.float64) @ delta_real
+        def step(self, action):
+            captured.append(np.asarray(action, dtype=np.float32).copy())
+            return {"robot0_eef_pos": current.copy()}, 0.0, False, {}
 
-    # With the fix, achieved == intent
-    np.testing.assert_allclose(
-        achieved_world_via_real, delta_world, atol=1e-5
-    )
-    # Without the fix, achieved is rotated by anchor.T @ real (= 36°)
-    err_buggy = np.linalg.norm(achieved_world_via_anchor - delta_world)
-    err_fixed = np.linalg.norm(achieved_world_via_real - delta_world)
-    assert err_fixed < 1e-5
-    # Buggy path must have meaningful error (>10cm on a 43cm vector)
-    assert err_buggy > 0.10, (
-        f"Expected buggy path to produce >10cm world error, got {err_buggy:.4f}m"
-    )
+    env._env = _Backend(env._env)
+    env.config = type("C", (), {"has_renderer": False})()
+    env._base_idx_cache = None
+    env._latest_obs = {"robot0_eef_pos": current.copy()}
+    target = np.array([0.1248, -2.8573, 1.4500], dtype=np.float32)
+
+    env.move_arm_to(target, max_steps=1)
+
+    assert captured
+    assert captured[0][0] < 0.0
+    assert captured[0][2] < 0.0

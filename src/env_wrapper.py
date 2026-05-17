@@ -313,8 +313,7 @@ class EnvWrapper:
     ) -> Optional[tuple[np.ndarray, np.ndarray]]:
         """读取 mobile base 真实 world (xpos, xmat) (绕开 anchor (10,10,0)).
 
-        Phase 7 step 2: 解决 move_arm_to 用 anchor frame 但 OSC 在 actual
-        base frame 应用 action 的 36° 旋转偏差 bug.
+        Phase 7 step 2: 读取真实 mobile base pose, 供底盘控制和导航验证使用.
 
         Anchor body (e.g. 'robot0_base'):
         - xpos = (10, 10, 0) (hardcoded mount anchor)
@@ -323,9 +322,6 @@ class EnvWrapper:
         Real mobile base body (e.g. 'mobilebase0_base'):
         - xpos = 真实世界位置 (随 navigate qpos 更新)
         - xmat = 真实世界朝向 (随 navigate yaw qpos 更新)
-
-        OSC controller is mounted on the mobile base, so action[0:3] is
-        interpreted in the actual mobile base frame, NOT the anchor frame.
 
         Returns:
             (xpos:(3,), xmat:(3,3)) np.float32 if real body found, else None.
@@ -692,7 +688,7 @@ class EnvWrapper:
             except Exception as e:
                 logger.warning(f"[render] {e}")
 
-    ARM_STEP_CAP = 0.15  # 手臂 OSC 单步增量上限 (base 系)
+    ARM_STEP_CAP = 0.15  # 手臂 OSC 单步增量上限 (world 系)
     BASE_XY_THRESHOLD = 0.25  # 底盘主导 → 手臂主导的切换距离 (m)
 
     def _get_base_action_idx(self) -> Optional[int]:
@@ -812,7 +808,7 @@ class EnvWrapper:
         gripper_hold: float = 0.0,
         drive_base: bool = False,
     ) -> bool:
-        """自适应控制: 世界系目标 → base 系增量 → 手臂 (默认) 或 手臂+底盘协同 (opt-in)
+        """自适应控制: 世界系目标 → 手臂 (默认) 或 手臂+底盘协同 (opt-in)
 
         默认 arm-only: drive_base=False 让 base action 为 0, 避免在
         navigate_base_to (Phase 2) 未推进前意外驱动 base. 调用方可
@@ -821,15 +817,13 @@ class EnvWrapper:
         时还能推动 base).
 
         关键 robosuite 行为:
-            - 手臂 OSC `input_ref_frame='base'`: action[0:3] 是 base 系增量
-            - 底盘 JointVelocity (forward/side): 也是 base 系速度
+            - 手臂 OSC: action[0:3] 是 world/controller-fixed 系增量
+            - 底盘 JointVelocity (forward/side): base 系速度
             - 底盘 action index 通过 _get_base_action_idx() 动态检测
-            - 因此世界系 delta 必须先旋转到 base 系才能用作 action
 
         策略:
-            每步重读 base_ori (因为底盘可能旋转), 把世界系 delta
-            旋转到当前 base 系. 默认只驱动手臂; drive_base=True 时同时
-            驱动底盘. 步数按距离动态分配.
+            默认只驱动手臂; drive_base=True 时同时驱动底盘.
+            底盘速度会用当前 base_ori 转到 base 系. 步数按距离动态分配.
             底盘增益 0.8 (OmronMobileBase frictionloss=250, kv=1000).
 
         Args:
@@ -1008,16 +1002,7 @@ class EnvWrapper:
                         f"ori={ori_err:.3f}rad stall={stall}/{stall_limit}"
                     )
 
-            # 世界系 → actual mobile base 系 (Phase 7 step 2 关键修正)
-            #
-            # Bug history: get_base_pose() 返回 anchor 的 ori (hardcoded
-            # yaw=-180°), 但 OSC controller 挂在 actual mobile base 上, action
-            # 在 actual base frame 应用. navigate 后 actual base yaw=-144°,
-            # 与 anchor -180° 偏 36°, 导致 arm 朝错方向走 (Run 5 log:
-            # recent_dists=[0.3416, 0.3470, 0.3580] dist 反向增大).
-            #
-            # 修复: 直接读 sim.data.body_xmat 拿真实 base ori. 失败时 fall
-            # back 到 anchor (legacy 行为, 兼容 mock env / robosuite 旧版).
+            # 世界系 → actual mobile base 系 (base controller only)
             real_pose = self._read_real_base_pose()
             if real_pose is not None:
                 base_ori = real_pose[1]
@@ -1025,15 +1010,16 @@ class EnvWrapper:
                 _, base_ori = self.get_base_pose()
             delta_base = base_ori.T @ delta_world  # 3D vector in base frame
 
+            dir_world = delta_world / max(dist, 1e-6)
             dir_base = delta_base / max(dist, 1e-6)
             step_size = min(self.ARM_STEP_CAP, dist)
 
             action = np.zeros(action_dim, dtype=np.float32)
-            # 手臂位置: base 系增量 (只有还没到位时才驱动)
+            # 手臂位置: world 系增量 (只有还没到位时才驱动)
             if not pos_ok:
-                action[0:3] = dir_base * step_size
+                action[0:3] = dir_world * step_size
 
-            # 手臂朝向: 把世界系 axis-angle 转到 base 系, 再 clamp + scale
+            # 手臂朝向: world 系 axis-angle clamp + scale
             #
             # Phase 9 fix: 只在位置足够近时启用朝向控制. Run 10 暴露:
             # navigate 旋转 base ~180° → target_quat 的 roll 分量偏移 ~60-180°
@@ -1048,13 +1034,12 @@ class EnvWrapper:
             ):
                 try:
                     # ori_delta_world 已在上面计算
-                    ori_delta_base = base_ori.T @ ori_delta_world
                     # Clamp per-step magnitude
                     if ori_err > max_ori_step_per_iter:
-                        ori_delta_base = ori_delta_base * (
+                        ori_delta_world = ori_delta_world * (
                             max_ori_step_per_iter / ori_err
                         )
-                    action[3:6] = (ori_delta_base * ori_gain).astype(np.float32)
+                    action[3:6] = (ori_delta_world * ori_gain).astype(np.float32)
                 except Exception as e:
                     logger.debug(f"[move_arm_to] ori control skipped: {e}")
 
