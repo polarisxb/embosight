@@ -375,23 +375,54 @@ class ActionExecutor:
             "lateral_limit_m": float(getattr(result, "lateral_limit_m", 0.0)),
         }
 
+    _MAX_LATERAL_NUDGE_M = 0.08
+
     def _recover_pre_grasp(self, env, candidate, prior_result) -> bool:
         """Bounded recovery for pre-grasp lateral misalignment.
 
         Preference order:
-        1. env.recover_pre_grasp(candidate, prior_result) — caller-defined.
-        2. env.navigate_base_to(target_xy, offset_m=0.65) — safer offset.
+        1. env.recover_pre_grasp(candidate, prior_result) — caller hook.
+        2. Lateral nudge via navigate_base_to with a virtual target shifted
+           by (pre_pos - final_eef), capped at _MAX_LATERAL_NUDGE_M. This
+           translates the base in the same world direction as the residual,
+           cancelling the arm mount offset so the EEF can reach pre_pos.
+        3. navigate_base_to(target_xy, offset_m=0.65) — safer-offset fallback.
 
-        Returns False if neither is available or the call raises.
+        Returns False if no recovery primitive is available or the call raises.
         """
         try:
             if hasattr(env, "recover_pre_grasp"):
                 ok = env.recover_pre_grasp(candidate, prior_result)
                 return True if ok is None else bool(ok)
             if hasattr(env, "navigate_base_to"):
+                final_eef = getattr(prior_result, "final_eef", None)
+                pre_pos = getattr(prior_result, "pre_pos", None)
+                if final_eef is not None and pre_pos is not None:
+                    pre_xy = np.asarray(pre_pos, dtype=np.float32)[:2]
+                    eef_xy = np.asarray(final_eef, dtype=np.float32)[:2]
+                    residual = pre_xy - eef_xy
+                    r_norm = float(np.linalg.norm(residual))
+                    if r_norm > 1e-3:
+                        if r_norm > self._MAX_LATERAL_NUDGE_M:
+                            residual = residual * (
+                                self._MAX_LATERAL_NUDGE_M / r_norm
+                            )
+                        virtual_target = (
+                            np.asarray(candidate.point_3d, dtype=np.float32)[:2]
+                            + residual
+                        )
+                        logger.info(
+                            "[act] lateral nudge: residual=(%.3f,%.3f) "
+                            "virtual_target=(%.3f,%.3f)",
+                            float(residual[0]), float(residual[1]),
+                            float(virtual_target[0]), float(virtual_target[1]),
+                        )
+                        env.navigate_base_to(
+                            target_xy=virtual_target, offset_m=0.55,
+                        )
+                        return True
                 env.navigate_base_to(
-                    target_xy=candidate.point_3d[:2],
-                    offset_m=0.65,
+                    target_xy=candidate.point_3d[:2], offset_m=0.65,
                 )
                 return True
             return False
