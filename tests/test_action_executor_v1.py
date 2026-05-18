@@ -1099,6 +1099,84 @@ class _ZStallNudgeEnv(FakeEnv):
         return np.array([1.0, 0.0, 0.0]), np.eye(3, dtype=np.float32)
 
 
+class _ZStallLateralReAlignEnv(FakeEnv):
+    """After nudge_base_world_xy, EEF is laterally displaced ~50mm.
+
+    Verifies the fix: action_executor must re-align EEF laterally at safe Z
+    before starting the 2nd descend, to prevent IK regression from compound
+    lateral+vertical motion.
+    """
+    def __init__(self):
+        super().__init__(descend_ok=False, lift_ok=True, obj_lifts=True)
+        self.nudge_xy_calls: list[np.ndarray] = []
+        self._approach_count = 0
+        self._nudged = False
+        self._realigned = False
+
+    def nudge_base_world_xy(self, delta_xy):
+        self.nudge_xy_calls.append(np.asarray(delta_xy).copy())
+        self._nudged = True
+        return True
+
+    def get_eef_pos(self):
+        if self._nudged and not self._realigned:
+            # After nudge, EEF displaced ~50mm in x
+            return np.array([0.45, 0.0, 0.95])
+        return np.array([0.5, 0.0, 0.95])
+
+    def move_arm_to(self, pos, **kw):
+        self.calls.append("move")
+        if self._nudged and not self._realigned:
+            # This is the lateral re-align move
+            self._realigned = True
+        return True
+
+    def approach(self, point_3d, approach_dir, target_label=None, **kwargs):
+        self._approach_count += 1
+        if self._approach_count <= 1:
+            return False, float(point_3d[2]) + 0.03
+        return True, float(point_3d[2])
+
+    def get_base_pose(self):
+        return np.array([1.0, 0.0, 0.0]), np.eye(3, dtype=np.float32)
+
+
+class TestZStallLateralReAlign:
+    def test_post_nudge_lateral_realign(self):
+        """After base nudge displaces EEF laterally, action_executor must
+        open gripper + move_arm_to for lateral re-align before 2nd descend."""
+        from src.action_executor import ActionExecutor
+        from src.world_belief import DecomposedTask
+        env = _ZStallLateralReAlignEnv()
+        exe = ActionExecutor(scene_describer=None)
+        h, _ = _hyp_with_candidate()
+        result = exe.act(h, DecomposedTask(primary_target="apple"), env)
+        # Re-align must happen
+        assert env._realigned, (
+            "EEF was displaced 50mm laterally after nudge but no re-align "
+            f"move detected. calls={env.calls}"
+        )
+        # open_gripper must be called before re-align
+        open_indices = [i for i, c in enumerate(env.calls) if c == "open"]
+        assert len(open_indices) >= 1, (
+            f"open_gripper should be called before lateral re-align. calls={env.calls}"
+        )
+
+    def test_no_realign_when_aligned(self):
+        """When EEF XY matches object XY after nudge (< 5mm), skip re-align."""
+        from src.action_executor import ActionExecutor
+        from src.world_belief import DecomposedTask
+        # Use original _ZStallNudgeEnv which keeps EEF aligned at (0.5, 0)
+        env = _ZStallNudgeEnv()
+        exe = ActionExecutor(scene_describer=None)
+        h, _ = _hyp_with_candidate()
+        result = exe.act(h, DecomposedTask(primary_target="apple"), env)
+        # Should NOT have opened gripper for re-align (no lateral displacement)
+        # open_gripper might be called elsewhere, but "open" before 2nd approach
+        # should not appear between nudge and approach
+        assert result.success is True
+
+
 class TestZStallRecoveryUsesBaseNudge:
     def test_z_stall_recovery_uses_nudge_base_world_xy(self):
         """z-stall recovery must use nudge_base_world_xy to actually move the

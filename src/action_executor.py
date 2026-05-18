@@ -242,7 +242,32 @@ class ActionExecutor:
                         env.move_arm_to(
                             nudge_target, threshold_m=0.03, max_steps=300,
                         )
-                # 底盘靠近后重新下降 (强制垂直, 倾斜路径已证明不可达)
+                # ── 底盘靠近后: 先横向对齐, 再垂直下降 ──
+                # nudge_base_world_xy 移动底盘时 EEF 跟随 (关节不变),
+                # 导致 EEF 横向偏移 ~4-5cm. 若直接 descend, 需同时
+                # 完成横向 49mm + 纵向 25mm 的复合运动 → IK regression
+                # → 手臂摆动可能撞飞柠檬. 解决: 分两步, 先横向归位.
+                eef_after_nudge = env.get_eef_pos()
+                realign_target = np.array([
+                    candidate.point_3d[0],
+                    candidate.point_3d[1],
+                    float(eef_after_nudge[2]),  # 保持当前安全高度
+                ], dtype=np.float32)
+                lateral_offset = float(np.linalg.norm(
+                    realign_target[:2] - eef_after_nudge[:2]
+                ))
+                if lateral_offset > 0.005:  # > 5mm 才需要横向归位
+                    logger.info(
+                        "[act] post-nudge lateral re-align: "
+                        "offset=%.3fm, target_xy=(%.3f, %.3f) z=%.3f",
+                        lateral_offset,
+                        realign_target[0], realign_target[1],
+                        realign_target[2],
+                    )
+                    env.open_gripper()  # 确保夹爪全开, 防止归位时推物体
+                    env.move_arm_to(
+                        realign_target, threshold_m=0.01, max_steps=300,
+                    )
                 _vert = np.array([0.0, 0.0, -1.0], dtype=np.float32)
                 descend_ok2, z_actual = env.approach(
                     candidate.point_3d,
@@ -255,6 +280,7 @@ class ActionExecutor:
                         "[act] base reposition succeeded, descend reached z=%.3f",
                         z_actual,
                     )
+                    self._log_pre_grasp_alignment(target, env)
                     grasp_ok = env.close_gripper(
                         target_label=getattr(target, "label", None),
                         squeeze_extra_steps=squeeze_extra_steps,
@@ -282,6 +308,7 @@ class ActionExecutor:
                         "[act] reposition didn't help (z=%.3f), trying grasp at current z",
                         z_actual,
                     )
+                    self._log_pre_grasp_alignment(target, env)
                     grasp_ok = env.close_gripper(
                         target_label=getattr(target, "label", None),
                         squeeze_extra_steps=squeeze_extra_steps,
@@ -576,6 +603,32 @@ class ActionExecutor:
                 f"[act] micro_lift error: {e}, continuing to full lift"
             )
             return None
+
+    @staticmethod
+    def _log_pre_grasp_alignment(target, env) -> None:
+        """Diagnostic: log EEF vs object XY alignment before close_gripper.
+
+        GPU logs will show whether the object was displaced by arm motion
+        during base nudge / IK recovery.
+        """
+        try:
+            eef = env.get_eef_pos()
+            body = ActionExecutor._resolve_target_body(target, env)
+            if body is None:
+                return
+            obj_pos = env._get_body_pos(body)
+            if obj_pos is None:
+                return
+            lateral = float(np.linalg.norm(eef[:2] - obj_pos[:2]))
+            logger.info(
+                "[pre_grasp_align] eef=(%.3f,%.3f,%.3f) obj=(%.3f,%.3f,%.3f) "
+                "lateral=%.4fm z_diff=%.4fm",
+                eef[0], eef[1], eef[2],
+                obj_pos[0], obj_pos[1], obj_pos[2],
+                lateral, eef[2] - obj_pos[2],
+            )
+        except Exception as e:
+            logger.debug(f"[pre_grasp_align] failed: {e}")
 
     @staticmethod
     def _resolve_target_body(target, env) -> str | None:
