@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
 from src.world_belief import GraspStrategy, Hypothesis
 from src.grasp_planner import GraspPlanner
@@ -35,6 +34,24 @@ class _FakeEnv:
         return None
     def eye_in_hand_viewpoint(self):
         return None
+
+
+class _GeometryAwareEnv(_FakeEnv):
+    def __init__(self):
+        self.grasp_pose_calls: list[tuple[str, tuple[float, float, float]]] = []
+
+    def _get_obj_type_map(self):
+        return {
+            "obj_main": "apple",
+            "distr_counter_main": "lemon",
+        }
+
+    def _compute_grasp_pose(self, body_name: str, fallback_pos: np.ndarray) -> np.ndarray:
+        self.grasp_pose_calls.append((
+            body_name,
+            tuple(np.asarray(fallback_pos, dtype=np.float32).tolist()),
+        ))
+        return np.array([0.31, -2.99, 0.982], dtype=np.float32)
 
 
 class TestSelectStrategy:
@@ -288,6 +305,28 @@ class TestBannedStrategies:
         assert len(strat_cand) == 1
         # high slip → grasp at geometric center, no z lowering
         assert abs(strat_cand[0].point_3d[2] - h.position_3d[2]) < 1e-6
+
+    def test_top_down_lemon_uses_geometry_pose_for_distractor_body(self):
+        """Fixed lemon is a distractor body; use AABB grasp pose, not body origin."""
+        env = _GeometryAwareEnv()
+        planner = GraspPlanner(vlm=MockVLM([]), env=env, llm=None)
+        h = _hyp("lemon")
+        h.grasp_strategy = GraspStrategy(
+            strategy="top_down", slip_risk="high", speech="top grasp",
+        )
+
+        cands = planner.plan(h, env=env)
+
+        strat_cand = [c for c in cands if c.source == "strategy_top_down"]
+        assert len(strat_cand) == 1
+        assert env.grasp_pose_calls == [(
+            "distr_counter_main",
+            tuple(h.position_3d.astype(np.float32).tolist()),
+        )]
+        np.testing.assert_allclose(
+            strat_cand[0].point_3d,
+            np.array([0.31, -2.99, 0.982], dtype=np.float32),
+        )
 
     def test_grasp_point_top_down_medium_slip_skips_bowl_offset(self):
         """Medium slip_risk also skips the bowl offset (safer default for fruits)."""

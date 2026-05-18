@@ -104,7 +104,7 @@ class GraspPlanner:
                     )
                     return GraspStrategy(
                         strategy=proven,
-                        reasoning=f"memory: proven success, 0 failures",
+                        reasoning="memory: proven success, 0 failures",
                         speech=f"我来拿{hyp.label}",
                     )
             except Exception as e:
@@ -318,6 +318,38 @@ class GraspPlanner:
                            dtype=np.float32)
         return raw / np.linalg.norm(raw)
 
+    @staticmethod
+    def _resolve_target_body(hyp: Hypothesis, env) -> Optional[str]:
+        label = getattr(hyp, "label", None)
+        if not label or env is None or not hasattr(env, "_get_obj_type_map"):
+            return None
+        try:
+            label_key = str(label).strip().lower()
+            for body, cat in env._get_obj_type_map().items():
+                if str(cat).strip().lower() == label_key:
+                    return body
+        except Exception as e:
+            logger.debug("[grasp_planner] target body lookup failed: %s", e)
+        return None
+
+    def _geometry_grasp_point(self, hyp: Hypothesis, env) -> np.ndarray:
+        fallback = np.asarray(hyp.position_3d, dtype=np.float32).copy()
+        if env is None or not hasattr(env, "_compute_grasp_pose"):
+            return fallback
+        target_body = self._resolve_target_body(hyp, env)
+        if not target_body:
+            return fallback
+        try:
+            point = np.asarray(
+                env._compute_grasp_pose(target_body, fallback),
+                dtype=np.float32,
+            )
+            if point.shape == (3,) and np.all(np.isfinite(point)):
+                return point.copy()
+        except Exception as e:
+            logger.debug("[grasp_planner] geometry grasp pose failed: %s", e)
+        return fallback
+
     def plan(self, hyp: Hypothesis, env=None) -> list[GraspCandidate]:
         env = env or self.env
         cands: list[GraspCandidate] = []
@@ -343,7 +375,10 @@ class GraspPlanner:
                 ad = self._tilted_approach_dir(hyp.position_3d, env)
 
             # 策略抓点偏移: 细长直立物体的质心处最窄, 需偏移
-            grasp_pt = hyp.position_3d.copy()
+            if strategy.strategy in {"top_down", "tilted_grasp"}:
+                grasp_pt = self._geometry_grasp_point(hyp, env)
+            else:
+                grasp_pt = hyp.position_3d.copy()
             is_upright = (hyp.pose_estimate is None or hyp.pose_estimate.upright)
             if is_upright and strategy.strategy == "handle_grasp":
                 grasp_pt[2] += 0.03   # 上移 3cm → 手柄中段

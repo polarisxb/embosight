@@ -1141,6 +1141,39 @@ class _ZStallLateralReAlignEnv(FakeEnv):
         return np.array([1.0, 0.0, 0.0]), np.eye(3, dtype=np.float32)
 
 
+class _ZStallObjectDisplacedEnv(FakeEnv):
+    """Object is pushed away during z-stall recovery before close."""
+
+    def __init__(self):
+        super().__init__(descend_ok=False, lift_ok=True, obj_lifts=True)
+        self._approach_count = 0
+        self.nudge_xy_calls: list[np.ndarray] = []
+        self.obj_pos = np.array([0.565, 0.025, 0.9], dtype=np.float32)
+
+    def approach(self, point_3d, approach_dir, target_label=None, **kwargs):
+        self._approach_count += 1
+        if self._approach_count == 1:
+            return False, float(point_3d[2]) + 0.03
+        return False, float(point_3d[2]) + 0.02
+
+    def nudge_base_world_xy(self, delta_xy):
+        self.nudge_xy_calls.append(np.asarray(delta_xy).copy())
+        return True
+
+    def get_eef_pos(self):
+        return np.array([0.5, 0.0, 0.94], dtype=np.float32)
+
+    def get_base_pose(self):
+        return np.array([1.0, 0.0, 0.0]), np.eye(3, dtype=np.float32)
+
+    def _get_body_pos(self, body_name):
+        return self.obj_pos.copy()
+
+    def close_gripper(self, target_label=None, squeeze_extra_steps: int = 0) -> bool:
+        self.calls.append("close")
+        return True
+
+
 class TestZStallLateralReAlign:
     def test_post_nudge_lateral_realign(self):
         """After base nudge displaces EEF laterally, action_executor must
@@ -1150,7 +1183,7 @@ class TestZStallLateralReAlign:
         env = _ZStallLateralReAlignEnv()
         exe = ActionExecutor(scene_describer=None)
         h, _ = _hyp_with_candidate()
-        result = exe.act(h, DecomposedTask(primary_target="apple"), env)
+        exe.act(h, DecomposedTask(primary_target="apple"), env)
         # Re-align must happen
         assert env._realigned, (
             "EEF was displaced 50mm laterally after nudge but no re-align "
@@ -1176,6 +1209,24 @@ class TestZStallLateralReAlign:
         # should not appear between nudge and approach
         assert result.success is True
 
+    def test_abort_close_when_object_displaced_after_recovery(self):
+        """Do not close on a stale candidate when the target moved laterally."""
+        from src.action_executor import ActionExecutor
+        from src.world_belief import DecomposedTask
+        env = _ZStallObjectDisplacedEnv()
+        exe = ActionExecutor(scene_describer=None)
+        h, _ = _hyp_with_candidate()
+
+        result = exe.act(h, DecomposedTask(primary_target="apple"), env)
+
+        assert result.success is False
+        assert result.attempt.failure_mode == "slipped_descend"
+        assert result.attempt.diagnostic["stage"] == "pre_close_alignment"
+        assert result.attempt.diagnostic["reason"] == "object_displaced_before_close"
+        assert result.attempt.diagnostic["lateral_error_m"] > 0.02
+        assert "close" not in env.calls
+        np.testing.assert_allclose(h.position_3d, env.obj_pos)
+
 
 class TestZStallRecoveryUsesBaseNudge:
     def test_z_stall_recovery_uses_nudge_base_world_xy(self):
@@ -1187,7 +1238,7 @@ class TestZStallRecoveryUsesBaseNudge:
         exe = ActionExecutor(scene_describer=None)
         env = _ZStallNudgeEnv()
         h, _ = _hyp_with_candidate()
-        result = exe.act(h, DecomposedTask(primary_target="apple"), env)
+        exe.act(h, DecomposedTask(primary_target="apple"), env)
 
         assert len(env.nudge_xy_calls) >= 1, (
             "z-stall recovery should use nudge_base_world_xy, "

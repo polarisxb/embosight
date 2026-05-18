@@ -281,6 +281,11 @@ class ActionExecutor:
                         z_actual,
                     )
                     self._log_pre_grasp_alignment(target, env)
+                    alignment_failed = self._abort_if_pre_close_misaligned(
+                        target, candidate, env, stage="pre_close_alignment",
+                    )
+                    if alignment_failed is not None:
+                        return alignment_failed
                     grasp_ok = env.close_gripper(
                         target_label=getattr(target, "label", None),
                         squeeze_extra_steps=squeeze_extra_steps,
@@ -309,6 +314,11 @@ class ActionExecutor:
                         z_actual,
                     )
                     self._log_pre_grasp_alignment(target, env)
+                    alignment_failed = self._abort_if_pre_close_misaligned(
+                        target, candidate, env, stage="pre_close_alignment",
+                    )
+                    if alignment_failed is not None:
+                        return alignment_failed
                     grasp_ok = env.close_gripper(
                         target_label=getattr(target, "label", None),
                         squeeze_extra_steps=squeeze_extra_steps,
@@ -341,6 +351,11 @@ class ActionExecutor:
                     "[act] %s (gap=%.3fm), grasping at current pose",
                     reason, gap,
                 )
+                alignment_failed = self._abort_if_pre_close_misaligned(
+                    target, candidate, env, stage="pre_close_alignment",
+                )
+                if alignment_failed is not None:
+                    return alignment_failed
                 grasp_ok = env.close_gripper(
                     target_label=getattr(target, "label", None),
                     squeeze_extra_steps=squeeze_extra_steps,
@@ -370,6 +385,11 @@ class ActionExecutor:
                     )
         else:
             # 3. close gripper (正常路径)
+            alignment_failed = self._abort_if_pre_close_misaligned(
+                target, candidate, env, stage="pre_close_alignment",
+            )
+            if alignment_failed is not None:
+                return alignment_failed
             grasp_ok = env.close_gripper(
                 target_label=getattr(target, "label", None),
                 squeeze_extra_steps=squeeze_extra_steps,
@@ -629,6 +649,85 @@ class ActionExecutor:
             )
         except Exception as e:
             logger.debug(f"[pre_grasp_align] failed: {e}")
+
+    def _abort_if_pre_close_misaligned(
+        self,
+        target,
+        candidate,
+        env,
+        stage: str,
+    ) -> "GraspActionResult | None":
+        """Abort before closing if the object has moved away from the candidate.
+
+        Contact-aware descent and base recovery can push round objects sideways.
+        Closing on the stale candidate wastes an attempt and records the wrong
+        failure as a lift slip. Use the live sim body position as the source of
+        truth just before gripper closure.
+        """
+        try:
+            body = self._resolve_target_body(target, env)
+            if body is None or not hasattr(env, "_get_body_pos"):
+                return None
+            obj_pos = env._get_body_pos(body)
+            if obj_pos is None:
+                return None
+            obj_pos = np.asarray(obj_pos, dtype=np.float32)
+            if obj_pos.shape != (3,) or not np.all(np.isfinite(obj_pos)):
+                return None
+            eef = np.asarray(env.get_eef_pos(), dtype=np.float32)
+            if eef.shape[0] < 3:
+                return None
+
+            finger_width = float(
+                getattr(candidate, "finger_width_m", 0.04) or 0.04
+            )
+            lateral_limit = min(max(finger_width * 0.5, 0.015), 0.045)
+            lateral = float(np.linalg.norm(eef[:2] - obj_pos[:2]))
+            z_diff = float(eef[2] - obj_pos[2])
+            if lateral <= lateral_limit:
+                return None
+
+            try:
+                target.position_3d = obj_pos.copy()
+                if getattr(target, "pose_estimate", None) is not None:
+                    target.pose_estimate.position = obj_pos.copy()
+                current_std = float(getattr(target, "position_std_m", 0.02))
+                target.position_std_m = min(current_std, 0.02)
+            except Exception:
+                pass
+
+            candidate_xy = np.asarray(
+                getattr(candidate, "point_3d", np.zeros(3)),
+                dtype=np.float32,
+            )[:2]
+            logger.warning(
+                "[pre_close_align] abort: eef=(%.3f,%.3f,%.3f) "
+                "obj=(%.3f,%.3f,%.3f) candidate_xy=(%.3f,%.3f) "
+                "lateral=%.4fm > limit=%.4fm",
+                eef[0], eef[1], eef[2],
+                obj_pos[0], obj_pos[1], obj_pos[2],
+                candidate_xy[0], candidate_xy[1],
+                lateral, lateral_limit,
+            )
+            return self._failed_result(
+                candidate,
+                "slipped_descend",
+                {
+                    "stage": stage,
+                    "reason": "object_displaced_before_close",
+                    "target_body": body,
+                    "lateral_error_m": lateral,
+                    "lateral_limit_m": lateral_limit,
+                    "z_diff_m": z_diff,
+                    "eef_pos": eef[:3].tolist(),
+                    "obj_pos": obj_pos.tolist(),
+                    "candidate_xy": candidate_xy.tolist(),
+                },
+                env,
+            )
+        except Exception as e:
+            logger.debug(f"[pre_close_align] skipped after error: {e}")
+            return None
 
     @staticmethod
     def _resolve_target_body(target, env) -> str | None:
