@@ -259,15 +259,58 @@ class TestBannedStrategies:
         # upright → z offset +3cm from centroid
         assert strat_cand[0].point_3d[2] > h.position_3d[2]
 
-    def test_grasp_point_offset_top_down(self):
+    def test_grasp_point_offset_top_down_low_slip_keeps_bowl_offset(self):
+        """Low slip_risk objects (bowls / boxes / wide ends) keep the -1.5cm offset."""
+        planner = GraspPlanner(vlm=MockVLM([]), env=_FakeEnv(), llm=None)
+        h = _hyp("bowl")
+        h.grasp_strategy = GraspStrategy(
+            strategy="top_down", slip_risk="low", speech="上方拿",
+        )
+        cands = planner.plan(h)
+        strat_cand = [c for c in cands if c.source == "strategy_top_down"]
+        assert len(strat_cand) == 1
+        # low slip → keep historical "bowl end" -1.5cm offset
+        assert abs(strat_cand[0].point_3d[2] - (h.position_3d[2] - 0.015)) < 1e-6
+
+    def test_grasp_point_top_down_high_slip_skips_bowl_offset(self):
+        """High slip_risk (round/smooth, e.g. lemon) must NOT lower the grasp point.
+
+        Regression test: hardcoded -1.5cm + depth_margin together drove the descend
+        target into the counter for lemon, causing slipped_lift (commit 4bfda16).
+        """
+        planner = GraspPlanner(vlm=MockVLM([]), env=_FakeEnv(), llm=None)
+        h = _hyp("lemon")
+        h.grasp_strategy = GraspStrategy(
+            strategy="top_down", slip_risk="high", speech="上方拿",
+        )
+        cands = planner.plan(h)
+        strat_cand = [c for c in cands if c.source == "strategy_top_down"]
+        assert len(strat_cand) == 1
+        # high slip → grasp at geometric center, no z lowering
+        assert abs(strat_cand[0].point_3d[2] - h.position_3d[2]) < 1e-6
+
+    def test_grasp_point_top_down_medium_slip_skips_bowl_offset(self):
+        """Medium slip_risk also skips the bowl offset (safer default for fruits)."""
+        planner = GraspPlanner(vlm=MockVLM([]), env=_FakeEnv(), llm=None)
+        h = _hyp("apple")
+        h.grasp_strategy = GraspStrategy(
+            strategy="top_down", slip_risk="medium", speech="上方拿",
+        )
+        cands = planner.plan(h)
+        strat_cand = [c for c in cands if c.source == "strategy_top_down"]
+        assert len(strat_cand) == 1
+        assert abs(strat_cand[0].point_3d[2] - h.position_3d[2]) < 1e-6
+
+    def test_grasp_point_top_down_default_slip_skips_bowl_offset(self):
+        """Default slip_risk='medium' (no LLM input) → safer no-offset behavior."""
         planner = GraspPlanner(vlm=MockVLM([]), env=_FakeEnv(), llm=None)
         h = _hyp("spoon")
+        # Default GraspStrategy(slip_risk="medium") → no bowl offset
         h.grasp_strategy = GraspStrategy(strategy="top_down", speech="上方拿")
         cands = planner.plan(h)
         strat_cand = [c for c in cands if c.source == "strategy_top_down"]
         assert len(strat_cand) == 1
-        # upright → z offset -1.5cm from centroid
-        assert strat_cand[0].point_3d[2] < h.position_3d[2]
+        assert abs(strat_cand[0].point_3d[2] - h.position_3d[2]) < 1e-6
 
     def test_tilted_grasp_approach_dir(self):
         planner = GraspPlanner(vlm=MockVLM([]), env=_FakeEnv(), llm=None)

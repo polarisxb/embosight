@@ -348,7 +348,15 @@ class GraspPlanner:
             if is_upright and strategy.strategy == "handle_grasp":
                 grasp_pt[2] += 0.03   # 上移 3cm → 手柄中段
             elif is_upright and strategy.strategy == "top_down":
-                grasp_pt[2] -= 0.015  # 下移 1.5cm → 碗端/宽端
+                # 默认 -1.5cm 偏置是为碗/容器宽端设计 (sim probe on tupperware);
+                # 但对光滑圆形物体 (slip_risk high/medium, 如柠檬/水果) 会让
+                # descend target 撞到柜面下方, OSC 进入饱和 → finger 在物体下半球
+                # 闭合 → squeeze-pop 滑出。LLM 推理出 slip_risk 后跳过这个偏置。
+                slip_risk = (
+                    getattr(strategy, "slip_risk", "medium") or "medium"
+                ).lower()
+                if slip_risk not in ("high", "medium"):
+                    grasp_pt[2] -= 0.015  # 下移 1.5cm → 碗端/宽端
             elif is_upright and strategy.strategy == "tilted_grasp":
                 grasp_pt[2] -= 0.02   # 下移 2cm → 手柄上段 (避开碗沿)
 
