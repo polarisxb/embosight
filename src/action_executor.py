@@ -247,6 +247,9 @@ class ActionExecutor:
                 # 导致 EEF 横向偏移 ~4-5cm. 若直接 descend, 需同时
                 # 完成横向 49mm + 纵向 25mm 的复合运动 → IK regression
                 # → 手臂摆动可能撞飞柠檬. 解决: 分两步, 先横向归位.
+                self._refresh_candidate_xy_from_live_object(
+                    target, candidate, env, stage="post_z_stall_nudge",
+                )
                 eef_after_nudge = env.get_eef_pos()
                 realign_target = np.array([
                     candidate.point_3d[0],
@@ -743,6 +746,69 @@ class ActionExecutor:
             )
         except Exception as e:
             logger.debug(f"[pre_close_align] skipped after error: {e}")
+            return None
+
+    def _refresh_candidate_xy_from_live_object(
+        self,
+        target,
+        candidate,
+        env,
+        stage: str,
+        threshold_m: float = 0.025,
+    ) -> dict | None:
+        """Update stale candidate XY from live simulator body position.
+
+        Base nudges and contact-aware descents can move round objects before
+        the next re-align step. Candidate z may encode a wrist/grasp height,
+        so only XY is refreshed here; the hypothesis keeps the full live
+        object pose for reporting and replanning.
+        """
+        try:
+            obj_pos = self._get_obj_pos(target, env)
+            if obj_pos is None:
+                return None
+            point = np.asarray(candidate.point_3d, dtype=np.float32).copy()
+            drift = float(np.linalg.norm(obj_pos[:2] - point[:2]))
+            if drift <= threshold_m:
+                return {
+                    "stage": stage,
+                    "refreshed": False,
+                    "drift_m": drift,
+                    "obj_pos": obj_pos.tolist(),
+                    "candidate_point": point.tolist(),
+                }
+
+            old_point = point.copy()
+            point[:2] = obj_pos[:2]
+            candidate.point_3d = point
+            try:
+                target.position_3d = obj_pos.copy()
+                if getattr(target, "pose_estimate", None) is not None:
+                    target.pose_estimate.position = obj_pos.copy()
+                current_std = float(getattr(target, "position_std_m", 0.02))
+                target.position_std_m = min(current_std, 0.02)
+            except Exception:
+                pass
+            logger.info(
+                "[live_obj_refresh] stage=%s drift=%.3fm "
+                "candidate_xy=(%.3f,%.3f)->live_xy=(%.3f,%.3f)",
+                stage,
+                drift,
+                old_point[0],
+                old_point[1],
+                obj_pos[0],
+                obj_pos[1],
+            )
+            return {
+                "stage": stage,
+                "refreshed": True,
+                "drift_m": drift,
+                "old_candidate_point": old_point.tolist(),
+                "new_candidate_point": point.tolist(),
+                "obj_pos": obj_pos.tolist(),
+            }
+        except Exception as e:
+            logger.debug(f"[live_obj_refresh] skipped after error: {e}")
             return None
 
     @staticmethod

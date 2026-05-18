@@ -613,31 +613,25 @@ class EmboSightAgent:
             result = self.executor.act(
                 action.target_hypothesis, belief.decomposed, env,
             )
-            action.target_hypothesis.grasp_attempts.append(result.attempt)
             hyp = action.target_hypothesis
-            strategy_name = (
-                hyp.grasp_strategy.strategy if hyp.grasp_strategy else "unknown"
+            self._annotate_grasp_attempt(hyp, result.attempt)
+            action.target_hypothesis.grasp_attempts.append(result.attempt)
+            memory_context, memory_lesson = self._grasp_memory_payload(
+                hyp, result.attempt,
             )
             if result.attempt.failure_mode == "success":
                 self.memory.record_event(MemoryEntry(
                     step=len(belief.action_history),
                     domain="grasp", event="strategy_succeeded",
-                    context={"strategy": strategy_name, "object": hyp.label},
-                    lesson=f"{hyp.label}: {strategy_name} succeeded",
+                    context=memory_context,
+                    lesson=memory_lesson,
                 ))
             else:
                 self.memory.record_event(MemoryEntry(
                     step=len(belief.action_history),
                     domain="grasp", event="strategy_failed",
-                    context={
-                        "strategy": strategy_name,
-                        "failure": result.attempt.failure_mode,
-                        "object": hyp.label,
-                    },
-                    lesson=(
-                        f"{hyp.label}: {strategy_name} failed "
-                        f"({result.attempt.failure_mode}), avoid this strategy"
-                    ),
+                    context=memory_context,
+                    lesson=memory_lesson,
                 ))
             if result.attempt.failure_mode == "success":
                 try:
@@ -812,6 +806,93 @@ class EmboSightAgent:
             )
         except Exception as e:
             logger.warning("[agent] memory consolidate failed: %s", e)
+
+    @staticmethod
+    def _annotate_grasp_attempt(h: Hypothesis, attempt) -> None:
+        context, _ = EmboSightAgent._grasp_memory_payload(h, attempt)
+        diagnostic = getattr(attempt, "diagnostic", None)
+        if diagnostic is None:
+            diagnostic = {}
+            attempt.diagnostic = diagnostic
+        for key in (
+            "selected_strategy",
+            "executed_strategy",
+            "candidate_source",
+            "approach_dir",
+            "finger_width_m",
+            "depth_margin_m",
+        ):
+            if key in context:
+                diagnostic.setdefault(key, context[key])
+
+    @staticmethod
+    def _grasp_memory_payload(h: Hypothesis, attempt) -> tuple[dict, str]:
+        selected = (
+            h.grasp_strategy.strategy
+            if getattr(h, "grasp_strategy", None) is not None
+            else "unknown"
+        )
+        candidate = getattr(attempt, "candidate", None)
+        executed = EmboSightAgent._executed_strategy_name(
+            candidate, selected_strategy=selected,
+        )
+        approach_dir = EmboSightAgent._coerce_position3(
+            getattr(candidate, "approach_dir", None),
+        )
+        context = {
+            "strategy": executed,
+            "executed_strategy": executed,
+            "selected_strategy": selected,
+            "candidate_source": str(getattr(candidate, "source", "unknown")),
+            "object": h.label,
+        }
+        if approach_dir is not None:
+            context["approach_dir"] = approach_dir.tolist()
+        if candidate is not None:
+            context["finger_width_m"] = float(
+                getattr(candidate, "finger_width_m", 0.0) or 0.0,
+            )
+        if getattr(h, "grasp_strategy", None) is not None:
+            context["depth_margin_m"] = float(
+                getattr(h.grasp_strategy, "depth_margin_m", 0.0) or 0.0,
+            )
+
+        candidate_source = context["candidate_source"]
+        if getattr(attempt, "failure_mode", None) == "success":
+            lesson = (
+                f"{h.label}: selected {selected}, executed {executed} "
+                f"({candidate_source}) succeeded"
+            )
+        else:
+            failure = getattr(attempt, "failure_mode", "unknown")
+            context["failure"] = failure
+            lesson = (
+                f"{h.label}: selected {selected}, executed {executed} "
+                f"({candidate_source}) failed ({failure}), "
+                "avoid this executed strategy"
+            )
+        return context, lesson
+
+    @staticmethod
+    def _executed_strategy_name(
+        candidate, selected_strategy: str = "unknown",
+    ) -> str:
+        if candidate is None:
+            return selected_strategy
+        source = str(getattr(candidate, "source", "") or "")
+        if source.startswith("strategy_"):
+            return source.removeprefix("strategy_")
+        approach_dir = EmboSightAgent._coerce_position3(
+            getattr(candidate, "approach_dir", None),
+        )
+        if source == "vlm_top_grasp" and approach_dir is not None:
+            if (
+                float(approach_dir[2]) < -0.9
+                and abs(float(approach_dir[0])) < 0.2
+                and abs(float(approach_dir[1])) < 0.2
+            ):
+                return "top_down"
+        return source or selected_strategy
 
     def _latest_grasp_succeeded(self, belief: WorldBelief) -> bool:
         h = belief.target()

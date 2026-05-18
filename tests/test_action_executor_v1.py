@@ -1189,6 +1189,52 @@ class _ZStallObjectDisplacedEnv(FakeEnv):
         return True
 
 
+class _ZStallLiveObjectRefreshEnv(FakeEnv):
+    """Object moves during z-stall recovery; realign must follow live body pose."""
+
+    def __init__(self):
+        super().__init__(descend_ok=False, lift_ok=True, obj_lifts=True)
+        self._approach_count = 0
+        self._nudged = False
+        self._realigned = False
+        self.obj_pos = np.array([0.565, 0.025, 0.9], dtype=np.float32)
+        self.approach_points: list[np.ndarray] = []
+        self.move_targets: list[np.ndarray] = []
+        self.nudge_xy_calls: list[np.ndarray] = []
+
+    def approach(self, point_3d, approach_dir, target_label=None, **kwargs):
+        self._approach_count += 1
+        self.approach_points.append(np.asarray(point_3d, dtype=np.float32).copy())
+        if self._approach_count == 1:
+            return False, float(point_3d[2]) + 0.03
+        return True, float(point_3d[2])
+
+    def nudge_base_world_xy(self, delta_xy):
+        self.nudge_xy_calls.append(np.asarray(delta_xy).copy())
+        self._nudged = True
+        return True
+
+    def get_eef_pos(self):
+        if self._nudged and not self._realigned:
+            return np.array([0.45, 0.0, 0.95], dtype=np.float32)
+        return np.array([0.565, 0.025, 0.95], dtype=np.float32)
+
+    def move_arm_to(self, pos, **kw):
+        target = np.asarray(pos, dtype=np.float32).copy()
+        self.move_targets.append(target)
+        self.calls.append("move")
+        if np.linalg.norm(target[:2] - self.obj_pos[:2]) < 1e-4:
+            self._realigned = True
+        return True
+
+    def _get_body_pos(self, body_name):
+        z = 0.98 if self._lifted else self.obj_pos[2]
+        return np.array([self.obj_pos[0], self.obj_pos[1], z], dtype=np.float32)
+
+    def get_base_pose(self):
+        return np.array([1.0, 0.0, 0.0]), np.eye(3, dtype=np.float32)
+
+
 class TestZStallLateralReAlign:
     def test_post_nudge_lateral_realign(self):
         """After base nudge displaces EEF laterally, action_executor must
@@ -1240,6 +1286,23 @@ class TestZStallLateralReAlign:
         assert result.attempt.diagnostic["reason"] == "object_displaced_before_close"
         assert result.attempt.diagnostic["lateral_error_m"] > 0.02
         assert "close" not in env.calls
+        np.testing.assert_allclose(h.position_3d, env.obj_pos)
+
+    def test_post_nudge_realign_uses_live_object_xy_not_stale_candidate(self):
+        """After nudge, refresh candidate XY from sim body before realign."""
+        from src.action_executor import ActionExecutor
+        from src.world_belief import DecomposedTask
+        env = _ZStallLiveObjectRefreshEnv()
+        exe = ActionExecutor(scene_describer=None)
+        h, c = _hyp_with_candidate()
+
+        result = exe.act(h, DecomposedTask(primary_target="apple"), env)
+
+        assert result.success is True
+        assert env.move_targets, "expected lateral re-align move"
+        np.testing.assert_allclose(env.move_targets[-1][:2], env.obj_pos[:2])
+        np.testing.assert_allclose(env.approach_points[-1][:2], env.obj_pos[:2])
+        np.testing.assert_allclose(c.point_3d[:2], env.obj_pos[:2])
         np.testing.assert_allclose(h.position_3d, env.obj_pos)
 
 
