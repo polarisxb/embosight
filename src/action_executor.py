@@ -90,27 +90,19 @@ class ActionExecutor:
             and abs(approach_dir[1]) < 0.1
         )
 
-        # Phase 4 + 8b: explicit base navigation with adaptive offset.
+        # Phase 4 + 9c: explicit base navigation with safe minimum offset.
         #
-        # Run 8 GPU baseline showed PandaMobile torso range is [0, 0.34]
-        # (UP only), so lowering torso to extend downward reach is impossible.
-        # The remaining lever is base distance: at horizontal D from target,
-        # Panda's downward reach is √(R²−D²) (R≈0.85m), so smaller D yields
-        # significantly more vertical reach budget.
-        #
-        # Adaptive: low targets (counter-top, z<0.95m) need extra reach
-        # budget → use offset 0.30m. Higher targets work fine at the
-        # standard 0.45m (and 0.30m might collide with cabinet shelves).
+        # Post-navigation GPU probes showed offsets below 0.55m place PandaOmron
+        # in an arm-control-degenerate state: all OSC pulses collapse to tiny
+        # common drift and z motion is lost. Offset 0.55m restores meaningful
+        # x/z response while 0.65m matches the reset baseline.
         target_z = float(candidate.point_3d[2])
-        LOW_TARGET_Z = 0.95
-        if is_top_down and target_z < LOW_TARGET_Z:
-            offset_m = 0.30
-            logger.info(
-                "[act] adaptive offset=0.30m (top_down low target_z=%.3f)",
-                target_z,
-            )
-        else:
-            offset_m = 0.45
+        offset_m = 0.55
+        logger.info(
+            "[act] safe navigate offset=0.55m (target_z=%.3f, top_down=%s)",
+            target_z,
+            is_top_down,
+        )
 
         # Best-effort: if env doesn't implement navigate_base_to (legacy mock)
         # OR if it returns False/raises, fall through to legacy move_to_pre_grasp

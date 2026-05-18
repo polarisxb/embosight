@@ -817,7 +817,7 @@ class EnvWrapper:
         时还能推动 base).
 
         关键 robosuite 行为:
-            - 手臂 OSC: action[0:3] 是 world/controller-fixed 系增量
+            - Arm OSC action[0:3] uses the mobile-base frame
             - 底盘 JointVelocity (forward/side): base 系速度
             - 底盘 action index 通过 _get_base_action_idx() 动态检测
 
@@ -1002,7 +1002,7 @@ class EnvWrapper:
                         f"ori={ori_err:.3f}rad stall={stall}/{stall_limit}"
                     )
 
-            # 世界系 → actual mobile base 系 (base controller only)
+            # World frame -> actual mobile-base frame (arm OSC and base controller)
             real_pose = self._read_real_base_pose()
             if real_pose is not None:
                 base_ori = real_pose[1]
@@ -1010,16 +1010,15 @@ class EnvWrapper:
                 _, base_ori = self.get_base_pose()
             delta_base = base_ori.T @ delta_world  # 3D vector in base frame
 
-            dir_world = delta_world / max(dist, 1e-6)
             dir_base = delta_base / max(dist, 1e-6)
             step_size = min(self.ARM_STEP_CAP, dist)
 
             action = np.zeros(action_dim, dtype=np.float32)
-            # 手臂位置: world 系增量 (只有还没到位时才驱动)
+            # Arm position: mobile-base-frame delta
             if not pos_ok:
-                action[0:3] = dir_world * step_size
+                action[0:3] = dir_base * step_size
 
-            # 手臂朝向: world 系 axis-angle clamp + scale
+            # Arm orientation: base-frame axis-angle clamp + scale
             #
             # Phase 9 fix: 只在位置足够近时启用朝向控制. Run 10 暴露:
             # navigate 旋转 base ~180° → target_quat 的 roll 分量偏移 ~60-180°
@@ -1035,11 +1034,12 @@ class EnvWrapper:
                 try:
                     # ori_delta_world 已在上面计算
                     # Clamp per-step magnitude
+                    ori_delta_base = base_ori.T @ ori_delta_world
                     if ori_err > max_ori_step_per_iter:
-                        ori_delta_world = ori_delta_world * (
+                        ori_delta_base = ori_delta_base * (
                             max_ori_step_per_iter / ori_err
                         )
-                    action[3:6] = (ori_delta_world * ori_gain).astype(np.float32)
+                    action[3:6] = (ori_delta_base * ori_gain).astype(np.float32)
                 except Exception as e:
                     logger.debug(f"[move_arm_to] ori control skipped: {e}")
 

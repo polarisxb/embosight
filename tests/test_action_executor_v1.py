@@ -321,9 +321,9 @@ class TestPhase4NavigateIntegration:
         expected_xy = tuple(c.point_3d[:2].tolist())
         actual_xy = env.navigate_calls[0]["target_xy"]
         assert np.allclose(actual_xy, expected_xy, atol=1e-5)
-        # Phase 8b adaptive offset: default fixture is top_down z=0.9 (<0.95)
-        # which triggers the close offset 0.30 (gains downward reach).
-        assert env.navigate_calls[0]["offset_m"] == 0.30
+        # Phase 9c safe offset: default fixture is top_down z=0.9 (<0.95)
+        # but post-navigation probes showed offsets below 0.55 lock arm OSC.
+        assert env.navigate_calls[0]["offset_m"] == 0.55
         # Pipeline completes successfully (FakeEnv all-green)
         assert result.success is True
 
@@ -367,13 +367,12 @@ class TestPhase4NavigateIntegration:
 # ============================================================
 
 class TestPhase8bAdaptiveOffset:
-    """Run 8 baseline showed PandaMobile torso is UP-only ([0, 0.34]), so
-    extending downward reach requires bringing the base closer instead.
-    For low top_down targets (z<0.95), navigate offset drops from 0.45
-    to 0.30 to gain ~8cm vertical reach via Panda IK envelope."""
+    """Run 8 baseline showed PandaMobile torso is UP-only ([0, 0.34]), but
+    Run 9c post-navigation probes showed close offsets below 0.55m lock arm
+    OSC, so grasp navigation must preserve a safe minimum offset."""
 
-    def test_low_top_down_target_uses_close_offset(self):
-        """top_down + target z<0.95 → offset 0.30m (gains reach)."""
+    def test_low_top_down_target_uses_safe_offset(self):
+        """top_down + target z<0.95 → offset 0.55m (preserves arm control)."""
         from src.action_executor import ActionExecutor
         from src.world_belief import DecomposedTask
         env = _NavCapturingEnv()
@@ -386,14 +385,13 @@ class TestPhase8bAdaptiveOffset:
         exe.act(h, DecomposedTask(primary_target="apple"), env)
 
         assert env.navigate_calls, "navigate_base_to must be called"
-        assert env.navigate_calls[0]["offset_m"] == 0.30, (
-            f"low top_down target should use offset 0.30, "
+        assert env.navigate_calls[0]["offset_m"] == 0.55, (
+            f"low top_down target should use offset 0.55, "
             f"got {env.navigate_calls[0]['offset_m']}"
         )
 
-    def test_high_top_down_target_uses_standard_offset(self):
-        """top_down + target z>=0.95 → offset 0.45m (standard, avoids
-        cabinet-shelf collision)."""
+    def test_high_top_down_target_uses_safe_offset(self):
+        """top_down + target z>=0.95 → offset 0.55m (minimum safe control distance)."""
         from src.action_executor import ActionExecutor
         from src.world_belief import DecomposedTask
         env = _NavCapturingEnv()
@@ -405,7 +403,7 @@ class TestPhase8bAdaptiveOffset:
 
         exe.act(h, DecomposedTask(primary_target="apple"), env)
 
-        assert env.navigate_calls[0]["offset_m"] == 0.45
+        assert env.navigate_calls[0]["offset_m"] == 0.55
 
     def test_side_approach_uses_standard_offset_regardless_of_z(self):
         """Side / tilted approach is not vertical-reach bottlenecked, so
@@ -431,13 +429,12 @@ class TestPhase8bAdaptiveOffset:
 
         exe.act(h, DecomposedTask(primary_target="apple"), env)
 
-        assert env.navigate_calls[0]["offset_m"] == 0.45, (
-            "side approach should use standard 0.45 even with low z"
+        assert env.navigate_calls[0]["offset_m"] == 0.55, (
+            "side approach should use safe 0.55 even with low z"
         )
 
-    def test_threshold_boundary_z_0p95_is_standard(self):
-        """Boundary check: z == 0.95 should NOT trigger close offset
-        (rule is strict <0.95)."""
+    def test_threshold_boundary_z_0p95_is_safe_offset(self):
+        """Boundary check: z == 0.95 still preserves the minimum safe offset."""
         from src.action_executor import ActionExecutor
         from src.world_belief import DecomposedTask
         env = _NavCapturingEnv()
@@ -449,4 +446,4 @@ class TestPhase8bAdaptiveOffset:
 
         exe.act(h, DecomposedTask(primary_target="apple"), env)
 
-        assert env.navigate_calls[0]["offset_m"] == 0.45
+        assert env.navigate_calls[0]["offset_m"] == 0.55

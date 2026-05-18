@@ -186,7 +186,7 @@ def test_read_real_base_pose_returns_none_when_no_sim() -> None:
     assert env._read_real_base_pose() is None
 
 
-def test_arm_position_action_stays_world_frame_after_base_rotation() -> None:
+def test_arm_position_action_uses_real_base_frame_after_base_rotation() -> None:
     env = _RealBaseStubEnv(
         real_base_xy=(0.425, -2.861),
         real_base_yaw=np.deg2rad(177.8),
@@ -215,5 +215,5 @@ def test_arm_position_action_stays_world_frame_after_base_rotation() -> None:
     env.move_arm_to(target, max_steps=1)
 
     assert captured
-    assert captured[0][0] < 0.0
+    assert captured[0][0] > 0.0
     assert captured[0][2] < 0.0
