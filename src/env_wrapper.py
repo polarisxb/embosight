@@ -2894,11 +2894,22 @@ class EnvWrapper:
         height_m: float = 0.10,
         approach_dir: Optional[np.ndarray] = None,
     ) -> tuple[bool, float]:
-        """从当前抓取位回退/抬升, 分阶段控速以避免物体滑落。
+        """从当前抓取位回退/抬升。单次大目标 lift, 让 OSC 全速冲。
 
         - top_down (approach_dir≈[0,0,-1] 或 None): 直接竖直抬 height_m
         - 侧抓 (e.g. [1,0,0]): 先沿 -approach_dir 水平回退 height_m,
           再竖直抬升 height_m → 物体先脱离台面边缘再升空
+
+        历史: 原版有 phase 1 慢起 (4×5mm with max_steps=80, threshold=3mm),
+        本意防止惯性脱落. 但 GPU run de4e53d/40fa8db 实测发现:
+        - phase 1 init_dist=5mm + threshold=3mm → OSC 进入精修慢速档
+          (~0.05 mm/step, 16 秒磨蹭)
+        - phase 2 init_dist=85mm + threshold=20mm → OSC 全速档
+          (~0.42 mm/step, 8 倍快)
+        - 圆形物体 (柠檬) 在 phase 1 的 16 秒 IK 边缘振动里慢慢"滚"出夹爪
+        - micro_lift (verify_grasp_by_micro_lift) 已经做了 20mm 平滑测试 lift,
+          phase 1 再做一遍 gentle ramp 是冗余反作用
+        修复: 删除 phase 1, 直接单次 full lift, OSC 进入大目标全速档.
 
         Args:
             height_m: 抬升 / 回退高度
@@ -2925,12 +2936,14 @@ class EnvWrapper:
             # ── 侧抓: 先水平回退 height_m 沿 -approach_dir ──
             # 注意: lift 全程 gripper_hold=1.0 维持夹爪闭合, 防止
             # close_gripper 后物体在移动期间因夹爪松开而滑落.
+            # 侧抓回退保留分段 (4 段), 因为水平方向的 base+arm 协调比纯
+            # 竖直 lift 复杂, 分段有助于稳定. 但每段 max_steps 上调到 200,
+            # threshold 上调到 10mm, 让 OSC 不进精修慢速档.
             if not is_top_down:
                 retreat = -ad * float(height_m)
-                # 慢退分 4 段 (类似慢起, 防止物体因惯性脱落)
-                n_micro = 4
-                for k in range(n_micro):
-                    frac = (k + 1) / n_micro
+                n_retreat = 4
+                for k in range(n_retreat):
+                    frac = (k + 1) / n_retreat
                     target = np.array(
                         [curr[0] + retreat[0] * frac,
                          curr[1] + retreat[1] * frac,
@@ -2938,36 +2951,24 @@ class EnvWrapper:
                         dtype=np.float32,
                     )
                     self.move_arm_to(
-                        target, threshold_m=0.005, max_steps=120,
+                        target, threshold_m=0.010, max_steps=200,
                         gripper_hold=1.0,
                     )
                 # 更新当前位置作为后续 lift 起点
                 curr = self.get_eef_pos().copy()
 
-            # ── 竖直抬升 height_m ──
-            # 阶段1: 慢起 2cm, 每次 5mm
-            gentle_total = min(0.02, height_m)
-            micro_step = 0.005
-            n_micro = max(1, int(gentle_total / micro_step))
-            for k in range(n_micro):
-                target_z = float(curr[2]) + (k + 1) * micro_step
-                target = np.array(
-                    [curr[0], curr[1], target_z], dtype=np.float32
-                )
-                self.move_arm_to(
-                    target, threshold_m=0.003, max_steps=80,
-                    gripper_hold=1.0,
-                )
-
-            # 阶段2: 剩余高度正常速度
-            remaining = height_m - gentle_total
-            if remaining > 0.005:
+            # ── 竖直抬升 height_m: 单次大目标, OSC 全速档 ──
+            # threshold=0.02 (20mm) + max_steps=300 让 OSC:
+            # 1. 看到 init_dist=100mm 后 ramp 到全速 (~0.4 mm/step)
+            # 2. 不需要精修到 3mm (phase 1 旧值), 避免减速
+            # 3. 300 步给充足收敛余量 (200 步在 attempt 1 中验证可达 83mm 进度)
+            if height_m > 0.005:
                 final_target = np.array(
                     [curr[0], curr[1], float(curr[2]) + height_m],
                     dtype=np.float32,
                 )
                 self.move_arm_to(
-                    final_target, threshold_m=0.02, max_steps=200,
+                    final_target, threshold_m=0.02, max_steps=300,
                     gripper_hold=1.0,
                 )
 

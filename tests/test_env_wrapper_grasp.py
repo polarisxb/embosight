@@ -363,6 +363,38 @@ def test_lift_passes_gripper_hold_to_all_move_calls() -> None:
         )
 
 
+def test_top_down_lift_is_single_call_not_phase1_grind() -> None:
+    """Regression: top_down lift must be a SINGLE move_arm_to call.
+
+    GPU run de4e53d/40fa8db revealed that the old phase 1 (4×5mm gentle ramp)
+    forced OSC into precision-slow mode (~0.05 mm/step over 16 seconds),
+    during which round objects (lemon) rolled out of the gripper through
+    IK-boundary vibration. Phase 2's single 100mm call ran 8x faster
+    (~0.42 mm/step) because OSC saw a large init_dist and ramped to full
+    speed.
+
+    The fix: remove phase 1 entirely so the entire vertical lift is one
+    fast call. micro_lift already verifies grip with a 20mm test lift, so
+    no gentle ramp is needed.
+    """
+    env = _LiftCallRecorder()
+    env.lift(height_m=0.10, approach_dir=None)
+    # Old behavior: 4 phase-1 calls + 1 phase-2 call = 5 calls
+    # New behavior: 1 single call
+    assert len(env.calls) == 1, (
+        f"top_down lift should be a SINGLE move_arm_to call to keep OSC "
+        f"in full-speed mode; got {len(env.calls)} calls. "
+        f"Phase 1 gentle ramp must be removed to prevent round objects "
+        f"from rolling out during slow IK-boundary motion."
+    )
+    # The single call must target the full lift height (start_z + height_m).
+    target_z = float(env.calls[0]["target"][2])
+    assert abs(target_z - (0.6 + 0.10)) < 1e-6, (
+        f"single lift call must target full height_m=0.10, "
+        f"got target_z={target_z}"
+    )
+
+
 # ============================================================
 # E2E mock: action vectors actually sent to env.step during lift
 # ============================================================
