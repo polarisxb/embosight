@@ -118,11 +118,16 @@ class ActionExecutor:
                     f"[act] navigate_base_to failed: {e}, falling through"
                 )
 
-        # 1. pre-grasp (diagnostic-aware with bounded recovery)
+        # 1. pre-grasp (diagnostic-aware with iterative nudge recovery)
         if hasattr(env, "move_to_pre_grasp_diagnostic"):
             pre_result = env.move_to_pre_grasp_diagnostic(candidate)
             if not (pre_result.ok or pre_result.handoff_ok):
-                if pre_result.needs_recovery:
+                # Iterative nudge recovery: each nudge reduces lateral by
+                # ~60-70 %, so 3 iterations bring 64 mm → ~5 mm (< 20 mm).
+                _MAX_NUDGE_ITERS = 3
+                for _nudge_iter in range(_MAX_NUDGE_ITERS):
+                    if not pre_result.needs_recovery:
+                        break
                     recover_ok = self._recover_pre_grasp(
                         env, candidate, pre_result,
                     )
@@ -137,7 +142,21 @@ class ActionExecutor:
                             },
                             env,
                         )
-                    pre_result = env.move_to_pre_grasp_diagnostic(candidate)
+                    # After base nudge, evaluate from current EEF WITHOUT
+                    # re-running move_arm_to.  Re-running would activate
+                    # orientation control (ori_err ~0.9 rad after base
+                    # rotation) which drifts position from ~24 mm back to
+                    # ~62 mm — undoing the nudge (GPU run c2e4ab1).
+                    if hasattr(env, "evaluate_pre_grasp_at_current"):
+                        pre_result = env.evaluate_pre_grasp_at_current(
+                            candidate,
+                        )
+                    else:
+                        pre_result = env.move_to_pre_grasp_diagnostic(
+                            candidate,
+                        )
+                    if pre_result.ok or pre_result.handoff_ok:
+                        break
                 if not (pre_result.ok or pre_result.handoff_ok):
                     return self._failed_result(
                         candidate, "ik_unreachable",

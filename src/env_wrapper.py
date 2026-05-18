@@ -2339,6 +2339,51 @@ class EnvWrapper:
         """
         return True
 
+    def evaluate_pre_grasp_at_current(
+        self, candidate, height_m: float = 0.05,
+    ) -> PreGraspResult:
+        """Evaluate pre-grasp handoff from current EEF — NO arm motion.
+
+        Used by action_executor after a base nudge recovery: the rigid base
+        translation already placed the EEF near pre_pos in XY. Re-running
+        move_arm_to would activate orientation control (ori_err ~0.9 rad
+        after base rotation) which physically displaces the wrist and drifts
+        position from ~24 mm back to ~62 mm — undoing the nudge.
+
+        This method computes the same diagnostic decomposition as
+        move_to_pre_grasp_diagnostic but skips all motion (base approach,
+        gripper open, strict move_arm_to).
+        """
+        ad_unit = normalize_approach_dir(
+            getattr(candidate, "approach_dir", [0.0, 0.0, -1.0])
+        )
+        target_pos = np.asarray(candidate.point_3d, dtype=np.float32)[:3]
+        pre_pos = target_pos - ad_unit * float(height_m)
+
+        try:
+            final_eef = self.get_eef_pos()
+        except Exception:
+            final_eef = pre_pos.copy()
+
+        finger_width = getattr(candidate, "finger_width_m", None)
+        result = evaluate_pre_grasp_handoff(
+            move_ok=False,
+            final_eef=final_eef,
+            pre_pos=pre_pos,
+            grasp_point=target_pos,
+            approach_dir=ad_unit,
+            finger_width_m=finger_width,
+            height_m=float(height_m),
+        )
+        logger.info(
+            "[pre_grasp_eval] at_current handoff=%s reason=%s "
+            "total=%.3f lateral=%.3f axis=%.3f gap=%.3f lateral_limit=%.3f",
+            result.handoff_ok, result.reason,
+            result.total_error_m, result.lateral_error_m,
+            result.axis_error_m, result.approach_gap_m, result.lateral_limit_m,
+        )
+        return result
+
     def move_to_pre_grasp(self, candidate, height_m: float = 0.05) -> bool:
         """Compatibility wrapper around move_to_pre_grasp_diagnostic.
 

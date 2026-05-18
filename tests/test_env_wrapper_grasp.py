@@ -182,6 +182,74 @@ def test_move_to_pre_grasp_strict_threshold_is_06_for_top_down() -> None:
     assert env.move_calls[-1][2] == 0.06
 
 
+def test_evaluate_pre_grasp_at_current_does_not_invoke_move_arm_to() -> None:
+    """Regression: post-nudge evaluation must NOT command any arm motion.
+
+    GPU run c2e4ab1 showed re-running move_arm_to with orientation control
+    drifts EEF from ~24mm back to ~62mm, undoing the base nudge. The new
+    method must read get_eef_pos() and skip move_arm_to entirely.
+    """
+    env = PregraspThresholdEnv()
+    env.final_eef = np.array([0.505, 0.205, 0.95], dtype=np.float32)
+    env._moved = True  # tell mock to report final_eef from get_eef_pos
+    candidate = GraspCandidate(
+        point_3d=np.array([0.5, 0.2, 0.9], dtype=np.float32),
+        approach_dir=np.array([0.0, 0.0, -1.0], dtype=np.float32),
+        finger_width_m=0.04,
+        score=0.8,
+    )
+
+    env.evaluate_pre_grasp_at_current(candidate)
+
+    assert env.move_calls == [], (
+        "evaluate_pre_grasp_at_current must skip move_arm_to entirely; "
+        f"got move_calls={env.move_calls}"
+    )
+    assert env.gripper_calls == 0, (
+        "evaluate_pre_grasp_at_current must skip gripper open"
+    )
+
+
+def test_evaluate_pre_grasp_at_current_returns_safe_handoff_when_close() -> None:
+    """EEF within lateral_limit → safe_handoff."""
+    env = PregraspThresholdEnv()
+    # Pre-pos for top-down (height_m=0.05) = grasp_point + [0,0,0.05] = (0.5, 0.2, 0.95).
+    # EEF only 5mm off in X — within lateral_limit (0.02 for finger 0.04).
+    env.final_eef = np.array([0.505, 0.2, 0.95], dtype=np.float32)
+    env._moved = True
+    candidate = GraspCandidate(
+        point_3d=np.array([0.5, 0.2, 0.9], dtype=np.float32),
+        approach_dir=np.array([0.0, 0.0, -1.0], dtype=np.float32),
+        finger_width_m=0.04,
+        score=0.8,
+    )
+
+    result = env.evaluate_pre_grasp_at_current(candidate)
+
+    assert result.handoff_ok is True
+    assert result.needs_recovery is False
+    assert result.reason == PRE_GRASP_SAFE_HANDOFF
+
+
+def test_evaluate_pre_grasp_at_current_returns_lateral_misaligned() -> None:
+    """EEF beyond lateral_limit → lateral_misaligned, needs_recovery."""
+    env = PregraspThresholdEnv()
+    env.final_eef = np.array([0.56, 0.2, 0.95], dtype=np.float32)
+    env._moved = True
+    candidate = GraspCandidate(
+        point_3d=np.array([0.5, 0.2, 0.9], dtype=np.float32),
+        approach_dir=np.array([0.0, 0.0, -1.0], dtype=np.float32),
+        finger_width_m=0.04,
+        score=0.8,
+    )
+
+    result = env.evaluate_pre_grasp_at_current(candidate)
+
+    assert result.handoff_ok is False
+    assert result.needs_recovery is True
+    assert result.reason == PRE_GRASP_LATERAL_MISALIGNED
+
+
 class _BaseAwareEnv(PregraspThresholdEnv):
     """PregraspThresholdEnv variant with controllable real base xy.
 

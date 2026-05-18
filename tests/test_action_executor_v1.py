@@ -812,3 +812,185 @@ class TestBaseNudgeRecovery:
 
         assert result.success is True
         assert env.recovery_calls == 1  # caller hook used
+
+    def test_recovery_uses_evaluate_pre_grasp_at_current_when_available(self):
+        """After nudge, env.evaluate_pre_grasp_at_current is preferred over
+        re-running move_to_pre_grasp_diagnostic.
+
+        Regression for GPU run c2e4ab1: re-running move_to_pre_grasp_diagnostic
+        triggers a second move_arm_to with orientation control that physically
+        drifts the EEF from ~24mm back to ~62mm, undoing the nudge. The
+        diagnostic shortcut evaluates geometry from the current (post-nudge)
+        EEF without commanding any arm motion.
+        """
+        from types import SimpleNamespace
+        from src.action_executor import ActionExecutor
+        from src.world_belief import DecomposedTask
+
+        class _NudgeAndShortcutEnv(FakeEnv):
+            def __init__(self):
+                super().__init__()
+                self.diag_calls = 0
+                self.eval_calls = 0
+                self.nudge_calls: list[dict] = []
+
+            def navigate_base_to(self, target_xy, offset_m: float):
+                pass
+
+            def nudge_base_world_xy(self, delta_xy):
+                self.nudge_calls.append({
+                    "delta_xy": np.asarray(delta_xy, dtype=np.float32).copy(),
+                })
+
+            def move_to_pre_grasp_diagnostic(
+                self, candidate, height_m: float = 0.05,
+            ):
+                self.diag_calls += 1
+                self.calls.append("pre_grasp_diag")
+                grasp_point = np.asarray(
+                    candidate.point_3d, dtype=np.float32,
+                )
+                pre_pos = grasp_point + np.array(
+                    [0.0, 0.0, 0.05], dtype=np.float32,
+                )
+                # Always lateral_misaligned on initial diag call.
+                final_eef = pre_pos - np.array(
+                    [0.06, 0.0, 0.0], dtype=np.float32,
+                )
+                return SimpleNamespace(
+                    ok=False, handoff_ok=False, needs_recovery=True,
+                    reason="lateral_misaligned",
+                    final_eef=final_eef, pre_pos=pre_pos,
+                    total_error_m=0.06, lateral_error_m=0.06,
+                    axis_error_m=0.0, approach_gap_m=0.05,
+                    lateral_limit_m=0.02,
+                    min_approach_gap_m=0.01, max_approach_gap_m=0.08,
+                    move_ok=False,
+                )
+
+            def evaluate_pre_grasp_at_current(
+                self, candidate, height_m: float = 0.05,
+            ):
+                self.eval_calls += 1
+                self.calls.append("pre_grasp_eval")
+                grasp_point = np.asarray(
+                    candidate.point_3d, dtype=np.float32,
+                )
+                pre_pos = grasp_point + np.array(
+                    [0.0, 0.0, 0.05], dtype=np.float32,
+                )
+                # Post-nudge: lateral within limit → safe_handoff.
+                return SimpleNamespace(
+                    ok=False, handoff_ok=True, needs_recovery=False,
+                    reason="safe_handoff",
+                    final_eef=pre_pos, pre_pos=pre_pos,
+                    total_error_m=0.005, lateral_error_m=0.005,
+                    axis_error_m=0.0, approach_gap_m=0.05,
+                    lateral_limit_m=0.02,
+                    min_approach_gap_m=0.01, max_approach_gap_m=0.08,
+                    move_ok=False,
+                )
+
+        env = _NudgeAndShortcutEnv()
+        exe = ActionExecutor(scene_describer=None)
+        h, _ = _hyp_with_candidate()
+        result = exe.act(h, DecomposedTask(primary_target="apple"), env)
+
+        assert result.success is True
+        # Initial strict move ran exactly once.
+        assert env.diag_calls == 1
+        # Recovery used the no-motion evaluator instead of re-running diag.
+        assert env.eval_calls == 1
+        # Exactly one nudge to recover.
+        assert len(env.nudge_calls) == 1
+
+    def test_iterative_nudge_progressively_reduces_lateral(self):
+        """Multiple nudges reduce lateral residual until safe_handoff.
+
+        Real-world nudge accuracy is ~60-70 % per iteration due to obs sync
+        and OSC settling. Initial 64mm lateral may need 2-3 nudges to drop
+        below 20mm lateral_limit. Verify the executor iterates instead of
+        bailing out after the first attempt.
+        """
+        from types import SimpleNamespace
+        from src.action_executor import ActionExecutor
+        from src.world_belief import DecomposedTask
+
+        class _IterativeNudgeEnv(FakeEnv):
+            # Lateral residuals across iterations: 64 → 24 → 9 → 3 mm.
+            _LATERALS_M = [0.064, 0.024, 0.009, 0.003]
+
+            def __init__(self):
+                super().__init__()
+                self.eval_iter = 0
+                self.diag_calls = 0
+                self.nudge_calls: list[dict] = []
+
+            def navigate_base_to(self, target_xy, offset_m: float):
+                pass
+
+            def nudge_base_world_xy(self, delta_xy):
+                self.nudge_calls.append({
+                    "delta_xy": np.asarray(delta_xy, dtype=np.float32).copy(),
+                })
+
+            def _build_result(self, lateral_m: float, candidate):
+                grasp_point = np.asarray(
+                    candidate.point_3d, dtype=np.float32,
+                )
+                pre_pos = grasp_point + np.array(
+                    [0.0, 0.0, 0.05], dtype=np.float32,
+                )
+                # Place EEF lateral_m off in +x.
+                final_eef = pre_pos - np.array(
+                    [lateral_m, 0.0, 0.0], dtype=np.float32,
+                )
+                lateral_limit = 0.02
+                handoff_ok = lateral_m <= lateral_limit
+                return SimpleNamespace(
+                    ok=False,
+                    handoff_ok=handoff_ok,
+                    needs_recovery=not handoff_ok,
+                    reason=(
+                        "safe_handoff" if handoff_ok
+                        else "lateral_misaligned"
+                    ),
+                    final_eef=final_eef, pre_pos=pre_pos,
+                    total_error_m=lateral_m,
+                    lateral_error_m=lateral_m,
+                    axis_error_m=0.0, approach_gap_m=0.05,
+                    lateral_limit_m=lateral_limit,
+                    min_approach_gap_m=0.01, max_approach_gap_m=0.08,
+                    move_ok=False,
+                )
+
+            def move_to_pre_grasp_diagnostic(
+                self, candidate, height_m: float = 0.05,
+            ):
+                self.diag_calls += 1
+                self.calls.append("pre_grasp_diag")
+                lateral = self._LATERALS_M[self.eval_iter]
+                self.eval_iter += 1
+                return self._build_result(lateral, candidate)
+
+            def evaluate_pre_grasp_at_current(
+                self, candidate, height_m: float = 0.05,
+            ):
+                self.calls.append("pre_grasp_eval")
+                lateral = self._LATERALS_M[
+                    min(self.eval_iter, len(self._LATERALS_M) - 1)
+                ]
+                self.eval_iter += 1
+                return self._build_result(lateral, candidate)
+
+        env = _IterativeNudgeEnv()
+        exe = ActionExecutor(scene_describer=None)
+        h, _ = _hyp_with_candidate()
+        result = exe.act(h, DecomposedTask(primary_target="apple"), env)
+
+        assert result.success is True
+        # 64 → 24 → 9 mm: needs 2 nudges (9mm is below limit).
+        assert len(env.nudge_calls) == 2
+        # Initial diag (1) + 2 evals after each nudge.
+        assert env.diag_calls == 1
+        assert env.eval_iter == 3
