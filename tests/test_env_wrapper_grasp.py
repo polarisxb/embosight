@@ -94,6 +94,19 @@ def test_move_to_pre_grasp_accepts_six_cm_boundary() -> None:
     assert env.move_calls[-1][2] >= 0.06
 
 
+def test_move_to_pre_grasp_accepts_observed_top_down_pre_grasp_error() -> None:
+    env = PregraspThresholdEnv()
+    candidate = GraspCandidate(
+        point_3d=np.array([0.5, 0.2, 0.9], dtype=np.float32),
+        approach_dir=np.array([0.0, 0.0, -1.0], dtype=np.float32),
+        finger_width_m=0.04,
+        score=0.8,
+    )
+
+    assert env.move_to_pre_grasp(candidate) is True
+    assert env.move_calls[-1][2] >= 0.07
+
+
 class _LiftCallRecorder(EnvWrapper):
     """Records all move_arm_to calls during lift to verify gripper_hold."""
     def __init__(self) -> None:

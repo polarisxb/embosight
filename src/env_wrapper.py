@@ -2335,7 +2335,7 @@ class EnvWrapper:
         is_top_down = (
             ad_unit[2] < -0.9 and abs(ad_unit[0]) < 0.1 and abs(ad_unit[1]) < 0.1
         )
-        pre_thresh = 0.06 if is_top_down else 0.12
+        pre_thresh = 0.08 if is_top_down else 0.12
         return self.move_arm_to(
             pre_pos, threshold_m=pre_thresh, approach_dir=ad_unit,
         )
