@@ -375,23 +375,31 @@ class ActionExecutor:
             "lateral_limit_m": float(getattr(result, "lateral_limit_m", 0.0)),
         }
 
+    _MAX_LATERAL_NUDGE_M = 0.10
+
     def _recover_pre_grasp(self, env, candidate, prior_result) -> bool:
         """Bounded recovery for pre-grasp lateral misalignment.
 
         Preference order:
         1. env.recover_pre_grasp(candidate, prior_result) — caller hook.
-        2. navigate_base_to(target_xy, offset_m=0.65) — nudge the base to a
-           slightly farther position. The changed distance alters the
-           base→target direction and yaw, which rotates the arm mount
-           offset so that the subsequent drive_base retry can converge
-           from a different starting configuration.
+        2. env.nudge_base_world_xy(residual) — pure-translation base nudge
+           by the EEF residual (pre_pos - final_eef). Bypasses both arm
+           OSC saturation and base controller friction; the rigidly
+           attached EEF lands at pre_pos without recomputing the approach
+           direction.
+        3. env.navigate_base_to(target_xy, offset_m=0.65) — last-resort
+           re-navigate (legacy mocks without nudge primitive).
 
-        NOTE: the previous lateral-nudge strategy (virtual_target shifted by
-        the EEF residual) was removed because navigate_base_to recomputes
-        the full base→target direction — a 6cm virtual-target shift changes
-        the approach angle by ~6°, moving the base to a position where the
-        arm (still in its extended config) becomes IK-unreachable. GPU logs
-        (fcdd0ca) confirmed: lateral 0.063→0.218 after nudge (attempt 1).
+        Why nudge instead of navigate (GPU run 696da4e):
+            navigate_base_to(virtual_target) recomputes the base→target
+            direction; even a 6cm virtual-target shift rotates the
+            approach angle by ~6° and teleports the base to a new yaw
+            with the arm still extended → IK regression (lateral
+            0.063→0.218m). drive_base=True velocity commands fall below
+            OmronMobileBase friction threshold (~0.05 vs 0.25 needed) so
+            the base doesn't actually move. nudge_base_world_xy bypasses
+            both: pure world-frame translation, yaw preserved, EEF
+            translates rigidly with the base.
 
         Returns False if no recovery primitive is available or the call raises.
         """
@@ -399,14 +407,38 @@ class ActionExecutor:
             if hasattr(env, "recover_pre_grasp"):
                 ok = env.recover_pre_grasp(candidate, prior_result)
                 return True if ok is None else bool(ok)
+
+            if hasattr(env, "nudge_base_world_xy"):
+                final_eef = getattr(prior_result, "final_eef", None)
+                pre_pos = getattr(prior_result, "pre_pos", None)
+                if final_eef is not None and pre_pos is not None:
+                    pre_xy = np.asarray(pre_pos, dtype=np.float32)[:2]
+                    eef_xy = np.asarray(final_eef, dtype=np.float32)[:2]
+                    residual = pre_xy - eef_xy
+                    r_norm = float(np.linalg.norm(residual))
+                    if r_norm > 1e-3:
+                        if r_norm > self._MAX_LATERAL_NUDGE_M:
+                            residual = residual * (
+                                self._MAX_LATERAL_NUDGE_M / r_norm
+                            )
+                        logger.info(
+                            "[act] base nudge: residual=(%.3f,%.3f) "
+                            "|Δ|=%.3fm",
+                            float(residual[0]), float(residual[1]),
+                            float(np.linalg.norm(residual)),
+                        )
+                        env.nudge_base_world_xy(residual)
+                        return True
+
             if hasattr(env, "navigate_base_to"):
                 logger.info(
-                    "[act] pre-grasp recovery: re-navigate offset=0.65m"
+                    "[act] pre-grasp recovery fallback: re-navigate offset=0.65m"
                 )
                 env.navigate_base_to(
                     target_xy=candidate.point_3d[:2], offset_m=0.65,
                 )
                 return True
+
             return False
         except Exception as e:
             logger.debug(f"[act] pre-grasp recovery failed: {e}")

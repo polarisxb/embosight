@@ -687,6 +687,93 @@ class EnvWrapper:
         # Tolerance: 15cm beyond ideal offset (teleport precision)
         return new_dist <= offset_m + 0.15
 
+    def nudge_base_world_xy(self, delta_xy) -> bool:
+        """Translate the mobile base by delta_xy in WORLD frame (no yaw change).
+
+        Used by pre-grasp lateral recovery. When the arm OSC plateaus with
+        a known lateral residual (EEF stuck off the approach axis due to
+        the systematic arm-mount offset), this primitive shifts the base
+        rigidly by the residual so the rigidly-attached arm/EEF translates
+        with it. Unlike navigate_base_to which recomputes the base→target
+        direction (and thus base yaw), this performs a pure translation:
+        the approach line stays the same, the base yaw is preserved, and
+        the EEF lands at the pre-grasp pose without triggering a new arm
+        convergence cycle.
+
+        Background (GPU run 696da4e):
+            navigate_base_to places the base CENTER on the base→target
+            line, but the EEF is offset ~6 cm from the base center along
+            the mount axis. Pure arm-OSC convergence saturates joints
+            with the lateral residual unresolved; drive_base velocity
+            commands at 0.05 fall below OmronMobileBase frictionloss
+            (250 vs kv 1000 → action must exceed ~0.25 to move at all).
+            Direct qpos translation bypasses both the controller and the
+            friction, completing the fix in a single sim.forward() step.
+
+        Args:
+            delta_xy: world-frame XY translation to apply to the base.
+
+        Returns:
+            True if the translation was applied (or no-op for |Δ| < 1mm).
+            False if sim / mobilebase joints could not be located.
+        """
+        delta_xy = np.asarray(delta_xy, dtype=np.float64)[:2]
+        d_norm = float(np.linalg.norm(delta_xy))
+        if d_norm < 1e-3:
+            logger.debug(f"[nudge] |Δ|={d_norm:.4f}m below threshold, no-op")
+            return True
+
+        sim = getattr(self._env, "sim", None)
+        if sim is None:
+            logger.debug("[nudge] no sim, returning False")
+            return False
+
+        joints = self._get_mobilebase_joint_addrs()
+        if joints is None:
+            logger.warning(
+                "[nudge] mobilebase joints not found, returning False"
+            )
+            return False
+        x_addr, y_addr, yaw_addr = joints
+
+        # qpos is anchor-local: world_xy = anchor_xy + R @ qpos_xy.
+        # For a translation we keep R and yaw fixed; just convert
+        # delta_world → delta_anchor via R.T.
+        _anchor_xyz, anchor_ori = self.get_base_pose()
+        R2 = np.asarray(anchor_ori, dtype=np.float64)[:2, :2]
+        delta_anchor = R2.T @ delta_xy
+
+        try:
+            if x_addr is not None:
+                sim.data.qpos[x_addr] += float(delta_anchor[0])
+            if y_addr is not None:
+                sim.data.qpos[y_addr] += float(delta_anchor[1])
+            # qvel cleared so the base doesn't carry residual velocity.
+            for addr in (x_addr, y_addr, yaw_addr):
+                if addr is not None:
+                    sim.data.qvel[addr] = 0.0
+            sim.forward()
+        except Exception as e:
+            logger.warning(f"[nudge] qpos set failed: {e}")
+            return False
+
+        # Sync _latest_obs after teleport, identical to navigate_base_to:
+        # sim.forward() updates body xpos but the cached obs is stale,
+        # so subsequent get_eef_pos() would return the pre-nudge value.
+        try:
+            sync_action = np.zeros(self._env.action_dim, dtype=np.float32)
+            obs, _, _, _ = self._env.step(sync_action)
+            self._latest_obs = obs
+        except Exception as e:
+            logger.debug(f"[nudge] obs sync step failed: {e}")
+
+        logger.info(
+            f"[nudge] base translated by world Δ=("
+            f"{float(delta_xy[0]):.3f}, {float(delta_xy[1]):.3f})m "
+            f"|Δ|={d_norm:.3f}m"
+        )
+        return True
+
     def render(self) -> None:
         """如果 has_renderer 则刷新可视化窗口"""
         if self.config.has_renderer and self._env is not None:

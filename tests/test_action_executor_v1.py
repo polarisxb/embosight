@@ -625,23 +625,30 @@ class TestDiagnosticPreGrasp:
         assert "move_to_pre_grasp" in env.calls
 
 
-class _NavigateRecoveryEnv(FakeEnv):
-    """Mock env that has navigate_base_to but NOT recover_pre_grasp.
+class _BaseNudgeRecoveryEnv(FakeEnv):
+    """Mock env that has nudge_base_world_xy but NOT recover_pre_grasp.
 
     Returns lateral_misaligned on first pre-grasp call, then safe_handoff
-    on second; records all navigate_base_to calls so we can verify the
-    executor performed the safer-offset re-navigate recovery.
+    on second; records the nudge_base_world_xy delta so we can verify the
+    executor passed the EEF residual.
     """
 
-    def __init__(self):
+    def __init__(self, *, residual_world: tuple[float, float]):
         super().__init__()
+        self._residual = np.asarray(residual_world, dtype=np.float32)
         self.pre_grasp_diag_calls = 0
+        self.nudge_calls: list[dict] = []
         self.navigate_calls: list[dict] = []
 
     def navigate_base_to(self, target_xy, offset_m: float):
         self.navigate_calls.append({
             "target_xy": np.asarray(target_xy, dtype=np.float32).copy(),
             "offset_m": float(offset_m),
+        })
+
+    def nudge_base_world_xy(self, delta_xy):
+        self.nudge_calls.append({
+            "delta_xy": np.asarray(delta_xy, dtype=np.float32).copy(),
         })
 
     def move_to_pre_grasp_diagnostic(self, candidate, height_m: float = 0.05):
@@ -653,15 +660,20 @@ class _NavigateRecoveryEnv(FakeEnv):
             [0.0, 0.0, 0.05], dtype=np.float32,
         )
         if self.pre_grasp_diag_calls == 1:
+            # final_eef = pre_pos - residual (so pre_pos - final_eef = residual)
+            final_eef = pre_pos - np.array(
+                [self._residual[0], self._residual[1], 0.0],
+                dtype=np.float32,
+            )
             return SimpleNamespace(
                 ok=False,
                 handoff_ok=False,
                 needs_recovery=True,
                 reason="lateral_misaligned",
-                final_eef=pre_pos.copy(),
+                final_eef=final_eef,
                 pre_pos=pre_pos,
-                total_error_m=0.06,
-                lateral_error_m=0.06,
+                total_error_m=float(np.linalg.norm(self._residual)),
+                lateral_error_m=float(np.linalg.norm(self._residual)),
                 axis_error_m=0.0,
                 approach_gap_m=0.05,
                 lateral_limit_m=0.02,
@@ -669,8 +681,7 @@ class _NavigateRecoveryEnv(FakeEnv):
                 max_approach_gap_m=0.08,
                 move_ok=False,
             )
-        # Second call: pretend the safer-offset re-navigate + drive_base
-        # retry produced a usable handoff.
+        # Second call: pretend the nudge cancelled the residual.
         return SimpleNamespace(
             ok=False,
             handoff_ok=True,
@@ -689,40 +700,102 @@ class _NavigateRecoveryEnv(FakeEnv):
         )
 
 
-class TestNavigateRecovery:
-    def test_recovery_re_navigates_with_safer_offset(self):
-        """Recovery should call navigate_base_to at the safer offset (0.65m).
+class TestBaseNudgeRecovery:
+    def test_recovery_nudges_base_by_eef_residual(self):
+        """Recovery should call nudge_base_world_xy with delta = pre_pos - final_eef.
 
-        The previous lateral-nudge strategy (virtual_target shifted by EEF
-        residual) caused catastrophic IK regression on GPU because
-        navigate_base_to recomputes the entire base→target direction. The
-        new strategy keeps the target unchanged and just enlarges the
-        offset, so the base sits a few cm farther back along the same line.
+        This is the world-frame XY residual; translating the base by this
+        amount rigidly moves the EEF to pre_pos, bypassing both arm OSC
+        saturation and base controller friction. Unlike navigate_base_to,
+        no direction recompute happens — yaw and approach line preserved.
         """
         from src.action_executor import ActionExecutor
         from src.world_belief import DecomposedTask
-        env = _NavigateRecoveryEnv()
+        residual = (0.01, 0.06)  # 1cm +x, 6cm +y in world
+        env = _BaseNudgeRecoveryEnv(residual_world=residual)
         exe = ActionExecutor(scene_describer=None)
-        h, c = _hyp_with_candidate()
+        h, _ = _hyp_with_candidate()
 
         result = exe.act(h, DecomposedTask(primary_target="apple"), env)
 
         assert result.success is True
-        # Two navigate calls: act-entry (offset 0.55) and recovery (offset 0.65).
-        assert len(env.navigate_calls) >= 2
-        recovery = env.navigate_calls[1]
-        # Recovery uses the unshifted grasp point xy.
-        expected_xy = np.asarray(c.point_3d[:2], dtype=np.float32)
-        assert np.allclose(recovery["target_xy"], expected_xy, atol=1e-5), (
-            f"expected unshifted target {expected_xy}, "
-            f"got {recovery['target_xy']}"
+        assert len(env.nudge_calls) == 1
+        delta = env.nudge_calls[0]["delta_xy"]
+        # delta should be exactly the residual (no clipping for 6cm).
+        assert np.allclose(delta, np.asarray(residual, dtype=np.float32), atol=1e-5), (
+            f"expected nudge delta {residual}, got {delta}"
         )
-        # Recovery offset is 0.65, not 0.55.
-        assert recovery["offset_m"] == 0.65
 
-    def test_recover_pre_grasp_hook_overrides_navigate_fallback(self):
-        """If env defines recover_pre_grasp, it takes precedence over the
-        built-in navigate_base_to fallback."""
+    def test_recovery_nudge_clipped_at_max(self):
+        """Residual larger than _MAX_LATERAL_NUDGE_M gets clipped, direction preserved."""
+        from src.action_executor import ActionExecutor, ActionExecutor as _AE
+        from src.world_belief import DecomposedTask
+        # Pure +y residual of 0.25m → clipped to MAX (0.10m).
+        residual = (0.0, 0.25)
+        env = _BaseNudgeRecoveryEnv(residual_world=residual)
+        exe = ActionExecutor(scene_describer=None)
+        h, _ = _hyp_with_candidate()
+
+        exe.act(h, DecomposedTask(primary_target="apple"), env)
+
+        assert len(env.nudge_calls) == 1
+        delta = env.nudge_calls[0]["delta_xy"]
+        assert abs(float(delta[0])) < 1e-5
+        assert abs(float(delta[1]) - _AE._MAX_LATERAL_NUDGE_M) < 1e-5, (
+            f"expected clipped delta_y={_AE._MAX_LATERAL_NUDGE_M}, got {delta[1]}"
+        )
+
+    def test_recovery_falls_through_to_navigate_when_no_nudge_primitive(self):
+        """Env without nudge_base_world_xy falls back to navigate_base_to."""
+        from src.action_executor import ActionExecutor
+        from src.world_belief import DecomposedTask
+
+        class _NoNudgeEnv(FakeEnv):
+            def __init__(self):
+                super().__init__()
+                self.pre_grasp_diag_calls = 0
+                self.navigate_calls: list[dict] = []
+
+            def navigate_base_to(self, target_xy, offset_m: float):
+                self.navigate_calls.append({
+                    "target_xy": np.asarray(target_xy, dtype=np.float32).copy(),
+                    "offset_m": float(offset_m),
+                })
+
+            def move_to_pre_grasp_diagnostic(self, candidate, height_m=0.05):
+                from types import SimpleNamespace
+                self.pre_grasp_diag_calls += 1
+                self.calls.append("pre_grasp_diag")
+                if self.pre_grasp_diag_calls == 1:
+                    return SimpleNamespace(
+                        ok=False, handoff_ok=False, needs_recovery=True,
+                        reason="lateral_misaligned",
+                        total_error_m=0.06, lateral_error_m=0.06,
+                        axis_error_m=0.0, approach_gap_m=0.05,
+                        lateral_limit_m=0.02, min_approach_gap_m=0.01,
+                        max_approach_gap_m=0.08, move_ok=False,
+                    )
+                return SimpleNamespace(
+                    ok=False, handoff_ok=True, needs_recovery=False,
+                    reason="safe_handoff",
+                    total_error_m=0.005, lateral_error_m=0.005,
+                    axis_error_m=0.0, approach_gap_m=0.05,
+                    lateral_limit_m=0.02, min_approach_gap_m=0.01,
+                    max_approach_gap_m=0.08, move_ok=False,
+                )
+
+        env = _NoNudgeEnv()
+        exe = ActionExecutor(scene_describer=None)
+        h, c = _hyp_with_candidate()
+        result = exe.act(h, DecomposedTask(primary_target="apple"), env)
+
+        assert result.success is True
+        # Two navigate calls: act-entry (0.55) and recovery fallback (0.65).
+        assert len(env.navigate_calls) == 2
+        assert env.navigate_calls[1]["offset_m"] == 0.65
+
+    def test_recover_pre_grasp_hook_overrides_nudge(self):
+        """If env defines recover_pre_grasp, it takes precedence over nudge."""
         from src.action_executor import ActionExecutor
         from src.world_belief import DecomposedTask
         env = _DiagnosticPreGraspEnv(
