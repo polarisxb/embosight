@@ -68,6 +68,12 @@ echo
 echo "IK-regression detections (Phase 7 step 3):"
 grep -E "IK-unreachable regression" /tmp/lemon_validation.log || true
 echo
+echo "Post-nudge lateral re-align:"
+grep -E "post-nudge lateral re-align" /tmp/lemon_validation.log || true
+echo
+echo "Pre-grasp alignment:"
+grep -E "\[pre_grasp_align\]" /tmp/lemon_validation.log || true
+echo
 echo "Descend outcomes:"
 grep -E "\[descend\]" /tmp/lemon_validation.log || true
 echo
