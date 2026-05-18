@@ -447,3 +447,179 @@ class TestPhase8bAdaptiveOffset:
         exe.act(h, DecomposedTask(primary_target="apple"), env)
 
         assert env.navigate_calls[0]["offset_m"] == 0.55
+
+
+# ============================================================
+# Phase 9d: Diagnostic pre-grasp handoff + recovery
+# ============================================================
+
+class _DiagnosticPreGraspEnv(FakeEnv):
+    """Mock env exposing move_to_pre_grasp_diagnostic and recovery hooks.
+
+    Two-call sequence: first call returns `first_*` config; second call
+    (after recovery) returns `second_*` config.
+    """
+
+    def __init__(
+        self,
+        *,
+        first_handoff_ok: bool,
+        first_needs_recovery: bool = False,
+        first_reason: str = "safe_handoff",
+        second_handoff_ok: bool = False,
+        second_needs_recovery: bool = False,
+        second_reason: str = "lateral_misaligned",
+        recovery_raises: bool = False,
+    ):
+        super().__init__()
+        self._first_handoff_ok = first_handoff_ok
+        self._first_needs_recovery = first_needs_recovery
+        self._first_reason = first_reason
+        self._second_handoff_ok = second_handoff_ok
+        self._second_needs_recovery = second_needs_recovery
+        self._second_reason = second_reason
+        self._recovery_raises = recovery_raises
+        self.pre_grasp_diag_calls = 0
+        self.recovery_calls = 0
+
+    def move_to_pre_grasp_diagnostic(self, candidate, height_m: float = 0.05):
+        from types import SimpleNamespace
+        self.pre_grasp_diag_calls += 1
+        self.calls.append("pre_grasp_diag")
+        if self.pre_grasp_diag_calls == 1:
+            handoff = self._first_handoff_ok
+            needs = self._first_needs_recovery
+            reason = self._first_reason
+        else:
+            handoff = self._second_handoff_ok
+            needs = self._second_needs_recovery
+            reason = self._second_reason
+        return SimpleNamespace(
+            ok=False,
+            handoff_ok=handoff,
+            needs_recovery=needs,
+            reason=reason,
+            total_error_m=0.07,
+            lateral_error_m=0.06,
+            axis_error_m=0.01,
+            approach_gap_m=0.04,
+            lateral_limit_m=0.02,
+            min_approach_gap_m=0.01,
+            max_approach_gap_m=0.08,
+            move_ok=False,
+        )
+
+    def recover_pre_grasp(self, candidate, prior_result):
+        self.calls.append("recover_pre_grasp")
+        self.recovery_calls += 1
+        if self._recovery_raises:
+            raise RuntimeError("recover_pre_grasp failed")
+        return True
+
+
+class TestDiagnosticPreGrasp:
+    def test_safe_handoff_proceeds_to_approach(self):
+        from src.action_executor import ActionExecutor
+        from src.world_belief import DecomposedTask
+        env = _DiagnosticPreGraspEnv(first_handoff_ok=True)
+        exe = ActionExecutor(scene_describer=None)
+        h, _ = _hyp_with_candidate()
+
+        result = exe.act(h, DecomposedTask(primary_target="apple"), env)
+
+        assert result.success is True
+        assert env.pre_grasp_diag_calls == 1
+        assert env.recovery_calls == 0
+        assert any(c.startswith("approach[") for c in env.calls)
+
+    def test_lateral_misalignment_triggers_recovery_and_succeeds(self):
+        from src.action_executor import ActionExecutor
+        from src.world_belief import DecomposedTask
+        env = _DiagnosticPreGraspEnv(
+            first_handoff_ok=False,
+            first_needs_recovery=True,
+            first_reason="lateral_misaligned",
+            second_handoff_ok=True,
+            second_reason="safe_handoff",
+        )
+        exe = ActionExecutor(scene_describer=None)
+        h, _ = _hyp_with_candidate()
+
+        result = exe.act(h, DecomposedTask(primary_target="apple"), env)
+
+        assert result.success is True
+        assert env.pre_grasp_diag_calls == 2
+        assert env.recovery_calls == 1
+        assert any(c.startswith("approach[") for c in env.calls)
+
+    def test_lateral_misalignment_recovery_failure_reports_specific_reason(self):
+        from src.action_executor import ActionExecutor
+        from src.world_belief import DecomposedTask
+        env = _DiagnosticPreGraspEnv(
+            first_handoff_ok=False,
+            first_needs_recovery=True,
+            first_reason="lateral_misaligned",
+            second_handoff_ok=False,
+            second_needs_recovery=False,
+            second_reason="lateral_misaligned",
+        )
+        exe = ActionExecutor(scene_describer=None)
+        h, _ = _hyp_with_candidate()
+
+        result = exe.act(h, DecomposedTask(primary_target="apple"), env)
+
+        assert result.success is False
+        assert result.attempt.failure_mode == "ik_unreachable"
+        assert result.attempt.diagnostic.get("pre_grasp_reason") == "lateral_misaligned"
+        assert result.attempt.diagnostic.get("stage") == "pre_grasp"
+        assert not any(c.startswith("approach[") for c in env.calls)
+
+    def test_recovery_exception_reports_base_recovery_failed(self):
+        from src.action_executor import ActionExecutor
+        from src.world_belief import DecomposedTask
+        env = _DiagnosticPreGraspEnv(
+            first_handoff_ok=False,
+            first_needs_recovery=True,
+            first_reason="lateral_misaligned",
+            recovery_raises=True,
+        )
+        exe = ActionExecutor(scene_describer=None)
+        h, _ = _hyp_with_candidate()
+
+        result = exe.act(h, DecomposedTask(primary_target="apple"), env)
+
+        assert result.success is False
+        assert result.attempt.failure_mode == "ik_unreachable"
+        assert result.attempt.diagnostic.get("pre_grasp_reason") == "base_recovery_failed"
+
+    def test_no_recovery_for_axis_gap_too_small(self):
+        from src.action_executor import ActionExecutor
+        from src.world_belief import DecomposedTask
+        env = _DiagnosticPreGraspEnv(
+            first_handoff_ok=False,
+            first_needs_recovery=False,
+            first_reason="axis_gap_too_small",
+        )
+        exe = ActionExecutor(scene_describer=None)
+        h, _ = _hyp_with_candidate()
+
+        result = exe.act(h, DecomposedTask(primary_target="apple"), env)
+
+        assert result.success is False
+        assert result.attempt.failure_mode == "ik_unreachable"
+        assert result.attempt.diagnostic.get("pre_grasp_reason") == "axis_gap_too_small"
+        assert env.pre_grasp_diag_calls == 1
+        assert env.recovery_calls == 0
+
+    def test_legacy_bool_env_still_works(self):
+        """Env without diagnostic API falls back to bool move_to_pre_grasp."""
+        from src.action_executor import ActionExecutor
+        from src.world_belief import DecomposedTask
+        env = FakeEnv(ik_ok=True)
+        exe = ActionExecutor(scene_describer=None)
+        h, _ = _hyp_with_candidate()
+
+        result = exe.act(h, DecomposedTask(primary_target="apple"), env)
+
+        assert result.success is True
+        assert "move_to_pre_grasp" in env.calls

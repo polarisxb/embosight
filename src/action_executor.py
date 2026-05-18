@@ -118,8 +118,37 @@ class ActionExecutor:
                     f"[act] navigate_base_to failed: {e}, falling through"
                 )
 
-        # 1. pre-grasp
-        if not env.move_to_pre_grasp(candidate):
+        # 1. pre-grasp (diagnostic-aware with bounded recovery)
+        if hasattr(env, "move_to_pre_grasp_diagnostic"):
+            pre_result = env.move_to_pre_grasp_diagnostic(candidate)
+            if not (pre_result.ok or pre_result.handoff_ok):
+                if pre_result.needs_recovery:
+                    recover_ok = self._recover_pre_grasp(
+                        env, candidate, pre_result,
+                    )
+                    if not recover_ok:
+                        return self._failed_result(
+                            candidate, "ik_unreachable",
+                            {
+                                "stage": "pre_grasp",
+                                "pre_grasp_reason": "base_recovery_failed",
+                                "original_reason": pre_result.reason,
+                                **self._pre_grasp_details(pre_result),
+                            },
+                            env,
+                        )
+                    pre_result = env.move_to_pre_grasp_diagnostic(candidate)
+                if not (pre_result.ok or pre_result.handoff_ok):
+                    return self._failed_result(
+                        candidate, "ik_unreachable",
+                        {
+                            "stage": "pre_grasp",
+                            "pre_grasp_reason": pre_result.reason,
+                            **self._pre_grasp_details(pre_result),
+                        },
+                        env,
+                    )
+        elif not env.move_to_pre_grasp(candidate):
             return self._failed_result(
                 candidate, "ik_unreachable",
                 {"stage": "pre_grasp"}, env,
@@ -334,6 +363,41 @@ class ActionExecutor:
             env.move_arm_to(target, threshold_m=0.02)
         except Exception as e:
             logger.warning(f"[release_and_retreat] retreat failed: {e}")
+
+    @staticmethod
+    def _pre_grasp_details(result) -> dict:
+        """Serialize key diagnostic fields from a PreGraspResult."""
+        return {
+            "total_error_m": float(getattr(result, "total_error_m", 0.0)),
+            "lateral_error_m": float(getattr(result, "lateral_error_m", 0.0)),
+            "axis_error_m": float(getattr(result, "axis_error_m", 0.0)),
+            "approach_gap_m": float(getattr(result, "approach_gap_m", 0.0)),
+            "lateral_limit_m": float(getattr(result, "lateral_limit_m", 0.0)),
+        }
+
+    def _recover_pre_grasp(self, env, candidate, prior_result) -> bool:
+        """Bounded recovery for pre-grasp lateral misalignment.
+
+        Preference order:
+        1. env.recover_pre_grasp(candidate, prior_result) — caller-defined.
+        2. env.navigate_base_to(target_xy, offset_m=0.65) — safer offset.
+
+        Returns False if neither is available or the call raises.
+        """
+        try:
+            if hasattr(env, "recover_pre_grasp"):
+                ok = env.recover_pre_grasp(candidate, prior_result)
+                return True if ok is None else bool(ok)
+            if hasattr(env, "navigate_base_to"):
+                env.navigate_base_to(
+                    target_xy=candidate.point_3d[:2],
+                    offset_m=0.65,
+                )
+                return True
+            return False
+        except Exception as e:
+            logger.debug(f"[act] pre-grasp recovery failed: {e}")
+            return False
 
     def _failed_result(self, candidate, mode: str, diag: dict, env) -> GraspActionResult:
         from src.world_belief import GraspAttempt, GraspCandidate
