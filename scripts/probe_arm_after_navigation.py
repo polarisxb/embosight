@@ -163,11 +163,11 @@ def _sync_zero(env, steps: int = 1) -> None:
         env._latest_obs = obs
 
 
-def _prepare_navigated(env) -> tuple[str, np.ndarray]:
+def _prepare_navigated(env, offset_m: float = 0.30) -> tuple[str, np.ndarray]:
     body, lemon_pos = _find_lemon(env)
-    ok = env.navigate_base_to(lemon_pos[:2], offset_m=0.30)
+    ok = env.navigate_base_to(lemon_pos[:2], offset_m=offset_m)
     _sync_zero(env, steps=2)
-    print(f"\nprepared navigate ok={ok} lemon_body={body} lemon_pos={_arr(lemon_pos)}")
+    print(f"\nprepared navigate offset={offset_m:.2f} ok={ok} lemon_body={body} lemon_pos={_arr(lemon_pos)}")
     print(f"base={_base_pose_str(env)} eef={_arr(_eef(env))}")
     return body, lemon_pos
 
@@ -255,6 +255,20 @@ def _probe_move_arm_after_navigation(config: dict) -> None:
             _close_env(env)
 
 
+def _probe_offset_sweep(config: dict) -> None:
+    print("\n=== Offset sweep critical pulses ===")
+    for offset_m in (0.30, 0.40, 0.45, 0.55, 0.65):
+        for idx, value in ((0, +0.5), (2, -0.5), (2, +0.5)):
+            env = _new_seed42_env(config)
+            try:
+                _prepare_navigated(env, offset_m=offset_m)
+                start = _eef(env)
+                delta = _pulse(env, idx, value)
+                print(f"offset={offset_m:.2f} idx={idx} value={value:+.1f} start={_arr(start)} delta={_arr(delta)} end={_arr(_eef(env))}")
+            finally:
+                _close_env(env)
+
+
 def main() -> int:
     if not os.environ.get("DEEPSEEK_API_KEY"):
         os.environ["DEEPSEEK_API_KEY"] = "sk-dummy-probe-only"
@@ -273,6 +287,7 @@ def main() -> int:
     _probe_reset_state(config)
     _probe_navigated_state(config, reset_controller=False)
     _probe_navigated_state(config, reset_controller=True)
+    _probe_offset_sweep(config)
     _probe_move_arm_after_navigation(config)
     return 0
 
