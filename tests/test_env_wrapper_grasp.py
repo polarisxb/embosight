@@ -10,6 +10,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from src.env_wrapper import EnvConfig, EnvWrapper  # noqa: E402
+from src.grasp_execution import PRE_GRASP_LATERAL_MISALIGNED, PRE_GRASP_SAFE_HANDOFF, PRE_GRASP_STRICT_OK  # noqa: E402
 from src.world_belief import GraspCandidate  # noqa: E402
 
 
@@ -68,13 +69,25 @@ class PregraspThresholdEnv(EnvWrapper):
     def __init__(self) -> None:
         self.move_calls = []
         self.gripper_calls = 0
+        self.final_eef = None  # if set, get_eef_pos returns this after move
+        self._moved = False
 
     def get_eef_pos(self) -> np.ndarray:
+        if self._moved and self.final_eef is not None:
+            return self.final_eef.copy()
         return np.array([0.0, 0.0, 0.9], dtype=np.float32)
 
     def move_arm_to(self, target_pos_m, max_steps: int = 800,
                     threshold_m: float = 0.02, **kwargs) -> bool:
         self.move_calls.append((np.asarray(target_pos_m), max_steps, threshold_m))
+        self._moved = True
+        # If force_move_failure is set, simulate stall/max_steps even when EEF is close
+        if getattr(self, "force_move_failure", False):
+            return False
+        # If final_eef is set, return based on actual distance
+        if self.final_eef is not None:
+            dist = float(np.linalg.norm(self.final_eef[:3] - np.asarray(target_pos_m)[:3]))
+            return dist <= threshold_m
         return True
 
     def _gripper_action(self, gripper_value: float, n_steps: int = 10) -> None:
@@ -94,8 +107,55 @@ def test_move_to_pre_grasp_accepts_six_cm_boundary() -> None:
     assert env.move_calls[-1][2] >= 0.06
 
 
-def test_move_to_pre_grasp_accepts_observed_top_down_pre_grasp_error() -> None:
+def test_move_to_pre_grasp_diagnostic_reports_lateral_misalignment() -> None:
+    """Large XY offset → lateral_misaligned, needs_recovery."""
     env = PregraspThresholdEnv()
+    # EEF ends up 6cm off in X from pre-grasp target
+    env.final_eef = np.array([0.56, 0.2, 0.95], dtype=np.float32)
+    candidate = GraspCandidate(
+        point_3d=np.array([0.5, 0.2, 0.9], dtype=np.float32),
+        approach_dir=np.array([0.0, 0.0, -1.0], dtype=np.float32),
+        finger_width_m=0.04,
+        score=0.8,
+    )
+
+    result = env.move_to_pre_grasp_diagnostic(candidate)
+
+    assert result.ok is False
+    assert result.handoff_ok is False
+    assert result.needs_recovery is True
+    assert result.reason == PRE_GRASP_LATERAL_MISALIGNED
+
+
+def test_move_to_pre_grasp_diagnostic_allows_small_lateral_handoff() -> None:
+    """Small XY offset within limit + move_arm_to stall → safe_handoff.
+
+    Realistic GPU pattern: move_arm_to returns False due to stall detection
+    even though EEF is actually close to pre_pos.
+    """
+    env = PregraspThresholdEnv()
+    env.force_move_failure = True
+    # EEF 1cm off in X — within lateral limit (0.02 for finger_width 0.04)
+    env.final_eef = np.array([0.51, 0.2, 0.95], dtype=np.float32)
+    candidate = GraspCandidate(
+        point_3d=np.array([0.5, 0.2, 0.9], dtype=np.float32),
+        approach_dir=np.array([0.0, 0.0, -1.0], dtype=np.float32),
+        finger_width_m=0.04,
+        score=0.8,
+    )
+
+    result = env.move_to_pre_grasp_diagnostic(candidate)
+
+    assert result.ok is False  # forced move failure
+    assert result.handoff_ok is True
+    assert result.reason == PRE_GRASP_SAFE_HANDOFF
+
+
+def test_move_to_pre_grasp_bool_accepts_safe_diagnostic_handoff() -> None:
+    """Bool wrapper returns True when diagnostic says handoff_ok."""
+    env = PregraspThresholdEnv()
+    env.force_move_failure = True
+    env.final_eef = np.array([0.51, 0.2, 0.95], dtype=np.float32)
     candidate = GraspCandidate(
         point_3d=np.array([0.5, 0.2, 0.9], dtype=np.float32),
         approach_dir=np.array([0.0, 0.0, -1.0], dtype=np.float32),
@@ -104,7 +164,22 @@ def test_move_to_pre_grasp_accepts_observed_top_down_pre_grasp_error() -> None:
     )
 
     assert env.move_to_pre_grasp(candidate) is True
-    assert env.move_calls[-1][2] >= 0.07
+    # Strict threshold restored to 0.06 for top-down
+    assert env.move_calls[-1][2] == 0.06
+
+
+def test_move_to_pre_grasp_strict_threshold_is_06_for_top_down() -> None:
+    """Strict move threshold for top-down is 0.06 (not the old 0.08)."""
+    env = PregraspThresholdEnv()
+    candidate = GraspCandidate(
+        point_3d=np.array([0.5, 0.2, 0.9], dtype=np.float32),
+        approach_dir=np.array([0.0, 0.0, -1.0], dtype=np.float32),
+        finger_width_m=0.04,
+        score=0.8,
+    )
+
+    env.move_to_pre_grasp(candidate)
+    assert env.move_calls[-1][2] == 0.06
 
 
 class _LiftCallRecorder(EnvWrapper):

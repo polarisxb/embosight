@@ -15,6 +15,13 @@ from typing import Any, Optional
 
 import numpy as np
 
+from src.grasp_execution import (
+    PRE_GRASP_UNREACHABLE,
+    PreGraspResult,
+    evaluate_pre_grasp_handoff,
+    normalize_approach_dir,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -2246,35 +2253,42 @@ class EnvWrapper:
         return True
 
     def move_to_pre_grasp(self, candidate, height_m: float = 0.05) -> bool:
-        """移动到 candidate 的 pre-grasp 位置, 朝向对齐 candidate.approach_dir。
+        """Compatibility wrapper around move_to_pre_grasp_diagnostic.
 
-        Pre-grasp 位置 = point_3d - approach_dir * height_m
-            - top_down (approach_dir=[0,0,-1]): 物体上方 height_m
-            - 侧抓 (approach_dir=[1,0,0]): 物体后方 height_m (沿 -x)
-
-        先移动底盘到 pre-grasp 附近 (xy 平面), 再带朝向控制移到精确 pre-grasp 位。
+        Returns True when the strict pre-grasp move converged, OR when the
+        diagnostic deems it safe to hand off to the contact-aware approach
+        stage. See move_to_pre_grasp_diagnostic for the structured result.
         """
-        # 解析 approach_dir (默认 top_down)
-        approach_dir = np.asarray(
-            getattr(candidate, "approach_dir", [0.0, 0.0, -1.0]),
-            dtype=np.float32,
-        )
-        ad_norm = float(np.linalg.norm(approach_dir))
-        if ad_norm < 1e-6:
-            approach_dir = np.array([0.0, 0.0, -1.0], dtype=np.float32)
-            ad_norm = 1.0
-        ad_unit = approach_dir / ad_norm
+        result = self.move_to_pre_grasp_diagnostic(candidate, height_m=height_m)
+        return bool(result.ok or result.handoff_ok)
 
-        target_pos = np.asarray(candidate.point_3d, dtype=np.float32)
+    def move_to_pre_grasp_diagnostic(
+        self, candidate, height_m: float = 0.05,
+    ) -> PreGraspResult:
+        """Move arm to candidate's pre-grasp pose and return a diagnostic.
+
+        Pre-grasp position = point_3d - approach_dir * height_m
+            - top_down (approach_dir=[0,0,-1]): height_m above the object
+            - side    (approach_dir=[1,0,0]):   height_m behind along -x
+
+        First nudges the mobile base toward the pre-grasp xy (legacy
+        fallback when Phase 4 navigate_base_to is unavailable), then drives
+        the arm with orientation alignment. The raw move uses a strict
+        threshold; the returned PreGraspResult uses approach-frame error
+        decomposition to decide whether handoff or recovery is warranted.
+        """
+        # Parse approach direction (default top-down).
+        ad_unit = normalize_approach_dir(
+            getattr(candidate, "approach_dir", [0.0, 0.0, -1.0])
+        )
+
+        target_pos = np.asarray(candidate.point_3d, dtype=np.float32)[:3]
         pre_pos = target_pos - ad_unit * float(height_m)
 
-        # 底盘先靠近: Phase 4 navigate_base_to 已就位时跳过 (避免 legacy
-        # 硬编码 base_target 把 base 拉到物体另一侧引发 IK regression).
-        #
-        # Run 10 GPU log 暴露的 bug: legacy base_target=(target.x-0.4, target.y)
-        # 假设 Phase 4 把 base 放在 -x 方向, 但 Phase 4 实际根据当前
-        # base→target 方向放置. 若 Phase 4 把 base 放 +x 侧, 此硬编码
-        # 会强行把 base 拉到 -x 侧 = 绕物体 70cm = IK 立即崩.
+        # ── Legacy base approach (skipped when Phase 4 already navigated) ──
+        # Run 10 GPU log exposed a bug where the legacy hard-coded base_target
+        # pulled the base around to the opposite side of the object. We skip
+        # this branch when the real base is already within 0.60m of the object.
         try:
             eef = self.get_eef_pos()
             target_xy = np.array(
@@ -2289,16 +2303,12 @@ class EnvWrapper:
                 )) < 0.60
             )
             if base_already_close:
-                # Phase 4 navigate 已把 base 放在合适位置 (0.30-0.45m offset).
-                # 跳过 legacy base_approach, 直接交给后续 arm-only 精调.
                 logger.info(
                     f"[pre_grasp] base already positioned by Phase 4 "
                     f"(dist={float(np.linalg.norm(real_base.astype(np.float64) - target_xy)):.3f}m), "
                     f"skipping legacy base_approach"
                 )
             else:
-                # Legacy fallback: navigate_base_to 不可用 (mock env) 或
-                # 失败. 用 approach_dir 计算 base_target 推进底盘.
                 xy_approach = np.array(
                     [ad_unit[0], ad_unit[1], 0.0], dtype=np.float32,
                 )
@@ -2311,7 +2321,7 @@ class EnvWrapper:
                         float(eef[2]),
                     ], dtype=np.float32)
                 else:
-                    # top_down 纯垂直: legacy 硬编码 -x 方向 0.4m
+                    # top-down purely vertical: legacy -x 0.4m
                     base_target = np.array([
                         float(target_pos[0]) - 0.4,
                         float(target_pos[1]),
@@ -2324,21 +2334,47 @@ class EnvWrapper:
         except Exception as e:
             logger.debug(f"[pre_grasp] base approach failed: {e}")
 
-        # 张爪
+        # Open gripper before fine pre-grasp positioning.
         try:
             self._gripper_action(-1.0, n_steps=8)
         except Exception:
             pass
 
-        # 移到 pre-grasp 位置 + 朝向对齐 approach_dir
-        # 侧抓工作空间精度低于 top-down, 放宽阈值 (approach 步骤会补偿)
+        # Strict raw-move threshold: 0.06 for top-down, 0.12 otherwise.
+        # Non-strict handoff is decided by evaluate_pre_grasp_handoff below.
         is_top_down = (
             ad_unit[2] < -0.9 and abs(ad_unit[0]) < 0.1 and abs(ad_unit[1]) < 0.1
         )
-        pre_thresh = 0.08 if is_top_down else 0.12
-        return self.move_arm_to(
-            pre_pos, threshold_m=pre_thresh, approach_dir=ad_unit,
+        strict_thresh = 0.06 if is_top_down else 0.12
+        move_ok = self.move_arm_to(
+            pre_pos, threshold_m=strict_thresh, approach_dir=ad_unit,
         )
+
+        # Diagnostic handoff evaluation in the approach frame.
+        try:
+            final_eef = self.get_eef_pos()
+        except Exception as e:
+            logger.debug(f"[pre_grasp_diag] get_eef_pos failed: {e}")
+            final_eef = pre_pos.copy()
+
+        finger_width = getattr(candidate, "finger_width_m", None)
+        result = evaluate_pre_grasp_handoff(
+            move_ok=bool(move_ok),
+            final_eef=final_eef,
+            pre_pos=pre_pos,
+            grasp_point=target_pos,
+            approach_dir=ad_unit,
+            finger_width_m=finger_width,
+            height_m=float(height_m),
+        )
+        logger.info(
+            "[pre_grasp_diag] move_ok=%s handoff=%s reason=%s "
+            "total=%.3f lateral=%.3f axis=%.3f gap=%.3f lateral_limit=%.3f",
+            result.ok, result.handoff_ok, result.reason,
+            result.total_error_m, result.lateral_error_m,
+            result.axis_error_m, result.approach_gap_m, result.lateral_limit_m,
+        )
+        return result
 
     def _approach_along_direction(
         self,
