@@ -2288,7 +2288,7 @@ class EnvWrapper:
         # ── Legacy base approach (skipped when Phase 4 already navigated) ──
         # Run 10 GPU log exposed a bug where the legacy hard-coded base_target
         # pulled the base around to the opposite side of the object. We skip
-        # this branch when the real base is already within 0.60m of the object.
+        # this branch when the real base is already within 0.70m of the object.
         try:
             eef = self.get_eef_pos()
             target_xy = np.array(
@@ -2296,11 +2296,15 @@ class EnvWrapper:
                 dtype=np.float64,
             )
             real_base = self._read_real_base_xy()
+            # 0.70 covers both the act-entry navigate offset (0.55) and the
+            # diagnostic recovery offset (0.65); GPU lemon log showed the old
+            # 0.60 cutoff let legacy base_approach fire after recovery and
+            # push the base to target.x-0.4 (wrong direction).
             base_already_close = (
                 real_base is not None
                 and float(np.linalg.norm(
                     real_base.astype(np.float64) - target_xy
-                )) < 0.60
+                )) < 0.70
             )
             if base_already_close:
                 logger.info(

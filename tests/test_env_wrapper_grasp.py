@@ -182,6 +182,82 @@ def test_move_to_pre_grasp_strict_threshold_is_06_for_top_down() -> None:
     assert env.move_calls[-1][2] == 0.06
 
 
+class _BaseAwareEnv(PregraspThresholdEnv):
+    """PregraspThresholdEnv variant with controllable real base xy.
+
+    Used to verify the legacy base_approach gating against the actual
+    base-to-target distance.
+    """
+
+    def __init__(self, real_base_xy: np.ndarray) -> None:
+        super().__init__()
+        self._real_base_xy = np.asarray(real_base_xy, dtype=np.float64)
+
+    def _read_real_base_xy(self):
+        return self._real_base_xy.copy()
+
+
+def test_pre_grasp_skips_legacy_base_approach_at_recovery_offset() -> None:
+    """Regression: base at recovery offset (0.65m) must not trigger
+    legacy base_approach. GPU log showed this caused base to be pushed
+    to target.x - 0.4 (wrong direction), corrupting the next pre-grasp.
+    """
+    target_xy = np.array([0.125, -2.857], dtype=np.float64)
+    base_xy = np.array([0.714, -2.872], dtype=np.float64)
+    # Distance ≈ 0.589 (act-entry navigate at offset 0.55).
+    # After recovery navigate at offset 0.65, distance becomes ≈ 0.657m.
+    recovery_base_xy = np.array([0.78, -2.87], dtype=np.float64)
+    assert 0.60 < float(np.linalg.norm(recovery_base_xy - target_xy)) < 0.70
+
+    env = _BaseAwareEnv(real_base_xy=recovery_base_xy)
+    candidate = GraspCandidate(
+        point_3d=np.array([target_xy[0], target_xy[1], 0.932], dtype=np.float32),
+        approach_dir=np.array([0.0, 0.0, -1.0], dtype=np.float32),
+        finger_width_m=0.04,
+        score=0.8,
+    )
+
+    env.move_to_pre_grasp_diagnostic(candidate)
+
+    # Only the strict pre_pos move should be issued; no drive_base=True
+    # legacy base_approach toward target.x - 0.4.
+    legacy_targets = [
+        call[0] for call in env.move_calls
+        if abs(float(call[0][0]) - (target_xy[0] - 0.4)) < 1e-3
+    ]
+    assert legacy_targets == [], (
+        f"legacy base_approach must be skipped when base is at recovery "
+        f"offset, but got moves to {legacy_targets}"
+    )
+
+
+def test_pre_grasp_runs_legacy_base_approach_when_base_truly_far() -> None:
+    """When base is genuinely far (e.g. legacy mock with no Phase 4 nav),
+    legacy base_approach must still trigger to drive the base closer.
+    """
+    target_xy = np.array([0.5, 0.2], dtype=np.float64)
+    far_base_xy = np.array([2.0, 0.2], dtype=np.float64)
+    assert float(np.linalg.norm(far_base_xy - target_xy)) > 1.0
+
+    env = _BaseAwareEnv(real_base_xy=far_base_xy)
+    candidate = GraspCandidate(
+        point_3d=np.array([target_xy[0], target_xy[1], 0.9], dtype=np.float32),
+        approach_dir=np.array([0.0, 0.0, -1.0], dtype=np.float32),
+        finger_width_m=0.04,
+        score=0.8,
+    )
+
+    env.move_to_pre_grasp_diagnostic(candidate)
+
+    legacy_targets = [
+        call[0] for call in env.move_calls
+        if abs(float(call[0][0]) - (target_xy[0] - 0.4)) < 1e-3
+    ]
+    assert len(legacy_targets) >= 1, (
+        f"legacy base_approach must run when base is far; calls: {env.move_calls}"
+    )
+
+
 class _LiftCallRecorder(EnvWrapper):
     """Records all move_arm_to calls during lift to verify gripper_hold."""
     def __init__(self) -> None:
