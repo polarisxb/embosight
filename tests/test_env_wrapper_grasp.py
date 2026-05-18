@@ -818,6 +818,69 @@ def test_ik_regression_suppressed_when_torso_engaged() -> None:
     )
 
 
+class _SqueezeRecorder(EnvWrapper):
+    """Mock that records squeeze_steps passed to _close_gripper_until_grasp."""
+
+    def __init__(self) -> None:
+        self.squeeze_calls: list[dict] = []
+
+    def _get_obj_type_map(self) -> dict[str, str]:
+        return {"obj_main": "lemon"}
+
+    def _close_gripper_until_grasp(
+        self, target_body: str, max_steps: int = 30, min_close_steps: int = 6,
+        squeeze_steps: int = 10,
+    ) -> bool:
+        self.squeeze_calls.append({
+            "target_body": target_body, "max_steps": max_steps,
+            "min_close_steps": min_close_steps, "squeeze_steps": squeeze_steps,
+        })
+        return True
+
+
+def test_close_gripper_default_squeeze_unchanged_when_no_extra() -> None:
+    """Without squeeze_extra_steps, close_gripper preserves legacy squeeze=10
+    so existing object behaviour (low slip, light items) is not regressed."""
+    env = _SqueezeRecorder()
+    ok = env.close_gripper(target_label="lemon")
+    assert ok is True
+    assert len(env.squeeze_calls) == 1
+    call = env.squeeze_calls[0]
+    assert call["squeeze_steps"] == 10, (
+        f"baseline squeeze must remain 10, got {call['squeeze_steps']}"
+    )
+
+
+def test_close_gripper_passes_squeeze_extra_steps() -> None:
+    """Round/slippery objects (lemon: squeeze_extra=18) must get total
+    squeeze=28 to prevent slipped_lift on round surfaces."""
+    env = _SqueezeRecorder()
+    ok = env.close_gripper(target_label="lemon", squeeze_extra_steps=18)
+    assert ok is True
+    assert len(env.squeeze_calls) == 1
+    call = env.squeeze_calls[0]
+    assert call["squeeze_steps"] == 28, (
+        f"expected 10 base + 18 extra = 28 total squeeze, got {call['squeeze_steps']}"
+    )
+    # max_steps must scale up so squeeze finishes before timeout
+    assert call["max_steps"] >= 28 + 6 + 8, (
+        f"max_steps must accommodate full squeeze (got {call['max_steps']})"
+    )
+
+
+def test_close_gripper_clamps_extreme_squeeze_extra() -> None:
+    """squeeze_extra_steps clamped to [0, 30] to bound max_steps growth."""
+    env = _SqueezeRecorder()
+    env.close_gripper(target_label="lemon", squeeze_extra_steps=999)
+    assert env.squeeze_calls[0]["squeeze_steps"] == 40  # 10 base + 30 clamp
+
+
+def test_close_gripper_negative_squeeze_extra_treated_as_zero() -> None:
+    env = _SqueezeRecorder()
+    env.close_gripper(target_label="lemon", squeeze_extra_steps=-5)
+    assert env.squeeze_calls[0]["squeeze_steps"] == 10  # baseline preserved
+
+
 def test_reset_applies_seed_before_backend_reset(monkeypatch, tmp_path) -> None:
     events = []
 

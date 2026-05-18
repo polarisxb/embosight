@@ -66,7 +66,7 @@ def _make_full_agent(decompose_response, vlm_responses, safety_response,
         def approach(self, p, approach_dir, target_label=None, **kwargs):
             return True, float(p[2])
 
-        def close_gripper(self, target_label=None):
+        def close_gripper(self, target_label=None, **kwargs):
             return True
 
         def open_gripper(self):

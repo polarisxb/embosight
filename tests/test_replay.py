@@ -69,7 +69,7 @@ class FakeEnv:
     def approach(self, p, approach_dir, target_label=None, **kwargs):
         return True, float(np.asarray(p)[2])
 
-    def close_gripper(self, target_label=None):
+    def close_gripper(self, target_label=None, **kwargs):
         return True
 
     def open_gripper(self):

@@ -92,6 +92,11 @@ class GraspStrategy:
     approach_axis: str = "z"       # 'z'=从上, 'x'/'y'=从侧面
     reasoning: str = ""            # LLM 推理过程
     speech: str = ""               # 对视障用户的播报
+    # ─── DeliGrasp-inspired adaptive force params ───
+    mass_g: float = 100.0          # LLM 估计质量 (克)
+    slip_risk: str = "medium"      # "low" / "medium" / "high"
+    squeeze_extra_steps: int = 0   # 接触后额外闭合步数 (叠加默认 10)
+    depth_margin_m: float = 0.015  # descent 时超过物体中心的深度 (米)
 
 
 # ============================================================

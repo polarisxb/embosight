@@ -162,11 +162,28 @@ class GraspPlanner:
                         "[grasp_planner] LLM chose banned/invalid '%s', "
                         "overriding to '%s'", old, strat,
                     )
+                # ─── DeliGrasp-inspired adaptive force params ───
+                # Parse mass and slip_risk from LLM, derive squeeze + depth margin.
+                try:
+                    mass_g = float(data.get("mass_g", 100.0))
+                except (ValueError, TypeError):
+                    mass_g = 100.0
+                mass_g = max(5.0, min(2000.0, mass_g))  # clamp to plausible range
+                slip_risk_raw = str(data.get("slip_risk", "medium")).lower().strip()
+                if slip_risk_raw not in {"low", "medium", "high"}:
+                    slip_risk_raw = "medium"
+                squeeze_extra, depth_margin_m = self._derive_force_params(
+                    strat, mass_g, slip_risk_raw,
+                )
                 return GraspStrategy(
                     strategy=strat,
                     approach_axis=str(data.get("approach_axis", "z")),
                     reasoning=str(data.get("reasoning", "")),
                     speech=str(data.get("speech", f"我来拿{hyp.label}")),
+                    mass_g=mass_g,
+                    slip_risk=slip_risk_raw,
+                    squeeze_extra_steps=squeeze_extra,
+                    depth_margin_m=depth_margin_m,
                 )
         except Exception as e:
             logger.warning("[grasp_planner] strategy selection failed: %s", e)
@@ -194,6 +211,62 @@ class GraspPlanner:
     _TILT_ANGLE_DEG = 35  # 倾斜俯冲角 (从垂直方向计)
 
     _SIDE_TILT_Z = -0.47  # 侧抓下倾分量 (归一化后≈25°)
+
+    @staticmethod
+    def _derive_force_params(
+        strategy: str, mass_g: float, slip_risk: str,
+    ) -> tuple[int, float]:
+        """从 (strategy, mass_g, slip_risk) 推导 (squeeze_extra_steps, depth_margin_m).
+
+        DeliGrasp-inspired heuristic adapted for SimpleGripController (position
+        gripper, not force gripper). Since we cannot command grip force directly,
+        more squeeze steps = deeper position closure = greater elastic normal
+        force. Round/slippery/heavy objects also need a deeper descent margin
+        to grip below the equator (avoid "squeeze-pop" where the gripper
+        squirts a sphere upward).
+
+        Args:
+            strategy: chosen grasp strategy
+            mass_g: estimated mass (grams), already clamped to [5, 2000]
+            slip_risk: "low" / "medium" / "high"
+
+        Returns:
+            (squeeze_extra_steps in [0, 30], depth_margin_m in [0.005, 0.030])
+
+        Tuning rationale (post GPU run dacf9e7 with seed=42 lemon):
+            - Lemon (mass≈100g, slip_risk=high): squeeze ~20 extra, depth 0.025m
+              addresses the observed "squeeze-pop" of +15mm and grasp at 8mm
+              above equator → slipped_lift.
+            - Bread (mass≈50g, slip_risk=low): squeeze 0 extra, depth 0.015m
+              avoids crushing.
+            - Mug (mass≈300g, slip_risk=medium): squeeze ~12 extra, depth 0.018m.
+        """
+        risk_map = {"low": 0, "medium": 1, "high": 2}
+        risk = risk_map.get(slip_risk, 1)
+
+        # Mass component: heavier needs more grip (rough proxy: 1 step per 50g).
+        mass_steps = int(round(mass_g / 50.0))  # 5g→0, 100g→2, 300g→6, 1kg→20
+
+        # Slip risk component: round/slippery objects need decisively more.
+        risk_steps = risk * 8  # low=0, medium=8, high=16
+
+        squeeze_extra = max(0, min(30, mass_steps + risk_steps))
+
+        # Depth margin: scoop_under and gentle_side keep their strategy default;
+        # top_down / tilted_grasp / handle_grasp scale with slip_risk.
+        if strategy in {"scoop_under", "gentle_side"}:
+            depth_margin_m = float(
+                GraspPlanner._STRATEGY_PARAMS.get(strategy, {}).get(
+                    "depth_margin", 0.015,
+                )
+            )
+        else:
+            base = 0.015  # default top_down margin
+            risk_bonus = risk * 0.005  # low→0, medium→5mm, high→10mm
+            depth_margin_m = base + risk_bonus  # high → 0.025
+        depth_margin_m = max(0.005, min(0.030, depth_margin_m))
+
+        return squeeze_extra, depth_margin_m
 
     def _tilted_approach_dir(self, obj_pos: np.ndarray, env) -> np.ndarray:
         """计算 35° 斜俯冲方向: 主要从上方, 略微侧移。

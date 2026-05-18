@@ -54,8 +54,9 @@ class FakeEnv:
             return True, float(point_3d[2])
         return False, float(point_3d[2]) + 0.03
 
-    def close_gripper(self, target_label=None) -> bool:
+    def close_gripper(self, target_label=None, squeeze_extra_steps: int = 0) -> bool:
         self.calls.append("close")
+        self.last_squeeze_extra = int(squeeze_extra_steps)
         self._gripper_open = False
         return self.grasp_ok
 
@@ -209,6 +210,81 @@ class TestAct:
         result = exe.act(h, DecomposedTask(primary_target="x"), env)
         assert result.success is False
         assert result.attempt.failure_mode == "ik_unreachable"
+
+
+class _ApproachMarginRecorder(FakeEnv):
+    """FakeEnv that records margin_m passed to approach()."""
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.last_margin_m: float | None = None
+
+    def approach(self, point_3d, approach_dir, target_label=None,
+                 margin_m: float = 0.015, **kwargs):
+        self.last_margin_m = float(margin_m)
+        return super().approach(
+            point_3d, approach_dir, target_label=target_label,
+            margin_m=margin_m, **kwargs,
+        )
+
+
+class TestAdaptiveForceParams:
+    """Step 0+1: ActionExecutor must propagate GraspStrategy.squeeze_extra_steps
+    to env.close_gripper and GraspStrategy.depth_margin_m to env.approach.
+
+    Without this, LLM-derived adaptive grip force has no effect on actual
+    grasp execution, which is the lemon slipped_lift root cause #3
+    (decision layer not connected to control layer).
+    """
+
+    def test_squeeze_extra_steps_passed_through_to_close_gripper(self):
+        from src.action_executor import ActionExecutor
+        from src.world_belief import DecomposedTask, GraspStrategy
+        env = _ApproachMarginRecorder()
+        exe = ActionExecutor(scene_describer=None)
+        h, _ = _hyp_with_candidate()
+        h.grasp_strategy = GraspStrategy(
+            strategy="top_down",
+            mass_g=100.0,
+            slip_risk="high",
+            squeeze_extra_steps=18,
+            depth_margin_m=0.025,
+        )
+        exe.act(h, DecomposedTask(primary_target="apple"), env)
+        assert env.last_squeeze_extra == 18, (
+            f"strategy.squeeze_extra_steps=18 must reach env.close_gripper, "
+            f"got {env.last_squeeze_extra}"
+        )
+
+    def test_depth_margin_m_passed_through_to_approach(self):
+        from src.action_executor import ActionExecutor
+        from src.world_belief import DecomposedTask, GraspStrategy
+        env = _ApproachMarginRecorder()
+        exe = ActionExecutor(scene_describer=None)
+        h, _ = _hyp_with_candidate()
+        h.grasp_strategy = GraspStrategy(
+            strategy="top_down",
+            mass_g=100.0,
+            slip_risk="high",
+            squeeze_extra_steps=18,
+            depth_margin_m=0.025,
+        )
+        exe.act(h, DecomposedTask(primary_target="apple"), env)
+        assert env.last_margin_m is not None
+        assert abs(env.last_margin_m - 0.025) < 1e-6, (
+            f"strategy.depth_margin_m=0.025 must reach env.approach, "
+            f"got {env.last_margin_m}"
+        )
+
+    def test_no_strategy_falls_back_to_default_margin(self):
+        from src.action_executor import ActionExecutor
+        from src.world_belief import DecomposedTask
+        env = _ApproachMarginRecorder()
+        exe = ActionExecutor(scene_describer=None)
+        h, _ = _hyp_with_candidate()
+        # No grasp_strategy set
+        exe.act(h, DecomposedTask(primary_target="apple"), env)
+        assert env.last_margin_m == 0.015  # legacy default
+        assert env.last_squeeze_extra == 0  # no boost without strategy
 
 
 class TestVerifyGrasp:

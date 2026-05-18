@@ -2787,8 +2787,20 @@ class EnvWrapper:
             step_z=step_z, max_steps=max_steps, margin_m=margin_m,
         )
 
-    def close_gripper(self, target_label: Optional[str] = None) -> bool:
-        """关爪。有 target_label 时走力闭环 (检测物体接触)。"""
+    def close_gripper(
+        self,
+        target_label: Optional[str] = None,
+        squeeze_extra_steps: int = 0,
+    ) -> bool:
+        """关爪。有 target_label 时走力闭环 (检测物体接触)。
+
+        Args:
+            target_label: 目标物体语义类别 (lemon, apple, ...)
+            squeeze_extra_steps: 接触确认后额外的闭合步数 (叠加默认 10).
+                对圆形/低摩擦物体 (slip_risk=high) 给 16, 对重物体按质量加权.
+                由 GraspStrategy.squeeze_extra_steps 注入. 见
+                docs/superpowers/specs/2026-05-18-slip-prevention-research.md.
+        """
         if target_label:
             try:
                 type_map = self._get_obj_type_map()
@@ -2797,8 +2809,16 @@ class EnvWrapper:
                     None,
                 )
                 if target_body:
+                    base_squeeze = 10
+                    extra = max(0, min(30, int(squeeze_extra_steps)))
+                    total_squeeze = base_squeeze + extra
+                    # max_steps 也要相应放大, 否则 squeeze 还没完就触底
+                    max_total = max(30, 6 + total_squeeze + 8)
                     return self._close_gripper_until_grasp(
-                        target_body, max_steps=30, min_close_steps=6,
+                        target_body,
+                        max_steps=max_total,
+                        min_close_steps=6,
+                        squeeze_steps=total_squeeze,
                     )
             except Exception as e:
                 logger.debug(f"[close_gripper] type_map lookup failed: {e}")

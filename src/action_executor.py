@@ -173,15 +173,26 @@ class ActionExecutor:
                 {"stage": "pre_grasp"}, env,
             )
 
-        # 2. descend (策略感知的 depth margin)
+        # 2. descend (策略感知的 depth margin + LLM 推理的 slip_risk 调整)
         z_target = float(candidate.point_3d[2])
-        margin_m = 0.015  # 默认
+        squeeze_extra_steps = 0
         if hasattr(target, "grasp_strategy") and target.grasp_strategy:
-            from src.grasp_planner import GraspPlanner
-            params = GraspPlanner._STRATEGY_PARAMS.get(
-                target.grasp_strategy.strategy, {},
+            # 优先用 LLM 推理的 depth_margin_m (随 slip_risk 动态),
+            # 后退到 _STRATEGY_PARAMS 默认值.
+            margin_m = float(
+                getattr(target.grasp_strategy, "depth_margin_m", 0.0) or 0.0
             )
-            margin_m = params.get("depth_margin", 0.015)
+            if margin_m <= 0.0:
+                from src.grasp_planner import GraspPlanner
+                params = GraspPlanner._STRATEGY_PARAMS.get(
+                    target.grasp_strategy.strategy, {},
+                )
+                margin_m = float(params.get("depth_margin", 0.015))
+            squeeze_extra_steps = int(
+                getattr(target.grasp_strategy, "squeeze_extra_steps", 0) or 0
+            )
+        else:
+            margin_m = 0.015  # 默认
 
         descend_ok, z_actual = env.approach(
             candidate.point_3d,
@@ -245,7 +256,8 @@ class ActionExecutor:
                         z_actual,
                     )
                     grasp_ok = env.close_gripper(
-                        target_label=getattr(target, "label", None)
+                        target_label=getattr(target, "label", None),
+                        squeeze_extra_steps=squeeze_extra_steps,
                     )
                     # Phase 6.2: early micro-lift slip detection
                     failed = self._verify_grasp_via_micro_lift(
@@ -271,7 +283,8 @@ class ActionExecutor:
                         z_actual,
                     )
                     grasp_ok = env.close_gripper(
-                        target_label=getattr(target, "label", None)
+                        target_label=getattr(target, "label", None),
+                        squeeze_extra_steps=squeeze_extra_steps,
                     )
                     # Phase 6.2: early micro-lift slip detection
                     failed = self._verify_grasp_via_micro_lift(
@@ -302,7 +315,8 @@ class ActionExecutor:
                     reason, gap,
                 )
                 grasp_ok = env.close_gripper(
-                    target_label=getattr(target, "label", None)
+                    target_label=getattr(target, "label", None),
+                    squeeze_extra_steps=squeeze_extra_steps,
                 )
                 # Phase 6.2: early micro-lift slip detection
                 failed = self._verify_grasp_via_micro_lift(
@@ -330,7 +344,8 @@ class ActionExecutor:
         else:
             # 3. close gripper (正常路径)
             grasp_ok = env.close_gripper(
-                target_label=getattr(target, "label", None)
+                target_label=getattr(target, "label", None),
+                squeeze_extra_steps=squeeze_extra_steps,
             )
 
             # 3.5 Phase 6.2: early micro-lift slip detection

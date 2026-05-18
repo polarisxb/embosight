@@ -80,6 +80,105 @@ class TestSelectStrategy:
         assert strategy.strategy == "refuse"
 
 
+class TestAdaptiveForceParams:
+    """DeliGrasp-inspired adaptive force params (Step 0+1 of slip prevention)."""
+
+    def test_derive_force_params_lemon_high_slip(self):
+        """High slip_risk + ~lemon mass → ≥18 squeeze, 0.025m descent margin."""
+        squeeze, margin = GraspPlanner._derive_force_params(
+            "top_down", mass_g=100.0, slip_risk="high",
+        )
+        # mass 100g → 2 steps; slip high → 16 steps. Total 18.
+        assert squeeze == 18, f"expected 18 squeeze for lemon, got {squeeze}"
+        # base 0.015 + risk*0.005 = 0.025
+        assert abs(margin - 0.025) < 1e-6, (
+            f"expected 0.025m margin for high slip, got {margin}"
+        )
+
+    def test_derive_force_params_bread_low_slip(self):
+        """Low slip_risk + light mass → minimal squeeze, default margin."""
+        squeeze, margin = GraspPlanner._derive_force_params(
+            "top_down", mass_g=50.0, slip_risk="low",
+        )
+        # mass 50g → 1 step; slip low → 0 steps. Total 1.
+        assert squeeze == 1, f"expected ~1 squeeze for bread, got {squeeze}"
+        # base 0.015 + 0 = 0.015
+        assert abs(margin - 0.015) < 1e-6
+
+    def test_derive_force_params_squeeze_clamped_to_30(self):
+        """Heavy + high slip should clamp squeeze at 30 (not unbounded)."""
+        squeeze, _ = GraspPlanner._derive_force_params(
+            "top_down", mass_g=2000.0, slip_risk="high",
+        )
+        assert squeeze == 30, f"expected squeeze clamped to 30, got {squeeze}"
+
+    def test_derive_force_params_gentle_side_uses_strategy_default(self):
+        """gentle_side keeps shallow 0.010m margin even with high slip."""
+        squeeze, margin = GraspPlanner._derive_force_params(
+            "gentle_side", mass_g=100.0, slip_risk="high",
+        )
+        # gentle_side strategy default is 0.010m, not adjusted by slip_risk
+        assert abs(margin - 0.010) < 1e-6, (
+            f"gentle_side should keep 0.010m margin, got {margin}"
+        )
+        # squeeze still scales with mass + slip
+        assert squeeze == 18
+
+    def test_derive_force_params_invalid_slip_risk_defaults_medium(self):
+        squeeze, margin = GraspPlanner._derive_force_params(
+            "top_down", mass_g=100.0, slip_risk="UNKNOWN",
+        )
+        # falls back to medium: mass 2 + medium 8 = 10 squeeze; margin 0.020
+        assert squeeze == 10
+        assert abs(margin - 0.020) < 1e-6
+
+    def test_select_strategy_parses_mass_and_slip_risk(self):
+        llm = MockLLM(responses=[
+            '{"strategy": "top_down", "approach_axis": "z", '
+            '"mass_g": 100, "slip_risk": "high", '
+            '"reasoning": "lemon is round and slippery", '
+            '"speech": "这是柠檬，我从上方拿"}'
+        ])
+        planner = GraspPlanner(vlm=MockVLM([]), env=_FakeEnv(), llm=llm)
+        h = _hyp("lemon", visible_features="round yellow fruit")
+        strategy = planner.select_strategy(h)
+
+        assert strategy.strategy == "top_down"
+        assert strategy.mass_g == 100.0
+        assert strategy.slip_risk == "high"
+        assert strategy.squeeze_extra_steps == 18  # mass 2 + risk 16
+        assert abs(strategy.depth_margin_m - 0.025) < 1e-6
+
+    def test_select_strategy_missing_mass_falls_back_to_default(self):
+        llm = MockLLM(responses=[
+            '{"strategy": "top_down", "approach_axis": "z", '
+            '"reasoning": "object", "speech": "拿取"}'
+        ])
+        planner = GraspPlanner(vlm=MockVLM([]), env=_FakeEnv(), llm=llm)
+        h = _hyp("apple")
+        strategy = planner.select_strategy(h)
+
+        # Default mass_g=100, slip_risk="medium" → squeeze=10, margin=0.020
+        assert strategy.mass_g == 100.0
+        assert strategy.slip_risk == "medium"
+        assert strategy.squeeze_extra_steps == 10
+        assert abs(strategy.depth_margin_m - 0.020) < 1e-6
+
+    def test_select_strategy_clamps_extreme_mass(self):
+        llm = MockLLM(responses=[
+            '{"strategy": "top_down", "mass_g": 10000, "slip_risk": "low", '
+            '"reasoning": "x", "speech": "y"}'
+        ])
+        planner = GraspPlanner(vlm=MockVLM([]), env=_FakeEnv(), llm=llm)
+        h = _hyp("anvil")
+        strategy = planner.select_strategy(h)
+
+        # Clamped to 2000g
+        assert strategy.mass_g == 2000.0
+        # 2000/50 = 40 → clamped to 30
+        assert strategy.squeeze_extra_steps == 30
+
+
 class TestStrategyDrivenPlan:
     def test_strategy_candidate_has_highest_score(self):
         planner = GraspPlanner(vlm=MockVLM([]), env=_FakeEnv(), llm=None)
