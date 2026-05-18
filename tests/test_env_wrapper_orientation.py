@@ -240,7 +240,7 @@ class TestMoveArmToWithApproachDir:
         wrapper, captured = _make_minimal_wrapper(monkeypatch)
 
         wrapper.move_arm_to(
-            np.array([0.55, 0.0, 1.0]),
+            np.array([0.5, 0.0, 1.0]),
             approach_dir=np.array([1.0, 0.0, 0.0]),
             max_steps=3,
         )
@@ -249,6 +249,20 @@ class TestMoveArmToWithApproachDir:
         assert np.linalg.norm(first_ori) > 1e-3, (
             f"Expected non-zero orientation action, got {first_ori}"
         )
+
+    def test_orientation_waits_until_position_threshold(self, monkeypatch):
+        """Orientation action should stay zero while position is still outside threshold."""
+        wrapper, captured = _make_minimal_wrapper(monkeypatch)
+
+        wrapper.move_arm_to(
+            np.array([0.62, 0.0, 1.0]),
+            threshold_m=0.06,
+            approach_dir=np.array([1.0, 0.0, 0.0]),
+            max_steps=1,
+        )
+
+        assert captured
+        np.testing.assert_allclose(captured[0][3:6], [0.0, 0.0, 0.0])
 
     def test_top_down_approach_no_drift(self, monkeypatch):
         """approach_dir=[0,0,-1] when gripper already faces down (rot 180° around x):
@@ -278,7 +292,7 @@ class TestMoveArmToWithApproachDir:
         wrapper, captured = _make_minimal_wrapper(monkeypatch, base_ori=base_ori)
 
         wrapper.move_arm_to(
-            np.array([0.55, 0.0, 1.0]),
+            np.array([0.5, 0.0, 1.0]),
             approach_dir=np.array([1.0, 0.0, 0.0]),  # +x in world
             max_steps=3,
         )
