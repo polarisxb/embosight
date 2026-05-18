@@ -415,7 +415,12 @@ class ActionExecutor:
                 )
 
         # 5. post-lift 物体跟随验证 (防止"夹住后滑落"的假阳性)
-        obj_z_after = self._get_obj_z(target, env)
+        obj_pos_after = self._get_obj_pos(target, env)
+        obj_z_after = (
+            float(obj_pos_after[2])
+            if obj_pos_after is not None
+            else self._get_obj_z(target, env)
+        )
         if obj_z_before is not None and obj_z_after is not None:
             obj_dz = obj_z_after - obj_z_before
             if obj_dz < 0.02:
@@ -436,15 +441,26 @@ class ActionExecutor:
                 obj_dz, obj_z_before, obj_z_after,
             )
 
-        eef = env.get_eef_pos()
+        eef = np.asarray(env.get_eef_pos(), dtype=np.float32)
+        diagnostic = {
+            "z_target": z_target,
+            "z_actual": float(z_actual),
+            "final_z": float(final_z),
+            "stage": "complete",
+            "post_lift_eef_pos": eef[:3].tolist(),
+        }
+        if obj_pos_after is not None:
+            diagnostic["post_lift_obj_pos"] = obj_pos_after[:3].tolist()
+        if obj_z_before is not None:
+            diagnostic["obj_z_before"] = obj_z_before
+        if obj_z_after is not None:
+            diagnostic["obj_z_after"] = obj_z_after
         attempt = GraspAttempt(
             timestamp=time.time(),
             candidate=candidate,
             failure_mode="success",
-            end_effector_pose_reached=tuple(np.asarray(eef).tolist())
-            + (0.0, 0.0, 0.0),
-            diagnostic={"z_target": z_target, "z_actual": float(z_actual),
-                        "final_z": float(final_z), "stage": "complete"},
+            end_effector_pose_reached=tuple(eef.tolist()) + (0.0, 0.0, 0.0),
+            diagnostic=diagnostic,
         )
         return GraspActionResult(success=True, attempt=attempt)
 
@@ -748,6 +764,26 @@ class ActionExecutor:
                     return body
             return None
         except Exception:
+            return None
+
+    @staticmethod
+    def _get_obj_pos(target, env) -> np.ndarray | None:
+        """Return current target body world position from the simulator."""
+        try:
+            if not hasattr(env, "_get_body_pos"):
+                return None
+            body_name = ActionExecutor._resolve_target_body(target, env)
+            if body_name is None:
+                body_name = "obj_main"
+            pos = env._get_body_pos(body_name)
+            if pos is None:
+                return None
+            pos = np.asarray(pos, dtype=np.float32)
+            if pos.shape[0] < 3 or not np.all(np.isfinite(pos[:3])):
+                return None
+            return pos[:3]
+        except Exception as e:
+            logger.debug(f"[_get_obj_pos] failed: {e}")
             return None
 
     @staticmethod

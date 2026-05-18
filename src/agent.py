@@ -867,10 +867,61 @@ class EmboSightAgent:
     ) -> str:
         h = belief.target()
         if success and h is not None:
-            return (f"已为您拿到{h.label}, 在您正前方约 "
-                    f"{h.position_3d[0]:.2f}m 处。")
+            obj_pos = EmboSightAgent._latest_success_position(
+                h, "post_lift_obj_pos",
+            )
+            if obj_pos is not None:
+                return EmboSightAgent._format_success_position(
+                    h.label, "当前物体世界坐标", obj_pos,
+                )
+            eef_pos = EmboSightAgent._latest_success_position(
+                h, "post_lift_eef_pos",
+            )
+            if eef_pos is not None:
+                return EmboSightAgent._format_success_position(
+                    h.label, "当前夹爪世界坐标", eef_pos,
+                )
+            estimate = EmboSightAgent._coerce_position3(h.position_3d)
+            if estimate is not None:
+                return EmboSightAgent._format_success_position(
+                    h.label, "目标估计世界坐标", estimate,
+                )
+            return f"已为您拿到{h.label}。"
         if h is not None:
             return f"我看到一个像{h.label}的东西, 但暂时拿不准。{reason or ''}"
         primary = (belief.decomposed.primary_target
                    if belief.decomposed else "目标")
         return f"我没能找到{primary}。{reason or ''}"
+
+    @staticmethod
+    def _latest_success_position(
+        h: Hypothesis, diagnostic_key: str,
+    ) -> Optional[np.ndarray]:
+        for attempt in reversed(getattr(h, "grasp_attempts", [])):
+            if getattr(attempt, "failure_mode", None) != "success":
+                continue
+            diagnostic = getattr(attempt, "diagnostic", {}) or {}
+            pos = EmboSightAgent._coerce_position3(diagnostic.get(diagnostic_key))
+            if pos is not None:
+                return pos
+        return None
+
+    @staticmethod
+    def _coerce_position3(value) -> Optional[np.ndarray]:
+        try:
+            pos = np.asarray(value, dtype=np.float32).reshape(-1)
+        except Exception:
+            return None
+        if pos.shape[0] < 3 or not np.all(np.isfinite(pos[:3])):
+            return None
+        return pos[:3]
+
+    @staticmethod
+    def _format_success_position(
+        label: str, source_text: str, position: np.ndarray,
+    ) -> str:
+        return (
+            f"已为您拿到{label}，{source_text}约 "
+            f"x={position[0]:.3f}m，y={position[1]:.3f}m，"
+            f"z={position[2]:.3f}m。"
+        )

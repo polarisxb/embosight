@@ -322,6 +322,21 @@ class TestDiagnostic:
         assert "z_target" in result.attempt.diagnostic
         assert "final_z" in result.attempt.diagnostic
 
+    def test_success_diagnostic_contains_post_lift_object_position(self):
+        from src.action_executor import ActionExecutor
+        from src.world_belief import DecomposedTask
+        exe = ActionExecutor(scene_describer=None)
+        env = FakeEnv()
+        h, _ = _hyp_with_candidate()
+
+        result = exe.act(h, DecomposedTask(primary_target="apple"), env)
+
+        assert result.success is True
+        np.testing.assert_allclose(
+            result.attempt.diagnostic["post_lift_obj_pos"],
+            [0.5, 0.0, 0.98],
+        )
+
 
 class TestStructure:
     def test_to_dict_serializable(self):
