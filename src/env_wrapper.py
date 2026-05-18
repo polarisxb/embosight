@@ -1000,6 +1000,8 @@ class EnvWrapper:
             f"target={target.tolist()} init_dist={init_dist:.4f}m "
             f"max_steps={max_steps} drive_base={drive_base}"
         )
+        # Reset torso log flag per call (so each move_arm_to logs once if fires)
+        self._torso_fired_logged = False
 
         prev_dist = float("inf")
         prev_ori_err = float("inf")
@@ -1179,17 +1181,27 @@ class EnvWrapper:
                 action[self._get_gripper_idx()] = gripper_hold
 
             # ── Torso 自适应工作空间扩展 ──
-            # 当手臂 stall (关节极限) 且目标在上/下方时, 自动调节 torso
-            # 高度, 扩展 z 可达范围. 对称: 下降 stall 降 torso, 抬升 stall
+            # 当手臂 stall (关节极限) 且目标在上/下方时, 饱和驱动 torso
+            # 关节, 扩展 z 可达范围. 对称: 下降 stall 降 torso, 抬升 stall
             # 升 torso. 只在 stall >= 1 时启用, 避免干扰正常运动.
             # Torso 是 JointPositionController(delta), 作用于整个手臂基座.
+            #
+            # 经 GPU run (de4e53d) 验证: 比例控制 z_err*0.5 太弱
+            # (action=-0.005 → 每步 ~0.025mm), 160 步只挪 4mm, 远不够 28mm
+            # 的 z gap. 改为饱和驱动 sign(z_err)*1.0, 让 controller 输出最大
+            # delta, 才能在合理步数内突破关节极限.
             torso_idx = self._get_torso_action_idx()
             if torso_idx is not None and stall >= 1:
                 z_err = float(delta_world[2])
                 if abs(z_err) > 0.005:
-                    # 比例控制, 夹紧到 [-0.3, 0.3] 避免 overshoot
-                    torso_cmd = float(np.clip(z_err * 0.5, -0.3, 0.3))
-                    action[torso_idx] = torso_cmd
+                    # 饱和命令: ±1.0 让 JointPositionController 输出 max delta
+                    action[torso_idx] = float(np.sign(z_err))
+                    if not getattr(self, "_torso_fired_logged", False):
+                        logger.info(
+                            f"[torso] assist FIRED step={step} stall={stall} "
+                            f"z_err={z_err:+.4f}m cmd={action[torso_idx]:+.1f}"
+                        )
+                        self._torso_fired_logged = True
 
             try:
                 obs, _, _, _ = self._env.step(action)

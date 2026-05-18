@@ -202,8 +202,17 @@ class ActionExecutor:
                     gap,
                 )
                 obj_xy = candidate.point_3d[:2].astype(np.float32)
-                base_pos, _ = env.get_base_pose()
-                direction = obj_xy - base_pos[:2]
+                # 优先用真实 base XY (绕开 anchor (10,10) 限制).
+                # get_base_pose() 返回 mount anchor 而非真实 mobile base 位置,
+                # 用它算 direction 会给出错误方向 (指向 anchor 而非物体).
+                base_xy = None
+                if hasattr(env, "_read_real_base_xy"):
+                    base_xy = env._read_real_base_xy()
+                if base_xy is None:
+                    base_pos, _ = env.get_base_pose()
+                    base_xy = base_pos[:2]
+                base_xy = np.asarray(base_xy, dtype=np.float32)
+                direction = obj_xy - base_xy
                 dir_norm = float(np.linalg.norm(direction))
                 step = min(0.08, dir_norm * 0.3)
                 if dir_norm > 0.01:
