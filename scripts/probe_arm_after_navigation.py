@@ -140,6 +140,22 @@ def _reset_seed42(env) -> None:
     env.reset()
 
 
+def _new_seed42_env(config: dict):
+    env = _build_env(config)
+    _reset_seed42(env)
+    return env
+
+
+def _close_env(env) -> None:
+    backend = getattr(env, "_env", None)
+    close = getattr(backend, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:
+            pass
+
+
 def _sync_zero(env, steps: int = 1) -> None:
     action = np.zeros(env._env.action_dim, dtype=np.float32)
     for _ in range(steps):
@@ -148,7 +164,6 @@ def _sync_zero(env, steps: int = 1) -> None:
 
 
 def _prepare_navigated(env) -> tuple[str, np.ndarray]:
-    _reset_seed42(env)
     body, lemon_pos = _find_lemon(env)
     ok = env.navigate_base_to(lemon_pos[:2], offset_m=0.30)
     _sync_zero(env, steps=2)
@@ -187,47 +202,57 @@ def _call_controller_reset(env) -> None:
     print(f"controller reset called={called}")
 
 
-def _probe_reset_state(env) -> None:
+def _probe_reset_state(config: dict) -> None:
     print("\n=== Baseline pulses from reset state ===")
     for idx in (0, 1, 2):
         for value in (+0.5, -0.5):
-            _reset_seed42(env)
-            start = _eef(env)
-            delta = _pulse(env, idx, value)
-            print(f"reset idx={idx} value={value:+.1f} start={_arr(start)} delta={_arr(delta)} end={_arr(_eef(env))}")
+            env = _new_seed42_env(config)
+            try:
+                body, lemon_pos = _find_lemon(env)
+                start = _eef(env)
+                delta = _pulse(env, idx, value)
+                print(f"reset idx={idx} value={value:+.1f} body={body} lemon={_arr(lemon_pos)} start={_arr(start)} delta={_arr(delta)} end={_arr(_eef(env))}")
+            finally:
+                _close_env(env)
 
 
-def _probe_navigated_state(env, reset_controller: bool = False) -> None:
+def _probe_navigated_state(config: dict, reset_controller: bool = False) -> None:
     title = "navigated after controller reset" if reset_controller else "navigated raw"
     print(f"\n=== Pulses from {title} ===")
     for idx in (0, 1, 2):
         for value in (+0.5, -0.5):
-            _prepare_navigated(env)
-            _dump_controller(env, "before optional reset")
-            if reset_controller:
-                _call_controller_reset(env)
-                _sync_zero(env, steps=1)
-                _dump_controller(env, "after controller reset + zero step")
-            start = _eef(env)
-            delta = _pulse(env, idx, value)
-            print(f"{title} idx={idx} value={value:+.1f} start={_arr(start)} delta={_arr(delta)} end={_arr(_eef(env))}")
+            env = _new_seed42_env(config)
+            try:
+                _prepare_navigated(env)
+                _dump_controller(env, "before optional reset")
+                if reset_controller:
+                    _call_controller_reset(env)
+                    _sync_zero(env, steps=1)
+                    _dump_controller(env, "after controller reset + zero step")
+                start = _eef(env)
+                delta = _pulse(env, idx, value)
+                print(f"{title} idx={idx} value={value:+.1f} start={_arr(start)} delta={_arr(delta)} end={_arr(_eef(env))}")
+            finally:
+                _close_env(env)
 
 
-def _probe_move_arm_after_navigation(env) -> None:
+def _probe_move_arm_after_navigation(config: dict) -> None:
     print("\n=== move_arm_to smoke after navigation ===")
-    _prepare_navigated(env)
-    start = _eef(env)
     for vec, name in (
         (np.array([0.0, 0.0, 0.10]), "+10cm z"),
         (np.array([0.0, 0.0, -0.10]), "-10cm z"),
         (np.array([-0.10, 0.0, 0.0]), "-10cm x"),
     ):
-        _prepare_navigated(env)
-        start = _eef(env)
-        target = start + vec
-        ok = env.move_arm_to(target, threshold_m=0.02, max_steps=160)
-        end = _eef(env)
-        print(f"move_arm_to {name}: ok={ok} start={_arr(start)} target={_arr(target)} delta={_arr(end - start)} end={_arr(end)}")
+        env = _new_seed42_env(config)
+        try:
+            _prepare_navigated(env)
+            start = _eef(env)
+            target = start + vec
+            ok = env.move_arm_to(target, threshold_m=0.02, max_steps=160)
+            end = _eef(env)
+            print(f"move_arm_to {name}: ok={ok} start={_arr(start)} target={_arr(target)} delta={_arr(end - start)} end={_arr(end)}")
+        finally:
+            _close_env(env)
 
 
 def main() -> int:
@@ -235,18 +260,20 @@ def main() -> int:
         os.environ["DEEPSEEK_API_KEY"] = "sk-dummy-probe-only"
 
     config = _load_config()
-    env = _build_env(config)
-    _reset_seed42(env)
-    _print_layout(env)
-    body, lemon_pos = _find_lemon(env)
-    print(f"\nseed=42 lemon_body={body} lemon_pos={_arr(lemon_pos)}")
-    print(f"initial base={_base_pose_str(env)} eef={_arr(_eef(env))}")
-    _dump_controller(env, "after reset")
+    env = _new_seed42_env(config)
+    try:
+        _print_layout(env)
+        body, lemon_pos = _find_lemon(env)
+        print(f"\nseed=42 lemon_body={body} lemon_pos={_arr(lemon_pos)}")
+        print(f"initial base={_base_pose_str(env)} eef={_arr(_eef(env))}")
+        _dump_controller(env, "after reset")
+    finally:
+        _close_env(env)
 
-    _probe_reset_state(env)
-    _probe_navigated_state(env, reset_controller=False)
-    _probe_navigated_state(env, reset_controller=True)
-    _probe_move_arm_after_navigation(env)
+    _probe_reset_state(config)
+    _probe_navigated_state(config, reset_controller=False)
+    _probe_navigated_state(config, reset_controller=True)
+    _probe_move_arm_after_navigation(config)
     return 0
 
 
