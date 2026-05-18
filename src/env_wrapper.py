@@ -1036,6 +1036,8 @@ class EnvWrapper:
         best_dist = float("inf")
         regress_margin = 0.005  # 5mm regress from best → unreachable
         min_progress_for_regress = 0.01  # 1cm progress from init before arming
+        # Pre-fetch torso index ONCE so regression check can consult it.
+        torso_idx = self._get_torso_action_idx()
 
         for step in range(max_steps):
             current = self.get_eef_pos()
@@ -1079,8 +1081,21 @@ class EnvWrapper:
             # 3. best_dist actually progressed from init_dist by >= 1cm
             #    (proves arm CAN move; not a "stuck from start" case)
             # 4. current dist exceeds best by >= 5mm (the regression itself)
+            # 5. NOT in torso-assist regime — when stall >= 1, torso starts
+            #    actively reconfiguring the arm base. OSC compensation causes
+            #    a transient EEF bounce that looks identical to IK regression
+            #    but actually precedes torso-driven progress. GPU run 40fa8db
+            #    showed step=120 torso fires, step=121 regression triggers
+            #    and kills lift with only 45% progress despite 679 unused
+            #    steps. Suppress regression during torso engagement.
+            torso_engaged = (
+                torso_idx is not None
+                and stall >= 1
+                and abs(float(delta_world[2])) > 0.005
+            )
             if (
                 step > check_interval
+                and not torso_engaged
                 and best_dist > threshold_m + regress_margin
                 and (init_dist - best_dist) > min_progress_for_regress
                 and dist > best_dist + regress_margin
@@ -1092,6 +1107,10 @@ class EnvWrapper:
                     f"(init_dist={init_dist:.4f}m, progress={init_dist-best_dist:.4f}m)"
                 )
                 return False
+            # When torso just engaged, reset best_dist so future regression
+            # checks measure from after torso has had a chance to act.
+            if torso_engaged and best_dist < dist - regress_margin:
+                best_dist = dist
 
             # stall 检测: 位置 OR 朝向有进展就不算 stall
             if step > 0 and step % check_interval == 0:
@@ -1190,7 +1209,7 @@ class EnvWrapper:
             # (action=-0.005 → 每步 ~0.025mm), 160 步只挪 4mm, 远不够 28mm
             # 的 z gap. 改为饱和驱动 sign(z_err)*1.0, 让 controller 输出最大
             # delta, 才能在合理步数内突破关节极限.
-            torso_idx = self._get_torso_action_idx()
+            # (torso_idx 已在 loop 外预取, 见上方初始化)
             if torso_idx is not None and stall >= 1:
                 z_err = float(delta_world[2])
                 if abs(z_err) > 0.005:

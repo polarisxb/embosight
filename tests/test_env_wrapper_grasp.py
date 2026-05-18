@@ -696,6 +696,96 @@ def test_torso_assist_positive_when_lift_stalls() -> None:
     )
 
 
+class _BouncyTorsoEnv(EnvWrapper):
+    """Simulates the GPU-observed pattern: arm makes progress, torso fires
+    at stall, the very next step EEF bounces away (OSC compensation), then
+    progress resumes. The IK-regression check must NOT exit early during
+    torso engagement — it must let the bounce settle.
+
+    Without the suppression, the bounce of >5mm right after torso engages
+    would trigger 'IK-unreachable regression' and abort move_arm_to.
+    """
+    TORSO_IDX = 6
+    GRIPPER_IDX = 7
+    ACTION_DIM = 8
+
+    def __init__(self) -> None:
+        self.actions_logged: list[np.ndarray] = []
+        self._eef = np.array([0.5, 0.0, 1.0], dtype=np.float32)
+        self._step_count = 0
+        self._regression_aborted = False
+        self._latest_obs = {"_": True}
+        self._gripper_idx_cache = self.GRIPPER_IDX
+        self._torso_idx_cache = self.TORSO_IDX
+        outer = self
+
+        class _MockBackend:
+            action_dim = outer.ACTION_DIM
+
+            def step(self, action):
+                a = np.asarray(action, dtype=np.float32).copy()
+                outer.actions_logged.append(a)
+                outer._step_count += 1
+                # Match GPU pattern: stall must fire BEFORE bounce.
+                # Phase A (steps 0-119): 0.4mm/step progress (stays
+                #   making_progress=True at each check_interval=40).
+                # Phase B (steps 120-159): no progress → stall increments
+                #   at step 120 (stall=1). Torso assist activates.
+                # Phase C (steps 160+): bounce away from target.
+                #   Without suppression, regression check would fire.
+                if outer._step_count <= 119:
+                    outer._eef[2] -= 0.0004  # 0.4mm/step progress
+                elif outer._step_count <= 159:
+                    pass  # stall, no movement
+                else:
+                    outer._eef[2] += 0.001  # bounce away
+                return {}, 0.0, False, {}
+
+        self._env = _MockBackend()
+
+    def get_eef_pos(self) -> np.ndarray:
+        return self._eef.copy()
+
+    def get_base_pose(self):
+        return np.zeros(3, dtype=np.float32), np.eye(3, dtype=np.float64)
+
+    def _get_base_action_idx(self):
+        return None
+
+    def render(self) -> None:
+        pass
+
+    def reset(self):
+        return {}
+
+
+def test_ik_regression_suppressed_when_torso_engaged() -> None:
+    """Regression: torso assist causes a transient OSC bounce that the
+    IK-regression check must NOT misinterpret as IK-unreachable.
+
+    GPU run 40fa8db pattern: torso fires step 120 → step 121 EEF dist
+    bounces by 13mm > 5mm regress_margin → ABORT, killing lift with 45%
+    progress remaining and 679 unused steps.
+
+    With the fix, when stall>=1 (torso firing) and z_err is meaningful,
+    the regression check is suppressed. The arm should run the full
+    max_steps and progress through the bounce.
+    """
+    env = _BouncyTorsoEnv()
+    target = np.array([0.5, 0.0, 0.94], dtype=np.float32)  # 6cm below
+    # If regression check fires at the bounce (~step 81-90), max_steps=200
+    # would NOT be reached. With suppression, all 200 steps should run.
+    env.move_arm_to(target, threshold_m=0.001, max_steps=200)
+
+    # Check that the call ran near full max_steps (didn't early-exit on
+    # the bounce). Allow some slack for stall_limit termination.
+    assert len(env.actions_logged) >= 150, (
+        f"expected >= 150 steps (suppression worked), but only "
+        f"{len(env.actions_logged)} steps ran. The IK-regression check "
+        f"likely fired during the torso bounce."
+    )
+
+
 def test_reset_applies_seed_before_backend_reset(monkeypatch, tmp_path) -> None:
     events = []
 
