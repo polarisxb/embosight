@@ -204,13 +204,24 @@ class ActionExecutor:
                 obj_xy = candidate.point_3d[:2].astype(np.float32)
                 base_pos, _ = env.get_base_pose()
                 direction = obj_xy - base_pos[:2]
-                step = min(0.08, float(np.linalg.norm(direction)) * 0.3)
-                if float(np.linalg.norm(direction)) > 0.01:
-                    nudge = direction / np.linalg.norm(direction) * step
-                    nudge_target = env.get_eef_pos().copy()
-                    nudge_target[0] += nudge[0]
-                    nudge_target[1] += nudge[1]
-                    env.move_arm_to(nudge_target, threshold_m=0.03, max_steps=300)
+                dir_norm = float(np.linalg.norm(direction))
+                step = min(0.08, dir_norm * 0.3)
+                if dir_norm > 0.01:
+                    nudge_xy = (direction / dir_norm * step).astype(
+                        np.float32,
+                    )
+                    # 用 nudge_base_world_xy 平移底盘 (刚体), EEF 跟随.
+                    # 之前错误地用 move_arm_to(drive_base=False) 只移动手臂
+                    # → 手臂更伸展 → z 可达反而更差.
+                    if hasattr(env, "nudge_base_world_xy"):
+                        env.nudge_base_world_xy(nudge_xy)
+                    else:
+                        nudge_target = env.get_eef_pos().copy()
+                        nudge_target[0] += float(nudge_xy[0])
+                        nudge_target[1] += float(nudge_xy[1])
+                        env.move_arm_to(
+                            nudge_target, threshold_m=0.03, max_steps=300,
+                        )
                 # 底盘靠近后重新下降 (强制垂直, 倾斜路径已证明不可达)
                 _vert = np.array([0.0, 0.0, -1.0], dtype=np.float32)
                 descend_ok2, z_actual = env.approach(

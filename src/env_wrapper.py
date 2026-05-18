@@ -818,6 +818,35 @@ class EnvWrapper:
         self._base_idx_cache = None
         return None
 
+    def _get_torso_action_idx(self) -> Optional[int]:
+        """动态获取 torso controller 在 action vector 中的起始 index.
+
+        PandaOmron layout: right[0:6], torso[6:7], base[7:10], gripper[10:12].
+        Torso 是棱柱关节 (JointPositionController, delta 模式), 负值降低
+        手臂基座 → 扩展下方 z 可达; 正值升高 → 扩展上方 z 可达.
+
+        Returns:
+            torso action index (int) or None if not found.
+        """
+        if hasattr(self, "_torso_idx_cache"):
+            return self._torso_idx_cache
+        try:
+            robot = self._env.robots[0]
+            idx = 0
+            for part_name, ctrl in robot.composite_controller.part_controllers.items():
+                dim = ctrl.control_dim
+                if "torso" in part_name.lower():
+                    self._torso_idx_cache = idx
+                    logger.info(
+                        f"[torso] detected index={idx} dim={dim}"
+                    )
+                    return idx
+                idx += dim
+        except Exception as e:
+            logger.debug(f"[torso] auto-detect failed ({e})")
+        self._torso_idx_cache = None
+        return None
+
     # ------------------------------------------------------------------
     # Orientation control helpers (Tasks 2-4 of orientation-aware-grasping)
     # ------------------------------------------------------------------
@@ -1148,6 +1177,19 @@ class EnvWrapper:
             # 夹爪保持: 抬升期间持续施力, 防止物体滑落
             if gripper_hold != 0.0:
                 action[self._get_gripper_idx()] = gripper_hold
+
+            # ── Torso 自适应工作空间扩展 ──
+            # 当手臂 stall (关节极限) 且目标在上/下方时, 自动调节 torso
+            # 高度, 扩展 z 可达范围. 对称: 下降 stall 降 torso, 抬升 stall
+            # 升 torso. 只在 stall >= 1 时启用, 避免干扰正常运动.
+            # Torso 是 JointPositionController(delta), 作用于整个手臂基座.
+            torso_idx = self._get_torso_action_idx()
+            if torso_idx is not None and stall >= 1:
+                z_err = float(delta_world[2])
+                if abs(z_err) > 0.005:
+                    # 比例控制, 夹紧到 [-0.3, 0.3] 避免 overshoot
+                    torso_cmd = float(np.clip(z_err * 0.5, -0.3, 0.3))
+                    action[torso_idx] = torso_cmd
 
             try:
                 obs, _, _, _ = self._env.step(action)

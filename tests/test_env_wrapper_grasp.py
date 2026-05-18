@@ -599,6 +599,103 @@ def test_lift_e2e_keeps_gripper_at_one_throughout() -> None:
         )
 
 
+# ============================================================
+# Torso adaptive workspace extension tests
+# ============================================================
+
+class _StepActionRecorderWithTorso(EnvWrapper):
+    """Mock that has arm[0:6] + torso[6] + gripper[7]. EEF deliberately
+    stalls on z-component so the torso assist logic can activate."""
+    TORSO_IDX = 6
+    GRIPPER_IDX = 7
+    ACTION_DIM = 8
+
+    def __init__(self, stall_z: bool = True) -> None:
+        self.actions_logged: list[np.ndarray] = []
+        self._eef = np.array([0.5, 0.0, 0.95], dtype=np.float32)
+        self._latest_obs = {"_": True}
+        self._gripper_idx_cache = self.GRIPPER_IDX
+        self._torso_idx_cache = self.TORSO_IDX
+        self._stall_z = stall_z
+        outer = self
+
+        class _MockBackend:
+            action_dim = outer.ACTION_DIM
+
+            def step(self, action):
+                a = np.asarray(action, dtype=np.float32).copy()
+                outer.actions_logged.append(a)
+                # Advance XY toward target but deliberately stall z
+                outer._eef[0] += a[0] * 0.5
+                outer._eef[1] += a[1] * 0.5
+                if not outer._stall_z:
+                    outer._eef[2] += a[2] * 0.5
+                return {}, 0.0, False, {}
+
+        self._env = _MockBackend()
+
+    def get_eef_pos(self) -> np.ndarray:
+        return self._eef.copy()
+
+    def get_base_pose(self):
+        return np.zeros(3, dtype=np.float32), np.eye(3, dtype=np.float64)
+
+    def _get_base_action_idx(self):
+        return None
+
+    def render(self) -> None:
+        pass
+
+    def reset(self):
+        return {}
+
+
+def test_torso_assist_activates_when_arm_z_stalls() -> None:
+    """When move_arm_to stalls trying to descend (target below current),
+    the torso action must receive a negative command to lower the arm base
+    and extend z-reach. This is the general fix for workspace z-limits."""
+    env = _StepActionRecorderWithTorso(stall_z=True)
+    target = np.array([0.5, 0.0, 0.85], dtype=np.float32)  # 10cm below
+    env.move_arm_to(target, threshold_m=0.01, max_steps=250)
+
+    torso_actions = [a[env.TORSO_IDX] for a in env.actions_logged]
+    # After stall fires (≥40 steps with no z-progress), torso should go negative
+    late_torso = torso_actions[80:]  # stall_limit=3 × check_interval=40 = 120
+    assert any(v < -0.001 for v in late_torso), (
+        f"torso should receive negative commands when z-stalled descending, "
+        f"but late torso actions = {late_torso[:10]}..."
+    )
+
+
+def test_torso_assist_does_not_fire_when_not_stalling() -> None:
+    """When arm converges normally (no stall), torso must stay at 0."""
+    env = _StepActionRecorderWithTorso(stall_z=False)
+    target = np.array([0.5, 0.0, 0.90], dtype=np.float32)  # 5cm below
+    env.move_arm_to(target, threshold_m=0.01, max_steps=60)
+
+    torso_actions = [a[env.TORSO_IDX] for a in env.actions_logged]
+    assert all(abs(v) < 1e-6 for v in torso_actions), (
+        f"torso should stay neutral when arm is not stalling, "
+        f"but got non-zero torso actions"
+    )
+
+
+def test_torso_assist_positive_when_lift_stalls() -> None:
+    """Symmetric: when arm stalls trying to lift (target above current),
+    torso must go positive to raise the arm base."""
+    env = _StepActionRecorderWithTorso(stall_z=True)
+    env._eef = np.array([0.5, 0.0, 0.85], dtype=np.float32)
+    target = np.array([0.5, 0.0, 0.95], dtype=np.float32)  # 10cm above
+    env.move_arm_to(target, threshold_m=0.01, max_steps=250)
+
+    torso_actions = [a[env.TORSO_IDX] for a in env.actions_logged]
+    late_torso = torso_actions[80:]
+    assert any(v > 0.001 for v in late_torso), (
+        f"torso should receive positive commands when z-stalled lifting, "
+        f"but late torso actions = {late_torso[:10]}..."
+    )
+
+
 def test_reset_applies_seed_before_backend_reset(monkeypatch, tmp_path) -> None:
     events = []
 

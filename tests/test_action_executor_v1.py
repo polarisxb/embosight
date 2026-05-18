@@ -994,3 +994,55 @@ class TestBaseNudgeRecovery:
         # Initial diag (1) + 2 evals after each nudge.
         assert env.diag_calls == 1
         assert env.eval_iter == 3
+
+
+class _ZStallNudgeEnv(FakeEnv):
+    """Simulates z-stall during descent → verifies that z-stall recovery
+    uses nudge_base_world_xy instead of move_arm_to(drive_base=False).
+
+    First approach call returns descend_ok=False (z-stall), second succeeds
+    (after base nudge puts arm in better workspace region).
+    """
+    def __init__(self):
+        super().__init__(descend_ok=False, lift_ok=True, obj_lifts=True)
+        self.nudge_xy_calls: list[np.ndarray] = []
+        self._approach_count = 0
+
+    def approach(self, point_3d, approach_dir, target_label=None, **kwargs):
+        self._approach_count += 1
+        if self._approach_count <= 1:
+            return False, float(point_3d[2]) + 0.03  # z-stall
+        return True, float(point_3d[2])  # after nudge, descent works
+
+    def nudge_base_world_xy(self, delta_xy):
+        self.nudge_xy_calls.append(np.asarray(delta_xy).copy())
+        return True
+
+    def get_base_pose(self):
+        # Base at 0.5m from object on x-axis
+        return np.array([1.0, 0.0, 0.0]), np.eye(3, dtype=np.float32)
+
+
+class TestZStallRecoveryUsesBaseNudge:
+    def test_z_stall_recovery_uses_nudge_base_world_xy(self):
+        """z-stall recovery must use nudge_base_world_xy to actually move the
+        base closer, NOT move_arm_to(drive_base=False) which only extends the
+        arm and makes the workspace worse."""
+        from src.action_executor import ActionExecutor
+        from src.world_belief import DecomposedTask
+        exe = ActionExecutor(scene_describer=None)
+        env = _ZStallNudgeEnv()
+        h, _ = _hyp_with_candidate()
+        result = exe.act(h, DecomposedTask(primary_target="apple"), env)
+
+        assert len(env.nudge_xy_calls) >= 1, (
+            "z-stall recovery should use nudge_base_world_xy, "
+            f"but no nudge calls recorded. calls={env.calls}"
+        )
+        # nudge direction should be toward the object (positive x direction
+        # because object is at x=0.5 and base is at x=1.0 ... actually
+        # object is at x=0.5, base at x=1.0 → direction is negative)
+        nudge = env.nudge_xy_calls[0]
+        assert nudge[0] < 0, (
+            f"nudge should be toward object (negative x), got {nudge}"
+        )
