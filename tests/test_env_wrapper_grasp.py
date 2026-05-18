@@ -473,9 +473,18 @@ class _PreGraspMoveSpyEnv(EnvWrapper):
 
 
 def test_move_to_pre_grasp_passes_drive_base_true_for_base_approach() -> None:
-    """move_to_pre_grasp's internal base approach (line ~1584 in env_wrapper.py)
-    must explicitly pass drive_base=True so that base navigation still works
-    when navigate_base_to is unavailable / failed (Phase 3 fallback)."""
+    """move_to_pre_grasp's internal moves must opt-in to drive_base=True.
+
+    Both the legacy base approach (skipped when Phase 4 navigate already
+    positioned the base) AND the final precision move now use drive_base=True.
+    The precision move uses base driving so the velocity controller can make
+    small self-damping corrections to overcome the arm mount offset (~6cm
+    lateral) that arm-only OSC cannot resolve. The base velocity scales with
+    distance and deactivates at <5cm, so this is safe for fine positioning.
+
+    GPU run fcdd0ca confirmed arm-only fine pre-grasp plateaus at ~6cm
+    lateral and never converges, so drive_base=True is now mandatory.
+    """
     env = _PreGraspMoveSpyEnv()
     candidate = GraspCandidate(
         point_3d=np.array([0.5, 0.2, 0.9], dtype=np.float32),
@@ -486,17 +495,18 @@ def test_move_to_pre_grasp_passes_drive_base_true_for_base_approach() -> None:
 
     env.move_to_pre_grasp(candidate)
 
-    # First call should be the base approach (eef-height z); must opt-in to base
+    # First call should be the base approach (eef-height z); must opt-in to base.
     assert len(env.move_calls) >= 1
     first = env.move_calls[0]
     assert first.get("drive_base") is True, (
         f"base approach must pass drive_base=True, got kwargs={first}"
     )
-    # And the final precision move (last call) should NOT request base driving
-    # (Phase 3 default = arm-only after base is roughly positioned)
+    # The final precision move ALSO must request base driving so the velocity
+    # controller can compensate the arm mount offset during convergence.
     last = env.move_calls[-1]
-    assert last.get("drive_base", False) is False, (
-        f"final precision move should be arm-only, got kwargs={last}"
+    assert last.get("drive_base") is True, (
+        f"final precision move must pass drive_base=True to overcome "
+        f"the arm mount offset, got kwargs={last}"
     )
 
 

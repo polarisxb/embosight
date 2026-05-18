@@ -625,17 +625,16 @@ class TestDiagnosticPreGrasp:
         assert "move_to_pre_grasp" in env.calls
 
 
-class _LateralNudgeRecoveryEnv(FakeEnv):
+class _NavigateRecoveryEnv(FakeEnv):
     """Mock env that has navigate_base_to but NOT recover_pre_grasp.
 
     Returns lateral_misaligned on first pre-grasp call, then safe_handoff
     on second; records all navigate_base_to calls so we can verify the
-    executor performed a residual-aware lateral nudge.
+    executor performed the safer-offset re-navigate recovery.
     """
 
-    def __init__(self, *, lateral_residual_world: tuple[float, float]):
+    def __init__(self):
         super().__init__()
-        self._residual = np.asarray(lateral_residual_world, dtype=np.float32)
         self.pre_grasp_diag_calls = 0
         self.navigate_calls: list[dict] = []
 
@@ -654,20 +653,15 @@ class _LateralNudgeRecoveryEnv(FakeEnv):
             [0.0, 0.0, 0.05], dtype=np.float32,
         )
         if self.pre_grasp_diag_calls == 1:
-            # final_eef = pre_pos - residual (so pre_pos - final_eef = residual)
-            final_eef = pre_pos - np.array(
-                [self._residual[0], self._residual[1], 0.0],
-                dtype=np.float32,
-            )
             return SimpleNamespace(
                 ok=False,
                 handoff_ok=False,
                 needs_recovery=True,
                 reason="lateral_misaligned",
-                final_eef=final_eef,
+                final_eef=pre_pos.copy(),
                 pre_pos=pre_pos,
-                total_error_m=float(np.linalg.norm(self._residual)),
-                lateral_error_m=float(np.linalg.norm(self._residual)),
+                total_error_m=0.06,
+                lateral_error_m=0.06,
                 axis_error_m=0.0,
                 approach_gap_m=0.05,
                 lateral_limit_m=0.02,
@@ -675,7 +669,8 @@ class _LateralNudgeRecoveryEnv(FakeEnv):
                 max_approach_gap_m=0.08,
                 move_ok=False,
             )
-        # Second call: pretend the nudge worked.
+        # Second call: pretend the safer-offset re-navigate + drive_base
+        # retry produced a usable handoff.
         return SimpleNamespace(
             ok=False,
             handoff_ok=True,
@@ -694,57 +689,40 @@ class _LateralNudgeRecoveryEnv(FakeEnv):
         )
 
 
-class TestLateralNudgeRecovery:
-    def test_lateral_nudge_targets_residual_shifted_xy(self):
-        """Recovery should call navigate_base_to with a virtual target
-        shifted by the lateral residual (pre_pos - final_eef)."""
+class TestNavigateRecovery:
+    def test_recovery_re_navigates_with_safer_offset(self):
+        """Recovery should call navigate_base_to at the safer offset (0.65m).
+
+        The previous lateral-nudge strategy (virtual_target shifted by EEF
+        residual) caused catastrophic IK regression on GPU because
+        navigate_base_to recomputes the entire base→target direction. The
+        new strategy keeps the target unchanged and just enlarges the
+        offset, so the base sits a few cm farther back along the same line.
+        """
         from src.action_executor import ActionExecutor
         from src.world_belief import DecomposedTask
-        residual = (0.01, 0.06)  # lateral pointing in +y world
-        env = _LateralNudgeRecoveryEnv(lateral_residual_world=residual)
+        env = _NavigateRecoveryEnv()
         exe = ActionExecutor(scene_describer=None)
         h, c = _hyp_with_candidate()
 
         result = exe.act(h, DecomposedTask(primary_target="apple"), env)
 
         assert result.success is True
-        # Two navigate calls: act-entry (offset 0.55) and recovery nudge.
+        # Two navigate calls: act-entry (offset 0.55) and recovery (offset 0.65).
         assert len(env.navigate_calls) >= 2
         recovery = env.navigate_calls[1]
-        # Virtual target = grasp_point xy + residual.
-        expected_xy = np.array(
-            [c.point_3d[0] + residual[0], c.point_3d[1] + residual[1]],
-            dtype=np.float32,
-        )
+        # Recovery uses the unshifted grasp point xy.
+        expected_xy = np.asarray(c.point_3d[:2], dtype=np.float32)
         assert np.allclose(recovery["target_xy"], expected_xy, atol=1e-5), (
-            f"expected lateral-nudged target {expected_xy}, "
+            f"expected unshifted target {expected_xy}, "
             f"got {recovery['target_xy']}"
         )
-        # Recovery offset stays at the safe minimum (0.55), not 0.65.
-        assert recovery["offset_m"] == 0.55
+        # Recovery offset is 0.65, not 0.55.
+        assert recovery["offset_m"] == 0.65
 
-    def test_lateral_nudge_capped_at_max_nudge(self):
-        """Residual larger than 0.08m gets clipped to 0.08m direction-preserving."""
-        from src.action_executor import ActionExecutor
-        from src.world_belief import DecomposedTask
-        # Pure +y residual of 0.20m → clipped to 0.08m
-        residual = (0.0, 0.20)
-        env = _LateralNudgeRecoveryEnv(lateral_residual_world=residual)
-        exe = ActionExecutor(scene_describer=None)
-        h, c = _hyp_with_candidate()
-
-        exe.act(h, DecomposedTask(primary_target="apple"), env)
-
-        recovery = env.navigate_calls[1]
-        # The shift along +y should be clipped to 0.08, not 0.20.
-        shift_y = float(recovery["target_xy"][1] - c.point_3d[1])
-        assert abs(shift_y - 0.08) < 1e-5, (
-            f"expected clipped shift_y=0.08, got {shift_y}"
-        )
-
-    def test_recover_pre_grasp_hook_overrides_lateral_nudge(self):
+    def test_recover_pre_grasp_hook_overrides_navigate_fallback(self):
         """If env defines recover_pre_grasp, it takes precedence over the
-        built-in lateral nudge."""
+        built-in navigate_base_to fallback."""
         from src.action_executor import ActionExecutor
         from src.world_belief import DecomposedTask
         env = _DiagnosticPreGraspEnv(

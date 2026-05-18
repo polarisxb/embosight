@@ -375,18 +375,23 @@ class ActionExecutor:
             "lateral_limit_m": float(getattr(result, "lateral_limit_m", 0.0)),
         }
 
-    _MAX_LATERAL_NUDGE_M = 0.08
-
     def _recover_pre_grasp(self, env, candidate, prior_result) -> bool:
         """Bounded recovery for pre-grasp lateral misalignment.
 
         Preference order:
         1. env.recover_pre_grasp(candidate, prior_result) — caller hook.
-        2. Lateral nudge via navigate_base_to with a virtual target shifted
-           by (pre_pos - final_eef), capped at _MAX_LATERAL_NUDGE_M. This
-           translates the base in the same world direction as the residual,
-           cancelling the arm mount offset so the EEF can reach pre_pos.
-        3. navigate_base_to(target_xy, offset_m=0.65) — safer-offset fallback.
+        2. navigate_base_to(target_xy, offset_m=0.65) — nudge the base to a
+           slightly farther position. The changed distance alters the
+           base→target direction and yaw, which rotates the arm mount
+           offset so that the subsequent drive_base retry can converge
+           from a different starting configuration.
+
+        NOTE: the previous lateral-nudge strategy (virtual_target shifted by
+        the EEF residual) was removed because navigate_base_to recomputes
+        the full base→target direction — a 6cm virtual-target shift changes
+        the approach angle by ~6°, moving the base to a position where the
+        arm (still in its extended config) becomes IK-unreachable. GPU logs
+        (fcdd0ca) confirmed: lateral 0.063→0.218 after nudge (attempt 1).
 
         Returns False if no recovery primitive is available or the call raises.
         """
@@ -395,32 +400,9 @@ class ActionExecutor:
                 ok = env.recover_pre_grasp(candidate, prior_result)
                 return True if ok is None else bool(ok)
             if hasattr(env, "navigate_base_to"):
-                final_eef = getattr(prior_result, "final_eef", None)
-                pre_pos = getattr(prior_result, "pre_pos", None)
-                if final_eef is not None and pre_pos is not None:
-                    pre_xy = np.asarray(pre_pos, dtype=np.float32)[:2]
-                    eef_xy = np.asarray(final_eef, dtype=np.float32)[:2]
-                    residual = pre_xy - eef_xy
-                    r_norm = float(np.linalg.norm(residual))
-                    if r_norm > 1e-3:
-                        if r_norm > self._MAX_LATERAL_NUDGE_M:
-                            residual = residual * (
-                                self._MAX_LATERAL_NUDGE_M / r_norm
-                            )
-                        virtual_target = (
-                            np.asarray(candidate.point_3d, dtype=np.float32)[:2]
-                            + residual
-                        )
-                        logger.info(
-                            "[act] lateral nudge: residual=(%.3f,%.3f) "
-                            "virtual_target=(%.3f,%.3f)",
-                            float(residual[0]), float(residual[1]),
-                            float(virtual_target[0]), float(virtual_target[1]),
-                        )
-                        env.navigate_base_to(
-                            target_xy=virtual_target, offset_m=0.55,
-                        )
-                        return True
+                logger.info(
+                    "[act] pre-grasp recovery: re-navigate offset=0.65m"
+                )
                 env.navigate_base_to(
                     target_xy=candidate.point_3d[:2], offset_m=0.65,
                 )

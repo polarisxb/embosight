@@ -2352,6 +2352,7 @@ class EnvWrapper:
         strict_thresh = 0.06 if is_top_down else 0.12
         move_ok = self.move_arm_to(
             pre_pos, threshold_m=strict_thresh, approach_dir=ad_unit,
+            drive_base=True,
         )
 
         # Diagnostic handoff evaluation in the approach frame.
