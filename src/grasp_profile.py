@@ -48,6 +48,19 @@ def classify_grasp_profile(
     tokens = _text_tokens(label, visible, slip)
     size = _size_tuple(object_size_m)
 
+    round_terms = {"round", "sphere", "spherical", "lemon", "orange", "lime", "apple"}
+    slippery_terms = {"smooth", "slippery", "waxy", "glossy", "high"}
+    is_round_slippery = (round_terms & tokens) and (
+        slip == "high" or slippery_terms & tokens
+    )
+    size_allows_small_round = size is None or max(size) <= 0.12
+    if is_round_slippery and size_allows_small_round:
+        return GraspProfileResult(
+            profile=GraspProfile.SMALL_ROUND_SLIPPERY,
+            confidence=0.85,
+            reasons=["round", "slippery", "small"],
+        )
+
     if {"handle", "handled", "mug", "cup", "pan", "jug"} & tokens:
         return GraspProfileResult(
             profile=GraspProfile.HANDLED,
@@ -77,16 +90,6 @@ def classify_grasp_profile(
                 confidence=0.9,
                 reasons=["width_exceeds_gripper"],
             )
-
-    round_terms = {"round", "sphere", "spherical", "lemon", "orange", "lime", "apple"}
-    slippery_terms = {"smooth", "slippery", "waxy", "glossy", "high"}
-    is_small = size is None or max(size) <= 0.09
-    if is_small and (round_terms & tokens) and (slip == "high" or slippery_terms & tokens):
-        return GraspProfileResult(
-            profile=GraspProfile.SMALL_ROUND_SLIPPERY,
-            confidence=0.85,
-            reasons=["round", "slippery", "small"],
-        )
 
     return GraspProfileResult(
         profile=GraspProfile.DEFAULT_RIGID,

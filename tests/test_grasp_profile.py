@@ -45,6 +45,19 @@ def test_lemon_is_small_round_slippery():
     assert result.execution_overrides == {}
 
 
+def test_lemon_semantics_stay_small_round_when_aabb_is_inflated():
+    result = classify_grasp_profile(
+        _hyp("lemon", "round yellow smooth waxy fruit", "high"),
+        _candidate(),
+        object_size_m=(0.11, 0.10, 0.06),
+        gripper_max_width_m=0.08,
+    )
+
+    assert result.profile == GraspProfile.SMALL_ROUND_SLIPPERY
+    assert "round" in result.reasons
+    assert result.execution_overrides == {}
+
+
 def test_wide_object_is_ungraspable_when_width_exceeds_gripper():
     result = classify_grasp_profile(
         _hyp("tupperware", "wide rectangular container", "medium"),
