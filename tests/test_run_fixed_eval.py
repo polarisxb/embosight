@@ -110,3 +110,12 @@ def test_create_memory_manager_uses_custom_dir(tmp_path):
 
     assert mm is not None
     assert mm.memory_dir == tmp_path
+
+
+def test_build_agent_forwards_grasp_policy_config_to_action_executor():
+    module = _load_module()
+    import inspect
+
+    source = inspect.getsource(module.build_agent)
+
+    assert "grasp_policy_config=agent_cfg.get(\"grasp_policy\")" in source

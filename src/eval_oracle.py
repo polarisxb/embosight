@@ -38,6 +38,11 @@ class OracleSummary:
     grasp_profile: str | None = None
     grasp_profile_confidence: float | None = None
     grasp_profile_reasons: list[str] | None = None
+    grasp_policy_mode: str | None = None
+    grasp_policy_applied: bool | None = None
+    grasp_policy_profile: str | None = None
+    legacy_depth_margin_m: float | None = None
+    legacy_squeeze_extra_steps: int | None = None
     attempts_count: int = 0
     post_lift_verified: bool | None = None
 
@@ -116,6 +121,15 @@ def summarize_episode(
         ),
         grasp_profile_reasons=_str_list_or_none(
             diagnostic.get("grasp_profile_reasons"),
+        ),
+        grasp_policy_mode=_str_or_none(diagnostic.get("grasp_policy_mode")),
+        grasp_policy_applied=_bool_or_none(diagnostic.get("grasp_policy_applied")),
+        grasp_policy_profile=_str_or_none(diagnostic.get("grasp_policy_profile")),
+        legacy_depth_margin_m=_float_or_none(
+            diagnostic.get("legacy_depth_margin_m"),
+        ),
+        legacy_squeeze_extra_steps=_int_or_none(
+            diagnostic.get("legacy_squeeze_extra_steps"),
         ),
         attempts_count=len(grasp_attempts),
         post_lift_verified=_post_lift_verified(
@@ -206,6 +220,12 @@ def _int_or_none(value: Any) -> int | None:
     if value is None:
         return None
     return int(value)
+
+
+def _bool_or_none(value: Any) -> bool | None:
+    if value is None:
+        return None
+    return bool(value)
 
 
 def _str_or_none(value: Any) -> str | None:

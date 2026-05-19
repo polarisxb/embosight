@@ -232,6 +232,39 @@ def test_summarize_results_builds_diagnostic_cross_tabs():
     assert summary["success_rate_by_profile"]["small_round_slippery"]["success_rate"] == 1.0
 
 
+def test_summarize_results_counts_grasp_policy_usage():
+    module = _load_module()
+    summary = module.summarize_results([
+        {
+            "scenario_id": "fixed_lemon_001",
+            "success": True,
+            "actual_object": "lemon",
+            "grasp_failure_mode": "success",
+            "grasp_policy_mode": "legacy",
+            "grasp_policy_applied": False,
+            "grasp_policy_profile": "small_round_slippery",
+            "steps": 4,
+            "time_s": 8.0,
+        },
+        {
+            "scenario_id": "fixed_lime_001",
+            "success": True,
+            "actual_object": "lime",
+            "grasp_failure_mode": "success",
+            "grasp_policy_mode": "profiled",
+            "grasp_policy_applied": True,
+            "grasp_policy_profile": "small_round_slippery",
+            "steps": 4,
+            "time_s": 8.5,
+        },
+    ])
+
+    assert summary["grasp_policy_usage"] == {
+        "legacy:small_round_slippery:not_applied": 1,
+        "profiled:small_round_slippery:applied": 1,
+    }
+
+
 def test_parse_run_fixed_output_extracts_oracle_and_episode_result():
     module = _load_module()
     stdout = '''
@@ -301,6 +334,11 @@ time    : 12.3s
   "depth_margin_m": 0.01,
   "squeeze_extra_steps": 18,
   "grasp_profile": "small_round_slippery",
+  "grasp_policy_mode": "profiled",
+  "grasp_policy_applied": true,
+  "grasp_policy_profile": "small_round_slippery",
+  "legacy_depth_margin_m": 0.025,
+  "legacy_squeeze_extra_steps": 4,
   "action_sequence": ["observe", "classify_safety", "plan_grasp_candidates", "grasp"],
   "selected_target_label": "lemon",
   "actual_object": "lemon"
@@ -324,6 +362,11 @@ episode: logs/episodes/episode_1.json
     assert result["depth_margin_m"] == 0.01
     assert result["squeeze_extra_steps"] == 18
     assert result["grasp_profile"] == "small_round_slippery"
+    assert result["grasp_policy_mode"] == "profiled"
+    assert result["grasp_policy_applied"] is True
+    assert result["grasp_policy_profile"] == "small_round_slippery"
+    assert result["legacy_depth_margin_m"] == 0.025
+    assert result["legacy_squeeze_extra_steps"] == 4
 
 
 def test_prepare_memory_dir_writes_empty_index_and_domains(tmp_path):
@@ -395,6 +438,7 @@ def test_format_summary_text():
         "avg_steps": 8.0, "avg_time_s": 310.0,
         "failure_breakdown": {"timeout": 1, "MAX_STEPS reached": 1},
         "strategy_usage": {"strategy_top_down": 2},
+        "grasp_policy_usage": {"profiled:small_round_slippery:applied": 1},
         "object_distribution": {"apple": 1, "wine": 1},
         "slowest_runs": [], "failed_runs": [],
     }
@@ -404,6 +448,7 @@ def test_format_summary_text():
     assert "33.3%" in text
     assert "timeout" in text
     assert "strategy_top_down" in text
+    assert "profiled:small_round_slippery:applied" in text
 
 
 def test_format_summary_text_includes_diagnostic_cross_tabs():

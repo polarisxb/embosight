@@ -108,7 +108,7 @@ echo "Memory mode: ${MEMORY_MODE}"
 echo "Output dir: ${OUT_DIR}"
 echo
 
-echo "run,exit_code,success,pre_close_abort,grasp_confirmed,micro_lift_ok,post_lift_verified,no_grasp,object_not_lifted,steps,time,grasp_failure_mode,post_lift_obj_pos,post_lift_obj_delta_z,selected_strategy,executed_strategy,depth_margin_m,squeeze_extra_steps,grasp_profile,log" \
+echo "run,exit_code,success,pre_close_abort,grasp_confirmed,micro_lift_ok,post_lift_verified,no_grasp,object_not_lifted,steps,time,grasp_failure_mode,post_lift_obj_pos,post_lift_obj_delta_z,selected_strategy,executed_strategy,depth_margin_m,squeeze_extra_steps,grasp_profile,grasp_policy_mode,grasp_policy_applied,log" \
     > "${SUMMARY_CSV}"
 
 successes=0
@@ -166,8 +166,10 @@ for run_idx in $(seq 1 "${RUNS}"); do
     depth_margin_m="$(extract_json_scalar 'depth_margin_m' "${log_path}")"
     squeeze_extra_steps="$(extract_json_scalar 'squeeze_extra_steps' "${log_path}")"
     grasp_profile="$(extract_json_scalar 'grasp_profile' "${log_path}")"
+    grasp_policy_mode="$(extract_json_scalar 'grasp_policy_mode' "${log_path}")"
+    grasp_policy_applied="$(extract_json_scalar 'grasp_policy_applied' "${log_path}")"
 
-    echo "${run_idx},${exit_code},${success},${pre_close_abort},${grasp_confirmed},${micro_lift_ok},${post_lift_verified},${no_grasp},${object_not_lifted},${steps},${time_s},${failure_mode},${post_lift_obj_pos},${post_lift_obj_delta_z},${selected_strategy},${executed_strategy},${depth_margin_m},${squeeze_extra_steps},${grasp_profile},${log_path}" \
+    echo "${run_idx},${exit_code},${success},${pre_close_abort},${grasp_confirmed},${micro_lift_ok},${post_lift_verified},${no_grasp},${object_not_lifted},${steps},${time_s},${failure_mode},${post_lift_obj_pos},${post_lift_obj_delta_z},${selected_strategy},${executed_strategy},${depth_margin_m},${squeeze_extra_steps},${grasp_profile},${grasp_policy_mode},${grasp_policy_applied},${log_path}" \
         >> "${SUMMARY_CSV}"
 
     echo
@@ -183,6 +185,8 @@ for run_idx in $(seq 1 "${RUNS}"); do
     echo "  post_lift_obj_delta_z: ${post_lift_obj_delta_z:-unknown}"
     echo "  executed_strategy: ${executed_strategy:-unknown}"
     echo "  grasp_profile: ${grasp_profile:-unknown}"
+    echo "  grasp_policy_mode: ${grasp_policy_mode:-unknown}"
+    echo "  grasp_policy_applied: ${grasp_policy_applied:-unknown}"
 
     if [[ "${run_idx}" -lt "${RUNS}" && "${SLEEP_BETWEEN}" != "0" ]]; then
         sleep "${SLEEP_BETWEEN}"

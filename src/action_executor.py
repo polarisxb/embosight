@@ -52,9 +52,10 @@ class ActionExecutor:
     - verify_grasp 占位由 perception.verify_grasp 注入 (Phase 12)
     """
 
-    def __init__(self, scene_describer=None) -> None:
+    def __init__(self, scene_describer=None, grasp_policy_config=None) -> None:
         # scene_describer 参数保留接口兼容; v1 不使用 (verify_grasp 走 perception)
         self.describer = scene_describer
+        self.grasp_policy_config = dict(grasp_policy_config or {})
 
     def act(self, target, decomposed, env) -> GraspActionResult:
         """v1 主接口: 抓取 target Hypothesis, 失败结构化回写。"""
@@ -204,9 +205,23 @@ class ActionExecutor:
         else:
             margin_m = 0.015  # 默认
 
+        from src.grasp_policy import resolve_grasp_policy
+
+        policy_decision = resolve_grasp_policy(
+            config=self.grasp_policy_config,
+            grasp_profile=self._candidate_attempt_diagnostic(candidate).get(
+                "grasp_profile"
+            ),
+            depth_margin_m=margin_m,
+            squeeze_extra_steps=squeeze_extra_steps,
+        )
+        margin_m = policy_decision.depth_margin_m
+        squeeze_extra_steps = policy_decision.squeeze_extra_steps
+
         self._merge_candidate_attempt_diagnostic(
             candidate,
             {
+                **policy_decision.diagnostic(),
                 "depth_margin_m": margin_m,
                 "squeeze_extra_steps": squeeze_extra_steps,
                 "finger_width_m": float(

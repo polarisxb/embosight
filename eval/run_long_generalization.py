@@ -31,6 +31,11 @@ FINAL_GRASP_ORACLE_FIELDS = (
     "grasp_profile",
     "grasp_profile_confidence",
     "grasp_profile_reasons",
+    "grasp_policy_mode",
+    "grasp_policy_applied",
+    "grasp_policy_profile",
+    "legacy_depth_margin_m",
+    "legacy_squeeze_extra_steps",
     "attempts_count",
     "post_lift_verified",
 )
@@ -294,6 +299,7 @@ def summarize_results(results: list[dict[str, Any]]) -> dict[str, Any]:
 
     failure_breakdown: dict[str, int] = {}
     strategy_usage: dict[str, int] = {}
+    grasp_policy_usage: dict[str, int] = {}
     object_distribution: dict[str, int] = {}
     failed_runs: list[dict[str, Any]] = []
     failure_mode_by_object: dict[str, dict[str, int]] = {}
@@ -327,6 +333,9 @@ def summarize_results(results: list[dict[str, Any]]) -> dict[str, Any]:
         strategy = r.get("grasp_strategy")
         if strategy:
             strategy_usage[str(strategy)] = strategy_usage.get(str(strategy), 0) + 1
+        policy_key = _grasp_policy_usage_key(r)
+        if policy_key:
+            grasp_policy_usage[policy_key] = grasp_policy_usage.get(policy_key, 0) + 1
         if object_name != "unknown":
             object_distribution[object_name] = object_distribution.get(object_name, 0) + 1
 
@@ -347,6 +356,7 @@ def summarize_results(results: list[dict[str, Any]]) -> dict[str, Any]:
         "avg_time_s": sum(time_values) / len(time_values) if time_values else 0.0,
         "failure_breakdown": dict(sorted(failure_breakdown.items(), key=lambda x: (-x[1], x[0]))),
         "strategy_usage": dict(sorted(strategy_usage.items(), key=lambda x: (-x[1], x[0]))),
+        "grasp_policy_usage": dict(sorted(grasp_policy_usage.items(), key=lambda x: (-x[1], x[0]))),
         "object_distribution": dict(sorted(object_distribution.items(), key=lambda x: (-x[1], x[0]))),
         "failure_mode_by_object": _sorted_nested_counts(failure_mode_by_object),
         "failure_mode_by_candidate_source": _sorted_nested_counts(failure_mode_by_candidate_source),
@@ -370,6 +380,15 @@ def _summary_object_name(result: dict[str, Any]) -> str:
         or result.get("target_object")
         or result.get("actual_object"),
     )
+
+
+def _grasp_policy_usage_key(result: dict[str, Any]) -> str | None:
+    mode = _bucket_name(result.get("grasp_policy_mode"))
+    if mode == "unknown":
+        return None
+    profile = _bucket_name(result.get("grasp_policy_profile"))
+    applied = "applied" if bool(result.get("grasp_policy_applied")) else "not_applied"
+    return f"{mode}:{profile}:{applied}"
 
 
 def _failure_reason(result: dict[str, Any]) -> str:
@@ -473,6 +492,10 @@ def format_summary_text(summary: dict[str, Any]) -> str:
     lines.append("--- Strategy Usage ---")
     for strategy, count in summary.get("strategy_usage", {}).items():
         lines.append(f"  {strategy}: {count}")
+    lines.append("")
+    lines.append("--- Grasp Policy Usage ---")
+    for policy, count in summary.get("grasp_policy_usage", {}).items():
+        lines.append(f"  {policy}: {count}")
     lines.append("")
     lines.append("--- Object Distribution ---")
     for obj, count in summary.get("object_distribution", {}).items():

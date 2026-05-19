@@ -828,6 +828,12 @@ class EmboSightAgent:
             "approach_dir",
             "finger_width_m",
             "depth_margin_m",
+            "squeeze_extra_steps",
+            "grasp_policy_mode",
+            "grasp_policy_applied",
+            "grasp_policy_profile",
+            "legacy_depth_margin_m",
+            "legacy_squeeze_extra_steps",
         ):
             if key in context:
                 diagnostic.setdefault(key, context[key])
@@ -858,6 +864,11 @@ class EmboSightAgent:
             "grasp_profile",
             "grasp_profile_confidence",
             "grasp_profile_reasons",
+            "grasp_policy_mode",
+            "grasp_policy_applied",
+            "grasp_policy_profile",
+            "legacy_depth_margin_m",
+            "legacy_squeeze_extra_steps",
         ):
             if key in diagnostic:
                 context[key] = diagnostic[key]
@@ -867,9 +878,17 @@ class EmboSightAgent:
             context["finger_width_m"] = float(
                 getattr(candidate, "finger_width_m", 0.0) or 0.0,
             )
-        if getattr(h, "grasp_strategy", None) is not None:
+        if "depth_margin_m" in diagnostic:
+            context["depth_margin_m"] = float(diagnostic["depth_margin_m"])
+        elif getattr(h, "grasp_strategy", None) is not None:
             context["depth_margin_m"] = float(
                 getattr(h.grasp_strategy, "depth_margin_m", 0.0) or 0.0,
+            )
+        if "squeeze_extra_steps" in diagnostic:
+            context["squeeze_extra_steps"] = int(diagnostic["squeeze_extra_steps"])
+        elif getattr(h, "grasp_strategy", None) is not None:
+            context["squeeze_extra_steps"] = int(
+                getattr(h.grasp_strategy, "squeeze_extra_steps", 0) or 0,
             )
 
         candidate_source = context["candidate_source"]

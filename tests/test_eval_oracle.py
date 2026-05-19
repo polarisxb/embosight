@@ -134,6 +134,11 @@ def test_oracle_summary_includes_final_grasp_evidence(tmp_path):
                             "squeeze_extra_steps": 18,
                             "finger_width_m": 0.04,
                             "grasp_profile": "small_round_slippery",
+                            "grasp_policy_mode": "profiled",
+                            "grasp_policy_applied": True,
+                            "grasp_policy_profile": "small_round_slippery",
+                            "legacy_depth_margin_m": 0.025,
+                            "legacy_squeeze_extra_steps": 4,
                         },
                     },
                 },
@@ -164,6 +169,11 @@ def test_oracle_summary_includes_final_grasp_evidence(tmp_path):
     assert data["squeeze_extra_steps"] == 18
     assert data["finger_width_m"] == 0.04
     assert data["grasp_profile"] == "small_round_slippery"
+    assert data["grasp_policy_mode"] == "profiled"
+    assert data["grasp_policy_applied"] is True
+    assert data["grasp_policy_profile"] == "small_round_slippery"
+    assert data["legacy_depth_margin_m"] == 0.025
+    assert data["legacy_squeeze_extra_steps"] == 4
     assert data["attempts_count"] == 1
     assert data["post_lift_verified"] is True
 

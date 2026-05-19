@@ -46,6 +46,10 @@ verify:
   enabled: true
   min_confidence: 0.6
 
+grasp_policy:
+  mode: legacy
+  enabled_profiles: []
+
 logger:
   log_dir: logs/episodes
   save_json: true

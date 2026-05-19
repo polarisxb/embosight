@@ -166,7 +166,10 @@ def build_agent(
         ),
         safety_classifier=SafetyClassifier(llm=llm),
         grasp_planner=GraspPlanner(vlm=vlm, env=env, llm=llm),
-        action_executor=ActionExecutor(scene_describer=None),
+        action_executor=ActionExecutor(
+            scene_describer=None,
+            grasp_policy_config=agent_cfg.get("grasp_policy"),
+        ),
         nbv_selector=ActiveViewpointSelector(llm=llm, viewpoint_lib=vp_lib),
         user_channel=user_channel,
         episode_logger=EpisodeLogger(log_dir=agent_cfg["logger"]["log_dir"]),

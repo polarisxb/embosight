@@ -330,6 +330,74 @@ class TestAdaptiveForceParams:
         assert env.last_margin_m == 0.015  # legacy default
         assert env.last_squeeze_extra == 0  # no boost without strategy
 
+    def test_legacy_grasp_policy_does_not_override_profiled_object(self):
+        from src.action_executor import ActionExecutor
+        from src.world_belief import DecomposedTask, GraspStrategy
+
+        env = _ApproachMarginRecorder()
+        exe = ActionExecutor(
+            scene_describer=None,
+            grasp_policy_config={
+                "mode": "legacy",
+                "enabled_profiles": ["small_round_slippery"],
+            },
+        )
+        h, _ = _hyp_with_candidate()
+        h.label = "lemon"
+        h.visible_features = "round yellow smooth waxy fruit"
+        h.grasp_strategy = GraspStrategy(
+            strategy="top_down",
+            squeeze_extra_steps=4,
+            depth_margin_m=0.025,
+        )
+
+        result = exe.act(h, DecomposedTask(primary_target="lemon"), env)
+
+        assert result.success is True
+        assert env.last_margin_m == 0.025
+        assert env.last_squeeze_extra == 4
+        diag = result.attempt.diagnostic
+        assert diag["grasp_profile"] == "small_round_slippery"
+        assert diag["grasp_policy_mode"] == "legacy"
+        assert diag["grasp_policy_applied"] is False
+        assert diag["depth_margin_m"] == 0.025
+        assert diag["squeeze_extra_steps"] == 4
+
+    def test_profiled_policy_applies_enabled_small_round_slippery_params(self):
+        from src.action_executor import ActionExecutor
+        from src.world_belief import DecomposedTask, GraspStrategy
+
+        env = _ApproachMarginRecorder()
+        exe = ActionExecutor(
+            scene_describer=None,
+            grasp_policy_config={
+                "mode": "profiled",
+                "enabled_profiles": ["small_round_slippery"],
+            },
+        )
+        h, _ = _hyp_with_candidate()
+        h.label = "lemon"
+        h.visible_features = "round yellow smooth waxy fruit"
+        h.grasp_strategy = GraspStrategy(
+            strategy="top_down",
+            squeeze_extra_steps=4,
+            depth_margin_m=0.025,
+        )
+
+        result = exe.act(h, DecomposedTask(primary_target="lemon"), env)
+
+        assert result.success is True
+        assert env.last_margin_m == 0.010
+        assert env.last_squeeze_extra == 16
+        diag = result.attempt.diagnostic
+        assert diag["grasp_profile"] == "small_round_slippery"
+        assert diag["grasp_policy_mode"] == "profiled"
+        assert diag["grasp_policy_applied"] is True
+        assert diag["legacy_depth_margin_m"] == 0.025
+        assert diag["legacy_squeeze_extra_steps"] == 4
+        assert diag["depth_margin_m"] == 0.010
+        assert diag["squeeze_extra_steps"] == 16
+
 
 class TestVerifyGrasp:
     def test_verify_returns_bool_and_conf(self):
