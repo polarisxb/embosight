@@ -10,6 +10,7 @@
 #   OUT_DIR=...            directory for logs and summary.csv
 #   MEMORY_MODE=isolated   isolated | shared
 #   LOG_LEVEL=INFO         eval log level
+#   AGENT_CONFIG=configs/agent.yaml
 #   SLEEP_BETWEEN=0        seconds to sleep between runs
 
 set -euo pipefail
@@ -32,6 +33,7 @@ fi
 RUNS="${1:-${RUNS:-5}}"
 SCENARIO="${SCENARIO:-fixed_lemon_001}"
 LOG_LEVEL="${LOG_LEVEL:-INFO}"
+AGENT_CONFIG="${AGENT_CONFIG:-configs/agent.yaml}"
 MEMORY_MODE="${MEMORY_MODE:-isolated}"
 SLEEP_BETWEEN="${SLEEP_BETWEEN:-0}"
 STAMP="$(date +%Y%m%d_%H%M%S)"
@@ -105,6 +107,7 @@ echo "Current HEAD: $(git log --oneline -1)"
 echo "Scenario: ${SCENARIO}"
 echo "Runs: ${RUNS}"
 echo "Memory mode: ${MEMORY_MODE}"
+echo "Agent config: ${AGENT_CONFIG}"
 echo "Output dir: ${OUT_DIR}"
 echo
 
@@ -133,6 +136,7 @@ for run_idx in $(seq 1 "${RUNS}"); do
     set +e
     python -m eval.run_fixed \
         --scenario "${SCENARIO}" \
+        --agent-config "${AGENT_CONFIG}" \
         --memory-dir "${memory_dir}" \
         --log-level "${LOG_LEVEL}" \
         2>&1 | tee "${log_path}"

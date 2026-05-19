@@ -17,6 +17,7 @@ GEN_PARALLEL="${GEN_PARALLEL:-4}"
 TIMEOUT_S="${TIMEOUT_S:-900}"
 LOG_LEVEL="${LOG_LEVEL:-INFO}"
 MEMORY_MODE="${MEMORY_MODE:-isolated}"
+AGENT_CONFIG="${AGENT_CONFIG:-configs/agent.yaml}"
 RUN_ID="${RUN_ID:-grasp-baseline-$(date +%Y%m%d_%H%M%S)}"
 GEN_RUN_ID="${GEN_RUN_ID:-}"
 BASE_DIR="${BASE_DIR:-}"
@@ -47,7 +48,8 @@ Options:
 
 Environment defaults:
   LEMON_RUNS=5 GEN_SEED_START=0 GEN_COUNT=10 GEN_PARALLEL=4 TIMEOUT_S=900
-  MEMORY_MODE=isolated LOG_LEVEL=INFO RUN_ID=<timestamp>
+  MEMORY_MODE=isolated LOG_LEVEL=INFO AGENT_CONFIG=configs/agent.yaml
+  RUN_ID=<timestamp>
 EOF
 }
 
@@ -133,14 +135,15 @@ GEN_RUNNER_LOG="${GEN_RUNNER_LOG:-${BASE_DIR}/generalization_runner.log}"
 REPORT_PATH="${REPORT_PATH:-${BASE_DIR}/report.md}"
 
 lemon_command_display() {
-    printf 'OUT_DIR="%s" MEMORY_MODE="%s" LOG_LEVEL="%s" bash scripts/validate_lemon_grasp_multi.sh "%s"\n' \
-        "${LEMON_OUT_DIR}" "${MEMORY_MODE}" "${LOG_LEVEL}" "${LEMON_RUNS}"
+    printf 'OUT_DIR="%s" MEMORY_MODE="%s" LOG_LEVEL="%s" AGENT_CONFIG="%s" bash scripts/validate_lemon_grasp_multi.sh "%s"\n' \
+        "${LEMON_OUT_DIR}" "${MEMORY_MODE}" "${LOG_LEVEL}" \
+        "${AGENT_CONFIG}" "${LEMON_RUNS}"
 }
 
 generalization_command_display() {
-    printf 'MUJOCO_GL=egl PYOPENGL_PLATFORM=egl python eval/run_long_generalization.py --seed-start %s --count %s --parallel %s --timeout-s %s --run-id "%s" --log-level "%s" 2>&1 | tee "%s"\n' \
+    printf 'MUJOCO_GL=egl PYOPENGL_PLATFORM=egl python eval/run_long_generalization.py --seed-start %s --count %s --parallel %s --timeout-s %s --run-id "%s" --log-level "%s" --agent-config "%s" 2>&1 | tee "%s"\n' \
         "${GEN_SEED_START}" "${GEN_COUNT}" "${GEN_PARALLEL}" "${TIMEOUT_S}" \
-        "${GEN_RUN_ID}" "${LOG_LEVEL}" "${GEN_RUNNER_LOG}"
+        "${GEN_RUN_ID}" "${LOG_LEVEL}" "${AGENT_CONFIG}" "${GEN_RUNNER_LOG}"
 }
 
 print_config() {
@@ -152,6 +155,7 @@ print_config() {
     echo "  GEN_PARALLEL  : ${GEN_PARALLEL}"
     echo "  TIMEOUT_S     : ${TIMEOUT_S}"
     echo "  MEMORY_MODE   : ${MEMORY_MODE}"
+    echo "  AGENT_CONFIG  : ${AGENT_CONFIG}"
     echo "  REPORT        : ${REPORT_PATH}"
 }
 
@@ -298,6 +302,7 @@ if [[ "${SKIP_LEMON}" -eq 0 ]]; then
     echo "================================================================"
     set +e
     OUT_DIR="${LEMON_OUT_DIR}" MEMORY_MODE="${MEMORY_MODE}" LOG_LEVEL="${LOG_LEVEL}" \
+        AGENT_CONFIG="${AGENT_CONFIG}" \
         bash scripts/validate_lemon_grasp_multi.sh "${LEMON_RUNS}" \
         2>&1 | tee "${BASE_DIR}/lemon_runner.log"
     lemon_status=${PIPESTATUS[0]}
@@ -319,6 +324,7 @@ if [[ "${SKIP_GENERALIZATION}" -eq 0 ]]; then
         --timeout-s "${TIMEOUT_S}" \
         --run-id "${GEN_RUN_ID}" \
         --log-level "${LOG_LEVEL}" \
+        --agent-config "${AGENT_CONFIG}" \
         2>&1 | tee "${GEN_RUNNER_LOG}"
     gen_status=${PIPESTATUS[0]}
     set -e

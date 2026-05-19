@@ -15,7 +15,9 @@ def test_grasp_baseline_script_records_reproducible_baseline_outputs() -> None:
     assert 'GEN_COUNT="${GEN_COUNT:-10}"' in text
     assert 'GEN_PARALLEL="${GEN_PARALLEL:-4}"' in text
     assert "scripts/validate_lemon_grasp_multi.sh" in text
+    assert 'AGENT_CONFIG="${AGENT_CONFIG:-configs/agent.yaml}"' in text
     assert "eval/run_long_generalization.py" in text
+    assert '--agent-config "${AGENT_CONFIG}"' in text
     assert "summary.csv" in text
     assert "summary.txt" in text
     assert "report.md" in text
@@ -32,6 +34,8 @@ def test_lemon_multi_script_exports_final_grasp_columns() -> None:
     assert script.exists(), "lemon validation script is missing"
     text = script.read_text(encoding="utf-8")
 
+    assert 'AGENT_CONFIG="${AGENT_CONFIG:-configs/agent.yaml}"' in text
+    assert '--agent-config "${AGENT_CONFIG}"' in text
     assert "post_lift_obj_pos" in text
     assert "post_lift_obj_delta_z" in text
     assert "selected_strategy" in text
