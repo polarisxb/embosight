@@ -199,6 +199,8 @@ keys = [
     "failure_mode_by_candidate_source",
     "failure_mode_by_executed_strategy",
     "grasp_policy_usage",
+    "candidate_source_policy_usage",
+    "candidate_source_transition_usage",
     "success_rate_by_object",
     "success_rate_by_profile",
 ]

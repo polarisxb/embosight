@@ -56,6 +56,11 @@ class _GeometryAwareEnv(_FakeEnv):
         return np.array([0.31, -2.99, 0.982], dtype=np.float32)
 
 
+class _TopDownOnlyEnv(_FakeEnv):
+    def is_reachable(self, point, approach):
+        return float(approach[2]) < -0.9
+
+
 def test_grasp_candidate_source_literal_allows_tilted_strategy():
     source_type = get_type_hints(GraspCandidate)["source"]
     assert "strategy_tilted_grasp" in get_args(source_type)
@@ -239,6 +244,138 @@ class TestStrategyDrivenPlan:
         sources = [c.source for c in cands]
         assert "strategy_refuse" not in sources
         assert "geometric_centroid" in sources
+
+    def test_legacy_candidate_source_policy_preserves_vlm_score_ordering(self):
+        planner = GraspPlanner(
+            vlm=MockVLM(['{"grip_norm": [0.5, 0.5]}']),
+            env=_FakeEnv(),
+            llm=None,
+            grasp_policy_config={
+                "mode": "legacy",
+                "enabled_profiles": ["small_round_slippery"],
+            },
+        )
+        h = _hyp("lemon", visible_features="round yellow smooth waxy fruit")
+        h.grasp_strategy = GraspStrategy(
+            strategy="gentle_side",
+            slip_risk="high",
+        )
+
+        cands = planner.plan(h)
+
+        assert [c.source for c in cands] == [
+            "vlm_top_grasp",
+            "strategy_gentle_side",
+            "geometric_centroid",
+        ]
+
+    def test_profiled_small_round_promotes_selected_strategy_before_vlm(self):
+        planner = GraspPlanner(
+            vlm=MockVLM(['{"grip_norm": [0.5, 0.5]}']),
+            env=_FakeEnv(),
+            llm=None,
+            grasp_policy_config={
+                "mode": "profiled",
+                "enabled_profiles": ["small_round_slippery"],
+            },
+        )
+        h = _hyp("lemon", visible_features="round yellow smooth waxy fruit")
+        h.grasp_strategy = GraspStrategy(
+            strategy="gentle_side",
+            slip_risk="high",
+        )
+
+        cands = planner.plan(h)
+
+        assert [c.source for c in cands] == [
+            "strategy_gentle_side",
+            "vlm_top_grasp",
+            "geometric_centroid",
+        ]
+        diag = getattr(cands[0], "_embosight_attempt_diagnostic")
+        assert diag["candidate_source_policy"] == "prefer_selected_strategy_candidate"
+        assert diag["candidate_source_policy_applied"] is True
+        assert diag["legacy_first_candidate_source"] == "vlm_top_grasp"
+        assert diag["final_first_candidate_source"] == "strategy_gentle_side"
+
+    def test_profiled_small_round_keeps_legacy_order_without_strategy_candidate(self):
+        planner = GraspPlanner(
+            vlm=MockVLM(['{"grip_norm": [0.5, 0.5]}']),
+            env=_FakeEnv(),
+            llm=None,
+            grasp_policy_config={
+                "mode": "profiled",
+                "enabled_profiles": ["small_round_slippery"],
+            },
+        )
+        h = _hyp("lemon", visible_features="round yellow smooth waxy fruit")
+        h.grasp_strategy = GraspStrategy(
+            strategy="refuse",
+            slip_risk="high",
+        )
+
+        cands = planner.plan(h)
+
+        assert cands[0].source == "vlm_top_grasp"
+        diag = getattr(cands[0], "_embosight_attempt_diagnostic")
+        assert diag["candidate_source_policy_applied"] is False
+        assert diag["legacy_first_candidate_source"] == "vlm_top_grasp"
+        assert diag["final_first_candidate_source"] == "vlm_top_grasp"
+
+    def test_profiled_small_round_keeps_legacy_order_if_strategy_unreachable(self):
+        planner = GraspPlanner(
+            vlm=MockVLM(['{"grip_norm": [0.5, 0.5]}']),
+            env=_TopDownOnlyEnv(),
+            llm=None,
+            grasp_policy_config={
+                "mode": "profiled",
+                "enabled_profiles": ["small_round_slippery"],
+            },
+        )
+        h = _hyp("lemon", visible_features="round yellow smooth waxy fruit")
+        h.grasp_strategy = GraspStrategy(
+            strategy="gentle_side",
+            slip_risk="high",
+        )
+
+        cands = planner.plan(h)
+
+        assert [c.source for c in cands] == [
+            "vlm_top_grasp",
+            "geometric_centroid",
+        ]
+        diag = getattr(cands[0], "_embosight_attempt_diagnostic")
+        assert diag["candidate_source_policy"] == "prefer_selected_strategy_candidate"
+        assert diag["candidate_source_policy_applied"] is False
+        assert diag["legacy_first_candidate_source"] == "vlm_top_grasp"
+        assert diag["final_first_candidate_source"] == "vlm_top_grasp"
+
+    def test_profiled_non_enabled_profile_keeps_legacy_ordering(self):
+        planner = GraspPlanner(
+            vlm=MockVLM(['{"grip_norm": [0.5, 0.5]}']),
+            env=_FakeEnv(),
+            llm=None,
+            grasp_policy_config={
+                "mode": "profiled",
+                "enabled_profiles": ["thin_flat"],
+            },
+        )
+        h = _hyp("lemon", visible_features="round yellow smooth waxy fruit")
+        h.grasp_strategy = GraspStrategy(
+            strategy="gentle_side",
+            slip_risk="high",
+        )
+
+        cands = planner.plan(h)
+
+        assert [c.source for c in cands] == [
+            "vlm_top_grasp",
+            "strategy_gentle_side",
+            "geometric_centroid",
+        ]
+        diag = getattr(cands[0], "_embosight_attempt_diagnostic")
+        assert diag["candidate_source_policy_applied"] is False
+        assert diag["candidate_source_policy"] == "legacy"
 
 
 class TestBannedStrategies:

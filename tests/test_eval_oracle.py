@@ -139,6 +139,10 @@ def test_oracle_summary_includes_final_grasp_evidence(tmp_path):
                             "grasp_policy_profile": "small_round_slippery",
                             "legacy_depth_margin_m": 0.025,
                             "legacy_squeeze_extra_steps": 4,
+                            "candidate_source_policy": "prefer_selected_strategy_candidate",
+                            "candidate_source_policy_applied": True,
+                            "legacy_first_candidate_source": "vlm_top_grasp",
+                            "final_first_candidate_source": "strategy_top_down",
                         },
                     },
                 },
@@ -174,6 +178,10 @@ def test_oracle_summary_includes_final_grasp_evidence(tmp_path):
     assert data["grasp_policy_profile"] == "small_round_slippery"
     assert data["legacy_depth_margin_m"] == 0.025
     assert data["legacy_squeeze_extra_steps"] == 4
+    assert data["candidate_source_policy"] == "prefer_selected_strategy_candidate"
+    assert data["candidate_source_policy_applied"] is True
+    assert data["legacy_first_candidate_source"] == "vlm_top_grasp"
+    assert data["final_first_candidate_source"] == "strategy_top_down"
     assert data["attempts_count"] == 1
     assert data["post_lift_verified"] is True
 

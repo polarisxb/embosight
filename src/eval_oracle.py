@@ -43,6 +43,10 @@ class OracleSummary:
     grasp_policy_profile: str | None = None
     legacy_depth_margin_m: float | None = None
     legacy_squeeze_extra_steps: int | None = None
+    candidate_source_policy: str | None = None
+    candidate_source_policy_applied: bool | None = None
+    legacy_first_candidate_source: str | None = None
+    final_first_candidate_source: str | None = None
     attempts_count: int = 0
     post_lift_verified: bool | None = None
 
@@ -130,6 +134,18 @@ def summarize_episode(
         ),
         legacy_squeeze_extra_steps=_int_or_none(
             diagnostic.get("legacy_squeeze_extra_steps"),
+        ),
+        candidate_source_policy=_str_or_none(
+            diagnostic.get("candidate_source_policy"),
+        ),
+        candidate_source_policy_applied=_bool_or_none(
+            diagnostic.get("candidate_source_policy_applied"),
+        ),
+        legacy_first_candidate_source=_str_or_none(
+            diagnostic.get("legacy_first_candidate_source"),
+        ),
+        final_first_candidate_source=_str_or_none(
+            diagnostic.get("final_first_candidate_source"),
         ),
         attempts_count=len(grasp_attempts),
         post_lift_verified=_post_lift_verified(

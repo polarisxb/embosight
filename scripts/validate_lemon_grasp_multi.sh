@@ -111,7 +111,7 @@ echo "Agent config: ${AGENT_CONFIG}"
 echo "Output dir: ${OUT_DIR}"
 echo
 
-echo "run,exit_code,success,pre_close_abort,grasp_confirmed,micro_lift_ok,post_lift_verified,no_grasp,object_not_lifted,steps,time,grasp_failure_mode,post_lift_obj_pos,post_lift_obj_delta_z,selected_strategy,executed_strategy,depth_margin_m,squeeze_extra_steps,grasp_profile,grasp_policy_mode,grasp_policy_applied,log" \
+echo "run,exit_code,success,pre_close_abort,grasp_confirmed,micro_lift_ok,post_lift_verified,no_grasp,object_not_lifted,steps,time,grasp_failure_mode,post_lift_obj_pos,post_lift_obj_delta_z,selected_strategy,executed_strategy,depth_margin_m,squeeze_extra_steps,grasp_profile,grasp_policy_mode,grasp_policy_applied,candidate_source_policy,candidate_source_policy_applied,legacy_first_candidate_source,final_first_candidate_source,log" \
     > "${SUMMARY_CSV}"
 
 successes=0
@@ -172,8 +172,12 @@ for run_idx in $(seq 1 "${RUNS}"); do
     grasp_profile="$(extract_json_scalar 'grasp_profile' "${log_path}")"
     grasp_policy_mode="$(extract_json_scalar 'grasp_policy_mode' "${log_path}")"
     grasp_policy_applied="$(extract_json_scalar 'grasp_policy_applied' "${log_path}")"
+    candidate_source_policy="$(extract_json_scalar 'candidate_source_policy' "${log_path}")"
+    candidate_source_policy_applied="$(extract_json_scalar 'candidate_source_policy_applied' "${log_path}")"
+    legacy_first_candidate_source="$(extract_json_scalar 'legacy_first_candidate_source' "${log_path}")"
+    final_first_candidate_source="$(extract_json_scalar 'final_first_candidate_source' "${log_path}")"
 
-    echo "${run_idx},${exit_code},${success},${pre_close_abort},${grasp_confirmed},${micro_lift_ok},${post_lift_verified},${no_grasp},${object_not_lifted},${steps},${time_s},${failure_mode},${post_lift_obj_pos},${post_lift_obj_delta_z},${selected_strategy},${executed_strategy},${depth_margin_m},${squeeze_extra_steps},${grasp_profile},${grasp_policy_mode},${grasp_policy_applied},${log_path}" \
+    echo "${run_idx},${exit_code},${success},${pre_close_abort},${grasp_confirmed},${micro_lift_ok},${post_lift_verified},${no_grasp},${object_not_lifted},${steps},${time_s},${failure_mode},${post_lift_obj_pos},${post_lift_obj_delta_z},${selected_strategy},${executed_strategy},${depth_margin_m},${squeeze_extra_steps},${grasp_profile},${grasp_policy_mode},${grasp_policy_applied},${candidate_source_policy},${candidate_source_policy_applied},${legacy_first_candidate_source},${final_first_candidate_source},${log_path}" \
         >> "${SUMMARY_CSV}"
 
     echo
@@ -191,6 +195,10 @@ for run_idx in $(seq 1 "${RUNS}"); do
     echo "  grasp_profile: ${grasp_profile:-unknown}"
     echo "  grasp_policy_mode: ${grasp_policy_mode:-unknown}"
     echo "  grasp_policy_applied: ${grasp_policy_applied:-unknown}"
+    echo "  candidate_source_policy: ${candidate_source_policy:-unknown}"
+    echo "  candidate_source_policy_applied: ${candidate_source_policy_applied:-unknown}"
+    echo "  legacy_first_candidate_source: ${legacy_first_candidate_source:-unknown}"
+    echo "  final_first_candidate_source: ${final_first_candidate_source:-unknown}"
 
     if [[ "${run_idx}" -lt "${RUNS}" && "${SLEEP_BETWEEN}" != "0" ]]; then
         sleep "${SLEEP_BETWEEN}"

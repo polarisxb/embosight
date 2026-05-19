@@ -165,7 +165,12 @@ def build_agent(
             clip_scorer=clip_scorer,
         ),
         safety_classifier=SafetyClassifier(llm=llm),
-        grasp_planner=GraspPlanner(vlm=vlm, env=env, llm=llm),
+        grasp_planner=GraspPlanner(
+            vlm=vlm,
+            env=env,
+            llm=llm,
+            grasp_policy_config=agent_cfg.get("grasp_policy"),
+        ),
         action_executor=ActionExecutor(
             scene_describer=None,
             grasp_policy_config=agent_cfg.get("grasp_policy"),

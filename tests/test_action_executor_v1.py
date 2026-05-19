@@ -486,6 +486,47 @@ class TestDiagnostic:
         assert "close" in env.calls
         assert "lift" in env.calls
 
+    def test_attempt_preserves_candidate_source_policy_diagnostics(self):
+        from src.action_executor import ActionExecutor
+        from src.grasp_planner import GraspPlanner
+        from src.world_belief import DecomposedTask, GraspStrategy
+        from tests._mocks import MockVLM
+
+        config = {
+            "mode": "profiled",
+            "enabled_profiles": ["small_round_slippery"],
+        }
+        env = FakeEnv()
+        env.is_reachable = lambda point, approach: True
+        env.eye_in_hand_viewpoint = lambda: None
+        env.observe = lambda viewpoint: type("Obs", (), {"image_path": "/dev/null"})()
+        h, _ = _hyp_with_candidate()
+        h.grasp_candidates = []
+        h.label = "lemon"
+        h.visible_features = "round yellow smooth waxy fruit"
+        h.grasp_strategy = GraspStrategy(
+            strategy="gentle_side",
+            slip_risk="high",
+        )
+        planner = GraspPlanner(
+            vlm=MockVLM(['{"grip_norm": [0.5, 0.5]}']),
+            env=env,
+            llm=None,
+            grasp_policy_config=config,
+        )
+        h.grasp_candidates = planner.plan(h, env=env)
+        exe = ActionExecutor(scene_describer=None, grasp_policy_config=config)
+
+        result = exe.act(h, DecomposedTask(primary_target="lemon"), env)
+
+        assert result.success is True
+        diag = result.attempt.diagnostic
+        assert result.attempt.candidate.source == "strategy_gentle_side"
+        assert diag["candidate_source_policy"] == "prefer_selected_strategy_candidate"
+        assert diag["candidate_source_policy_applied"] is True
+        assert diag["legacy_first_candidate_source"] == "vlm_top_grasp"
+        assert diag["final_first_candidate_source"] == "strategy_gentle_side"
+
 
 class TestStructure:
     def test_to_dict_serializable(self):

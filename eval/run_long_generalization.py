@@ -36,6 +36,10 @@ FINAL_GRASP_ORACLE_FIELDS = (
     "grasp_policy_profile",
     "legacy_depth_margin_m",
     "legacy_squeeze_extra_steps",
+    "candidate_source_policy",
+    "candidate_source_policy_applied",
+    "legacy_first_candidate_source",
+    "final_first_candidate_source",
     "attempts_count",
     "post_lift_verified",
 )
@@ -300,6 +304,8 @@ def summarize_results(results: list[dict[str, Any]]) -> dict[str, Any]:
     failure_breakdown: dict[str, int] = {}
     strategy_usage: dict[str, int] = {}
     grasp_policy_usage: dict[str, int] = {}
+    candidate_source_policy_usage: dict[str, int] = {}
+    candidate_source_transition_usage: dict[str, int] = {}
     object_distribution: dict[str, int] = {}
     failed_runs: list[dict[str, Any]] = []
     failure_mode_by_object: dict[str, dict[str, int]] = {}
@@ -336,6 +342,16 @@ def summarize_results(results: list[dict[str, Any]]) -> dict[str, Any]:
         policy_key = _grasp_policy_usage_key(r)
         if policy_key:
             grasp_policy_usage[policy_key] = grasp_policy_usage.get(policy_key, 0) + 1
+        candidate_policy_key = _candidate_source_policy_usage_key(r)
+        if candidate_policy_key:
+            candidate_source_policy_usage[candidate_policy_key] = (
+                candidate_source_policy_usage.get(candidate_policy_key, 0) + 1
+            )
+        transition_key = _candidate_source_transition_key(r)
+        if transition_key:
+            candidate_source_transition_usage[transition_key] = (
+                candidate_source_transition_usage.get(transition_key, 0) + 1
+            )
         if object_name != "unknown":
             object_distribution[object_name] = object_distribution.get(object_name, 0) + 1
 
@@ -357,6 +373,15 @@ def summarize_results(results: list[dict[str, Any]]) -> dict[str, Any]:
         "failure_breakdown": dict(sorted(failure_breakdown.items(), key=lambda x: (-x[1], x[0]))),
         "strategy_usage": dict(sorted(strategy_usage.items(), key=lambda x: (-x[1], x[0]))),
         "grasp_policy_usage": dict(sorted(grasp_policy_usage.items(), key=lambda x: (-x[1], x[0]))),
+        "candidate_source_policy_usage": dict(
+            sorted(candidate_source_policy_usage.items(), key=lambda x: (-x[1], x[0])),
+        ),
+        "candidate_source_transition_usage": dict(
+            sorted(
+                candidate_source_transition_usage.items(),
+                key=lambda x: (-x[1], x[0]),
+            ),
+        ),
         "object_distribution": dict(sorted(object_distribution.items(), key=lambda x: (-x[1], x[0]))),
         "failure_mode_by_object": _sorted_nested_counts(failure_mode_by_object),
         "failure_mode_by_candidate_source": _sorted_nested_counts(failure_mode_by_candidate_source),
@@ -389,6 +414,26 @@ def _grasp_policy_usage_key(result: dict[str, Any]) -> str | None:
     profile = _bucket_name(result.get("grasp_policy_profile"))
     applied = "applied" if bool(result.get("grasp_policy_applied")) else "not_applied"
     return f"{mode}:{profile}:{applied}"
+
+
+def _candidate_source_policy_usage_key(result: dict[str, Any]) -> str | None:
+    policy = _bucket_name(result.get("candidate_source_policy"))
+    if policy == "unknown":
+        return None
+    applied = (
+        "applied"
+        if bool(result.get("candidate_source_policy_applied"))
+        else "not_applied"
+    )
+    return f"{policy}:{applied}"
+
+
+def _candidate_source_transition_key(result: dict[str, Any]) -> str | None:
+    legacy = _bucket_name(result.get("legacy_first_candidate_source"))
+    final = _bucket_name(result.get("final_first_candidate_source"))
+    if legacy == "unknown" and final == "unknown":
+        return None
+    return f"{legacy}->{final}"
 
 
 def _failure_reason(result: dict[str, Any]) -> str:
@@ -496,6 +541,14 @@ def format_summary_text(summary: dict[str, Any]) -> str:
     lines.append("--- Grasp Policy Usage ---")
     for policy, count in summary.get("grasp_policy_usage", {}).items():
         lines.append(f"  {policy}: {count}")
+    lines.append("")
+    lines.append("--- Candidate Source Policy Usage ---")
+    for policy, count in summary.get("candidate_source_policy_usage", {}).items():
+        lines.append(f"  {policy}: {count}")
+    lines.append("")
+    lines.append("--- Candidate Source Transition Usage ---")
+    for transition, count in summary.get("candidate_source_transition_usage", {}).items():
+        lines.append(f"  {transition}: {count}")
     lines.append("")
     lines.append("--- Object Distribution ---")
     for obj, count in summary.get("object_distribution", {}).items():

@@ -34,10 +34,12 @@ class GraspPlanner:
 
     def __init__(self, vlm, env, llm=None,
                  prompt_path: str = _DEFAULT_PROMPT,
-                 strategy_prompt_path: str = _DEFAULT_STRATEGY_PROMPT):
+                 strategy_prompt_path: str = _DEFAULT_STRATEGY_PROMPT,
+                 grasp_policy_config: dict | None = None):
         self.vlm = vlm
         self.env = env
         self.llm = llm
+        self.grasp_policy_config = dict(grasp_policy_config or {})
         p = Path(prompt_path)
         self._template = p.read_text(encoding="utf-8") if p.exists() else None
         sp = Path(strategy_prompt_path)
@@ -443,7 +445,81 @@ class GraspPlanner:
             if env.is_reachable(c.point_3d, c.approach_dir)
         ]
         cands.sort(key=lambda c: c.score, reverse=True)
-        return cands
+        return self._apply_candidate_source_policy(hyp, cands, env)
+
+    def _apply_candidate_source_policy(
+        self,
+        hyp: Hypothesis,
+        cands: list[GraspCandidate],
+        env,
+    ) -> list[GraspCandidate]:
+        from src.grasp_policy import (
+            apply_candidate_source_policy,
+            merge_candidate_attempt_diagnostic,
+        )
+
+        profile = self._classify_profile_for_policy(hyp, cands, env)
+        selected_strategy = (
+            hyp.grasp_strategy.strategy
+            if hyp.grasp_strategy is not None
+            else None
+        )
+        decision = apply_candidate_source_policy(
+            config=self.grasp_policy_config,
+            grasp_profile=profile,
+            selected_strategy=selected_strategy,
+            candidates=cands,
+        )
+        diagnostic = decision.diagnostic()
+        for candidate in decision.candidates:
+            merge_candidate_attempt_diagnostic(candidate, diagnostic)
+        return decision.candidates
+
+    def _classify_profile_for_policy(
+        self,
+        hyp: Hypothesis,
+        cands: list[GraspCandidate],
+        env,
+    ) -> str:
+        try:
+            from src.grasp_profile import classify_grasp_profile
+
+            selected_source = (
+                f"strategy_{hyp.grasp_strategy.strategy}"
+                if hyp.grasp_strategy is not None
+                else None
+            )
+            candidate = next(
+                (c for c in cands if c.source == selected_source),
+                cands[0] if cands else None,
+            )
+            object_size = self._object_size_m(hyp, env)
+            result = classify_grasp_profile(
+                hyp,
+                candidate,
+                object_size_m=object_size,
+            )
+            return str(result.profile.value)
+        except Exception as e:
+            logger.debug("[grasp_planner] profile policy classification skipped: %s", e)
+            return "unknown"
+
+    def _object_size_m(self, hyp: Hypothesis, env) -> np.ndarray | None:
+        body = self._resolve_target_body(hyp, env)
+        if body is None or not hasattr(env, "_get_body_aabb"):
+            return None
+        try:
+            aabb = env._get_body_aabb(body)
+            if aabb is None:
+                return None
+            lo, hi = aabb
+            return (
+                np.asarray(hi, dtype=np.float32)
+                - np.asarray(lo, dtype=np.float32)
+            )
+        except Exception as e:
+            logger.debug("[grasp_planner] object size lookup failed: %s", e)
+            return None
 
     def regenerate_after_failure(
         self, hyp: Hypothesis, last_attempt: GraspAttempt,

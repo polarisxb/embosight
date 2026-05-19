@@ -112,10 +112,12 @@ def test_create_memory_manager_uses_custom_dir(tmp_path):
     assert mm.memory_dir == tmp_path
 
 
-def test_build_agent_forwards_grasp_policy_config_to_action_executor():
+def test_build_agent_forwards_grasp_policy_config_to_planner_and_executor():
     module = _load_module()
     import inspect
 
     source = inspect.getsource(module.build_agent)
 
-    assert "grasp_policy_config=agent_cfg.get(\"grasp_policy\")" in source
+    assert "grasp_planner=GraspPlanner(" in source
+    assert "action_executor=ActionExecutor(" in source
+    assert source.count('grasp_policy_config=agent_cfg.get("grasp_policy")') == 2

@@ -27,6 +27,8 @@ def test_grasp_baseline_script_records_reproducible_baseline_outputs() -> None:
     assert "failure_mode_by_executed_strategy" in text
     assert "success_rate_by_profile" in text
     assert "grasp_policy_usage" in text
+    assert "candidate_source_policy_usage" in text
+    assert "candidate_source_transition_usage" in text
 
 
 def test_lemon_multi_script_exports_final_grasp_columns() -> None:
@@ -45,3 +47,7 @@ def test_lemon_multi_script_exports_final_grasp_columns() -> None:
     assert "grasp_profile" in text
     assert "grasp_policy_mode" in text
     assert "grasp_policy_applied" in text
+    assert "candidate_source_policy" in text
+    assert "candidate_source_policy_applied" in text
+    assert "legacy_first_candidate_source" in text
+    assert "final_first_candidate_source" in text

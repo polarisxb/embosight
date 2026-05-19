@@ -27,3 +27,13 @@ def test_run_agent_argparse_exists():
     assert "--config" in src
     assert "--agent-config" in src
     assert "--user-mode" in src
+
+
+def test_run_agent_forwards_grasp_policy_config_to_planner_and_executor():
+    src = (Path(__file__).parent.parent / "scripts" / "run_agent.py").read_text(
+        encoding="utf-8",
+    )
+
+    assert "grasp_planner=GraspPlanner(" in src
+    assert "action_executor=ActionExecutor(" in src
+    assert src.count('grasp_policy_config=agent_cfg.get("grasp_policy")') == 2

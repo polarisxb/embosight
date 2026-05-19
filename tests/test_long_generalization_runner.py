@@ -243,6 +243,10 @@ def test_summarize_results_counts_grasp_policy_usage():
             "grasp_policy_mode": "legacy",
             "grasp_policy_applied": False,
             "grasp_policy_profile": "small_round_slippery",
+            "candidate_source_policy": "legacy",
+            "candidate_source_policy_applied": False,
+            "legacy_first_candidate_source": "vlm_top_grasp",
+            "final_first_candidate_source": "vlm_top_grasp",
             "steps": 4,
             "time_s": 8.0,
         },
@@ -254,6 +258,10 @@ def test_summarize_results_counts_grasp_policy_usage():
             "grasp_policy_mode": "profiled",
             "grasp_policy_applied": True,
             "grasp_policy_profile": "small_round_slippery",
+            "candidate_source_policy": "prefer_selected_strategy_candidate",
+            "candidate_source_policy_applied": True,
+            "legacy_first_candidate_source": "vlm_top_grasp",
+            "final_first_candidate_source": "strategy_gentle_side",
             "steps": 4,
             "time_s": 8.5,
         },
@@ -262,6 +270,14 @@ def test_summarize_results_counts_grasp_policy_usage():
     assert summary["grasp_policy_usage"] == {
         "legacy:small_round_slippery:not_applied": 1,
         "profiled:small_round_slippery:applied": 1,
+    }
+    assert summary["candidate_source_policy_usage"] == {
+        "legacy:not_applied": 1,
+        "prefer_selected_strategy_candidate:applied": 1,
+    }
+    assert summary["candidate_source_transition_usage"] == {
+        "vlm_top_grasp->strategy_gentle_side": 1,
+        "vlm_top_grasp->vlm_top_grasp": 1,
     }
 
 
@@ -339,6 +355,10 @@ time    : 12.3s
   "grasp_policy_profile": "small_round_slippery",
   "legacy_depth_margin_m": 0.025,
   "legacy_squeeze_extra_steps": 4,
+  "candidate_source_policy": "prefer_selected_strategy_candidate",
+  "candidate_source_policy_applied": true,
+  "legacy_first_candidate_source": "vlm_top_grasp",
+  "final_first_candidate_source": "strategy_top_down",
   "action_sequence": ["observe", "classify_safety", "plan_grasp_candidates", "grasp"],
   "selected_target_label": "lemon",
   "actual_object": "lemon"
@@ -367,6 +387,10 @@ episode: logs/episodes/episode_1.json
     assert result["grasp_policy_profile"] == "small_round_slippery"
     assert result["legacy_depth_margin_m"] == 0.025
     assert result["legacy_squeeze_extra_steps"] == 4
+    assert result["candidate_source_policy"] == "prefer_selected_strategy_candidate"
+    assert result["candidate_source_policy_applied"] is True
+    assert result["legacy_first_candidate_source"] == "vlm_top_grasp"
+    assert result["final_first_candidate_source"] == "strategy_top_down"
 
 
 def test_prepare_memory_dir_writes_empty_index_and_domains(tmp_path):
@@ -439,6 +463,12 @@ def test_format_summary_text():
         "failure_breakdown": {"timeout": 1, "MAX_STEPS reached": 1},
         "strategy_usage": {"strategy_top_down": 2},
         "grasp_policy_usage": {"profiled:small_round_slippery:applied": 1},
+        "candidate_source_policy_usage": {
+            "prefer_selected_strategy_candidate:applied": 1,
+        },
+        "candidate_source_transition_usage": {
+            "vlm_top_grasp->strategy_gentle_side": 1,
+        },
         "object_distribution": {"apple": 1, "wine": 1},
         "slowest_runs": [], "failed_runs": [],
     }
@@ -449,6 +479,8 @@ def test_format_summary_text():
     assert "timeout" in text
     assert "strategy_top_down" in text
     assert "profiled:small_round_slippery:applied" in text
+    assert "prefer_selected_strategy_candidate:applied" in text
+    assert "vlm_top_grasp->strategy_gentle_side" in text
 
 
 def test_format_summary_text_includes_diagnostic_cross_tabs():
