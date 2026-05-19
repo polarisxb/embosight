@@ -1305,6 +1305,22 @@ class TestZStallLateralReAlign:
         np.testing.assert_allclose(c.point_3d[:2], env.obj_pos[:2])
         np.testing.assert_allclose(h.position_3d, env.obj_pos)
 
+    def test_z_stall_nudge_direction_uses_live_object_xy(self):
+        from src.action_executor import ActionExecutor
+        from src.world_belief import DecomposedTask
+        env = _ZStallLiveObjectRefreshEnv()
+        exe = ActionExecutor(scene_describer=None)
+        h, _ = _hyp_with_candidate()
+
+        exe.act(h, DecomposedTask(primary_target="apple"), env)
+
+        assert env.nudge_xy_calls, "expected z-stall base nudge"
+        base_xy = np.array([1.0, 0.0], dtype=np.float32)
+        live_direction = env.obj_pos[:2] - base_xy
+        live_norm = float(np.linalg.norm(live_direction))
+        expected = live_direction / live_norm * min(0.08, live_norm * 0.3)
+        np.testing.assert_allclose(env.nudge_xy_calls[0], expected, atol=1e-5)
+
 
 class TestZStallRecoveryUsesBaseNudge:
     def test_z_stall_recovery_uses_nudge_base_world_xy(self):

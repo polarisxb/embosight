@@ -57,6 +57,7 @@ class GraspCandidate:
         "axis_aligned_side", "user_corrected",
         "strategy_top_down", "strategy_gentle_side",
         "strategy_handle_grasp", "strategy_scoop_under",
+        "strategy_tilted_grasp",
     ] = "geometric_centroid"
 
 

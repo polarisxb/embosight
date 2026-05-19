@@ -1,11 +1,8 @@
 """Tests for dual-store episodic memory."""
 from __future__ import annotations
 
-import shutil
 import tempfile
 from pathlib import Path
-
-import pytest
 
 
 class TestMemoryEntry:
@@ -633,6 +630,14 @@ class TestCodeVersionInvalidation:
         # ban logic disabled -- previous bugs shouldn't poison fresh runs
         assert mm.is_strategy_banned("wooden_spoon", "top_down") is False
         assert mm.get_banned_strategies("wooden_spoon") == set()
+
+    def test_v62_memory_is_stale_after_executed_strategy_attribution_change(self):
+        from src.memory_manager import MemoryManager
+        d = self._make_dir_with_code_version("v6.2")
+        mm = MemoryManager(memory_dir=d)
+        assert mm.is_grasp_memory_stale() is True
+        assert mm.is_strategy_banned("wooden_spoon", "top_down") is False
+        assert mm.get_proven_strategy("wooden_spoon") is None
 
     def test_save_resets_stale_flag(self):
         """Saving with current code stamps the file with current version,

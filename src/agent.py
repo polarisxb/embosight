@@ -616,23 +616,6 @@ class EmboSightAgent:
             hyp = action.target_hypothesis
             self._annotate_grasp_attempt(hyp, result.attempt)
             action.target_hypothesis.grasp_attempts.append(result.attempt)
-            memory_context, memory_lesson = self._grasp_memory_payload(
-                hyp, result.attempt,
-            )
-            if result.attempt.failure_mode == "success":
-                self.memory.record_event(MemoryEntry(
-                    step=len(belief.action_history),
-                    domain="grasp", event="strategy_succeeded",
-                    context=memory_context,
-                    lesson=memory_lesson,
-                ))
-            else:
-                self.memory.record_event(MemoryEntry(
-                    step=len(belief.action_history),
-                    domain="grasp", event="strategy_failed",
-                    context=memory_context,
-                    lesson=memory_lesson,
-                ))
             if result.attempt.failure_mode == "success":
                 try:
                     verify_ok, conf = self.executor.verify_grasp(
@@ -664,7 +647,31 @@ class EmboSightAgent:
                         h.label_entropy = _shannon([p for _, p in new_alts])
                     h.label_entropy = max(h.label_entropy, 0.6)
                     h.times_re_observed += 1
-                    self.executor.release_and_retreat(env)
+                    try:
+                        self.executor.release_and_retreat(env)
+                    except Exception as e:
+                        logger.warning(
+                            "[agent] release_and_retreat after "
+                            "verify_mismatch failed: %s",
+                            e,
+                        )
+            memory_context, memory_lesson = self._grasp_memory_payload(
+                hyp, result.attempt,
+            )
+            if result.attempt.failure_mode == "success":
+                self.memory.record_event(MemoryEntry(
+                    step=len(belief.action_history),
+                    domain="grasp", event="strategy_succeeded",
+                    context=memory_context,
+                    lesson=memory_lesson,
+                ))
+            else:
+                self.memory.record_event(MemoryEntry(
+                    step=len(belief.action_history),
+                    domain="grasp", event="strategy_failed",
+                    context=memory_context,
+                    lesson=memory_lesson,
+                ))
             belief.evidence.append(Evidence(
                 source="grasp_attempt", timestamp=time.time(),
                 raw_payload=result.to_dict(),

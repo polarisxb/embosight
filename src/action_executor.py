@@ -212,6 +212,9 @@ class ActionExecutor:
                     "[act] z-stall gap=%.3fm, repositioning base closer",
                     gap,
                 )
+                self._refresh_candidate_xy_from_live_object(
+                    target, candidate, env, stage="pre_z_stall_nudge",
+                )
                 obj_xy = candidate.point_3d[:2].astype(np.float32)
                 # 优先用真实 base XY (绕开 anchor (10,10) 限制).
                 # get_base_pose() 返回 mount anchor 而非真实 mobile base 位置,

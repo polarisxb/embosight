@@ -14,7 +14,7 @@ Design: docs/superpowers/specs/2026-05-11-dual-store-memory-design.md
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -28,7 +28,9 @@ logger = logging.getLogger(__name__)
 #       "ik_unreachable" failures were mostly base-nav stalls, not real IK
 #       limits; retiring stale entries forces fast-path to re-learn from
 #       clean post-navigate data.
-GRASP_CODE_VERSION = "v6.2"
+# v6.3: grasp memory records executed_strategy separately from selected_strategy,
+#       so v6.2 attribution data is stale.
+GRASP_CODE_VERSION = "v6.3"
 GRASP_SCHEMA_VERSION = 2
 
 # Failure reason taxonomy (used by ban logic + analytics).

@@ -1,9 +1,11 @@
 """Tests for LLM-driven grasp strategy selection."""
 from __future__ import annotations
 
+from typing import get_args, get_type_hints
+
 import numpy as np
 
-from src.world_belief import GraspStrategy, Hypothesis
+from src.world_belief import GraspCandidate, GraspStrategy, Hypothesis
 from src.grasp_planner import GraspPlanner
 from tests._mocks import MockLLM, MockVLM
 
@@ -52,6 +54,11 @@ class _GeometryAwareEnv(_FakeEnv):
             tuple(np.asarray(fallback_pos, dtype=np.float32).tolist()),
         ))
         return np.array([0.31, -2.99, 0.982], dtype=np.float32)
+
+
+def test_grasp_candidate_source_literal_allows_tilted_strategy():
+    source_type = get_type_hints(GraspCandidate)["source"]
+    assert "strategy_tilted_grasp" in get_args(source_type)
 
 
 class TestSelectStrategy:

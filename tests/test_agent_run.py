@@ -9,6 +9,14 @@ import json
 import numpy as np
 import pytest
 
+from src.world_belief import (
+    Action,
+    DecomposedTask,
+    GraspCandidate,
+    GraspStrategy,
+    Hypothesis,
+    WorldBelief,
+)
 from tests._mocks import MockLLM, MockVLM
 
 
@@ -274,6 +282,110 @@ class TestVerifyMismatchFlow:
         n_mismatch = sum(1 for a in attempts if a.failure_mode == "verify_mismatch")
         assert env._release_call_count >= n_mismatch, \
             f"release_and_retreat 调用 {env._release_call_count} < verify_mismatch {n_mismatch}"
+
+    def test_verify_mismatch_records_failed_memory_not_success(self, tmp_image):
+        decomp = json.dumps({"primary_target": "apple", "constraints": []})
+        vlm_resp = json.dumps({"objects": [
+            {"bbox_2d": [50, 50, 100, 100], "label": "apple",
+             "alternatives": [["apple", 0.95], ["other", 0.05]],
+             "confidence": 0.9, "visible_features": "red round"},
+        ]})
+        safety = json.dumps({"dist": {"safe": 0.98, "fragile": 0.02}})
+        agent, env = self._make_agent_with_failing_verify(
+            decomp, vlm_resp, safety, tmp_image,
+        )
+        candidate = GraspCandidate(
+            point_3d=np.array([0.5, 0.0, 0.9], dtype=np.float32),
+            approach_dir=np.array([0.0, 0.0, -1.0], dtype=np.float32),
+            finger_width_m=0.04,
+            score=1.0,
+            source="strategy_top_down",
+        )
+        hyp = Hypothesis(
+            object_id="apple_main",
+            label="apple",
+            label_alternatives=[("apple", 0.95), ("other", 0.05)],
+            label_entropy=0.1,
+            position_3d=np.array([0.5, 0.0, 0.9], dtype=np.float32),
+            position_std_m=0.01,
+            grasp_strategy=GraspStrategy(strategy="top_down"),
+            grasp_candidates=[candidate],
+        )
+        belief = WorldBelief(
+            user_query="拿苹果",
+            decomposed=DecomposedTask(primary_target="apple"),
+            hypotheses=[hyp],
+        )
+
+        agent._execute_action(
+            Action(kind="grasp", target_hypothesis=hyp), env, belief,
+        )
+
+        grasp_events = [
+            e for e in agent.memory.working_memory if e.domain == "grasp"
+        ]
+        assert len(grasp_events) == 1
+        assert grasp_events[0].event == "strategy_failed"
+        assert grasp_events[0].context.get("failure") == "verify_mismatch"
+
+    def test_verify_mismatch_records_memory_even_if_retreat_fails(
+        self, tmp_image,
+    ):
+        decomp = json.dumps({"primary_target": "apple", "constraints": []})
+        vlm_resp = json.dumps({"objects": [
+            {"bbox_2d": [50, 50, 100, 100], "label": "apple",
+             "alternatives": [["apple", 0.95], ["other", 0.05]],
+             "confidence": 0.9, "visible_features": "red round"},
+        ]})
+        safety = json.dumps({"dist": {"safe": 0.98, "fragile": 0.02}})
+        agent, env = self._make_agent_with_failing_verify(
+            decomp, vlm_resp, safety, tmp_image,
+        )
+
+        def fail_release(e, retreat_height_m=0.10):
+            env._release_call_count += 1
+            raise RuntimeError("retreat failed")
+
+        agent.executor.release_and_retreat = fail_release
+        candidate = GraspCandidate(
+            point_3d=np.array([0.5, 0.0, 0.9], dtype=np.float32),
+            approach_dir=np.array([0.0, 0.0, -1.0], dtype=np.float32),
+            finger_width_m=0.04,
+            score=1.0,
+            source="strategy_top_down",
+        )
+        hyp = Hypothesis(
+            object_id="apple_main",
+            label="apple",
+            label_alternatives=[("apple", 0.95), ("other", 0.05)],
+            label_entropy=0.1,
+            position_3d=np.array([0.5, 0.0, 0.9], dtype=np.float32),
+            position_std_m=0.01,
+            grasp_strategy=GraspStrategy(strategy="top_down"),
+            grasp_candidates=[candidate],
+        )
+        belief = WorldBelief(
+            user_query="pick up the apple",
+            decomposed=DecomposedTask(primary_target="apple"),
+            hypotheses=[hyp],
+        )
+
+        agent._execute_action(
+            Action(kind="grasp", target_hypothesis=hyp), env, belief,
+        )
+
+        grasp_events = [
+            e for e in agent.memory.working_memory if e.domain == "grasp"
+        ]
+        assert env._release_call_count == 1
+        assert len(grasp_events) == 1
+        assert grasp_events[0].event == "strategy_failed"
+        assert grasp_events[0].context.get("failure") == "verify_mismatch"
+        assert any(
+            ev.source == "grasp_attempt"
+            and ev.raw_payload["attempt"]["failure_mode"] == "verify_mismatch"
+            for ev in belief.evidence
+        )
 
     def test_verify_mismatch_raises_label_entropy(self, tmp_image):
         """verify_mismatch 后 label_entropy 必须 ≥ 0.6 (触发下一轮 zoom_in)。"""
