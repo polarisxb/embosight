@@ -90,6 +90,103 @@ def test_summarize_results_counts_failures_strategies_objects_and_slowest():
     assert summary["slowest_runs"][0]["scenario_id"] == "random_seed_103"
 
 
+def test_summarize_results_uses_selected_target_for_object_cross_tabs():
+    module = _load_module()
+    results = [
+        {
+            "scenario_id": "fixed_lemon_001",
+            "success": True,
+            "failure_reason": None,
+            "grasp_failure_mode": None,
+            "actual_object": "tupperware",
+            "selected_target_label": "lemon",
+            "grasp_profile": "small_round_slippery",
+            "steps": 4,
+            "time_s": 115.0,
+        },
+    ]
+
+    summary = module.summarize_results(results)
+
+    assert summary["object_distribution"] == {"lemon": 1}
+    assert summary["success_rate_by_object"]["lemon"]["success_rate"] == 1.0
+    assert "tupperware" not in summary["success_rate_by_object"]
+
+
+def test_summarize_results_classifies_max_steps_action_loops():
+    module = _load_module()
+    results = [
+        {
+            "scenario_id": "random_seed_14",
+            "success": False,
+            "failure_reason": "MAX_STEPS reached",
+            "grasp_failure_mode": None,
+            "actual_object": "juice",
+            "selected_target_label": "juice",
+            "grasp_strategy": None,
+            "executed_strategy": None,
+            "action_sequence": [
+                "observe",
+                "observe",
+                "ask_user",
+                "ask_user",
+                "ask_user",
+            ],
+            "steps": 13,
+            "time_s": 50.0,
+        },
+        {
+            "scenario_id": "random_seed_16",
+            "success": False,
+            "failure_reason": "MAX_STEPS reached",
+            "grasp_failure_mode": None,
+            "actual_object": "coffee_cup",
+            "selected_target_label": "coffee_cup",
+            "grasp_strategy": None,
+            "executed_strategy": None,
+            "action_sequence": [
+                "observe",
+                "classify_safety",
+                "re_observe",
+                "classify_safety",
+                "classify_safety",
+            ],
+            "steps": 13,
+            "time_s": 55.0,
+        },
+        {
+            "scenario_id": "random_seed_23",
+            "success": False,
+            "failure_reason": "MAX_STEPS reached",
+            "grasp_failure_mode": None,
+            "actual_object": "kebab_skewer",
+            "selected_target_label": "kebab_skewer",
+            "grasp_strategy": None,
+            "executed_strategy": None,
+            "action_sequence": [
+                "observe",
+                "plan_grasp_candidates",
+                "re_observe",
+                "observe",
+                "re_observe",
+            ],
+            "steps": 13,
+            "time_s": 60.0,
+        },
+    ]
+
+    summary = module.summarize_results(results)
+
+    assert summary["failure_breakdown"] == {
+        "clarification_loop": 1,
+        "planning_loop": 1,
+        "safety_loop": 1,
+    }
+    assert summary["failure_mode_by_object"]["juice"]["clarification_loop"] == 1
+    assert summary["failure_mode_by_object"]["coffee_cup"]["safety_loop"] == 1
+    assert summary["failure_mode_by_object"]["kebab_skewer"]["planning_loop"] == 1
+
+
 def test_summarize_results_builds_diagnostic_cross_tabs():
     module = _load_module()
     summary = module.summarize_results([
@@ -152,6 +249,7 @@ time    : 12.3s
   "grasp_failure_mode": "success",
   "grasp_candidate_source": "strategy_top_down",
   "action_sequence": ["observe", "classify_safety", "plan_grasp_candidates", "grasp"],
+  "selected_target_label": "apple",
   "actual_object": "apple"
 }
 episode: logs/episodes/episode_1.json
@@ -177,6 +275,7 @@ episode: logs/episodes/episode_1.json
         "observe", "classify_safety", "plan_grasp_candidates", "grasp",
     ]
     assert result["actual_object"] == "apple"
+    assert result["selected_target_label"] == "apple"
 
 
 def test_parse_run_fixed_output_preserves_final_grasp_oracle_fields():
@@ -203,6 +302,7 @@ time    : 12.3s
   "squeeze_extra_steps": 18,
   "grasp_profile": "small_round_slippery",
   "action_sequence": ["observe", "classify_safety", "plan_grasp_candidates", "grasp"],
+  "selected_target_label": "lemon",
   "actual_object": "lemon"
 }
 episode: logs/episodes/episode_1.json

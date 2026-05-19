@@ -35,6 +35,10 @@ FINAL_GRASP_ORACLE_FIELDS = (
     "post_lift_verified",
 )
 
+ORACLE_DIAGNOSTIC_FIELDS = (
+    "selected_target_label",
+)
+
 
 def generate_seed_scenarios(seed_start: int, count: int) -> list[dict[str, Any]]:
     scenarios: list[dict[str, Any]] = []
@@ -100,6 +104,8 @@ def parse_run_fixed_output(
         "speech": None,
         "actual_object": None,
     }
+    for key in ORACLE_DIAGNOSTIC_FIELDS:
+        result[key] = None
     for key in FINAL_GRASP_ORACLE_FIELDS:
         result[key] = None
 
@@ -119,6 +125,8 @@ def parse_run_fixed_output(
                 result["grasp_strategy"] = oracle.get("grasp_candidate_source")
                 result["action_sequence"] = oracle.get("action_sequence", [])
                 result["actual_object"] = oracle.get("actual_object")
+                for key in ORACLE_DIAGNOSTIC_FIELDS:
+                    result[key] = oracle.get(key)
                 for key in FINAL_GRASP_ORACLE_FIELDS:
                     result[key] = oracle.get(key)
 
@@ -245,6 +253,8 @@ def run_one_seed_subprocess(
             "speech": None,
             "actual_object": None,
         }
+        for key in ORACLE_DIAGNOSTIC_FIELDS:
+            result[key] = None
         for key in FINAL_GRASP_ORACLE_FIELDS:
             result[key] = None
     except Exception as e:
@@ -263,6 +273,8 @@ def run_one_seed_subprocess(
             "speech": None,
             "actual_object": None,
         }
+        for key in ORACLE_DIAGNOSTIC_FIELDS:
+            result[key] = None
         for key in FINAL_GRASP_ORACLE_FIELDS:
             result[key] = None
 
@@ -292,15 +304,15 @@ def summarize_results(results: list[dict[str, Any]]) -> dict[str, Any]:
     success_by_profile: dict[str, dict[str, int]] = {}
 
     for r in results:
-        actual_object = _bucket_name(r.get("actual_object"))
+        object_name = _summary_object_name(r)
         profile = _bucket_name(r.get("grasp_profile"))
-        _add_success_bucket(success_by_object, actual_object, bool(r.get("success")))
+        _add_success_bucket(success_by_object, object_name, bool(r.get("success")))
         _add_success_bucket(success_by_profile, profile, bool(r.get("success")))
         if not r.get("success"):
             reason = _failure_reason(r)
             failure_breakdown[str(reason)] = failure_breakdown.get(str(reason), 0) + 1
             failed_runs.append(r)
-            _add_nested_count(failure_mode_by_object, actual_object, str(reason))
+            _add_nested_count(failure_mode_by_object, object_name, str(reason))
             _add_nested_count(
                 failure_mode_by_candidate_source,
                 _bucket_name(r.get("grasp_strategy")),
@@ -315,8 +327,8 @@ def summarize_results(results: list[dict[str, Any]]) -> dict[str, Any]:
         strategy = r.get("grasp_strategy")
         if strategy:
             strategy_usage[str(strategy)] = strategy_usage.get(str(strategy), 0) + 1
-        if r.get("actual_object"):
-            object_distribution[str(actual_object)] = object_distribution.get(str(actual_object), 0) + 1
+        if object_name != "unknown":
+            object_distribution[object_name] = object_distribution.get(object_name, 0) + 1
 
     slowest_runs = sorted(
         results,
@@ -352,12 +364,42 @@ def _bucket_name(value: Any) -> str:
     return text if text else "unknown"
 
 
-def _failure_reason(result: dict[str, Any]) -> str:
+def _summary_object_name(result: dict[str, Any]) -> str:
     return _bucket_name(
+        result.get("selected_target_label")
+        or result.get("target_object")
+        or result.get("actual_object"),
+    )
+
+
+def _failure_reason(result: dict[str, Any]) -> str:
+    reason = _bucket_name(
         result.get("grasp_failure_mode")
         or result.get("failure_reason")
         or result.get("error"),
     )
+    if reason == "MAX_STEPS reached" and result.get("action_sequence"):
+        return _max_steps_loop_reason(result.get("action_sequence"))
+    return reason
+
+
+def _max_steps_loop_reason(action_sequence: Any) -> str:
+    if not isinstance(action_sequence, list):
+        return "planning_loop"
+
+    actions = [str(action) for action in action_sequence]
+    if _dominant_or_terminal_action(actions, "ask_user"):
+        return "clarification_loop"
+    if _dominant_or_terminal_action(actions, "classify_safety"):
+        return "safety_loop"
+    return "planning_loop"
+
+
+def _dominant_or_terminal_action(actions: list[str], action_name: str) -> bool:
+    if not actions:
+        return False
+    count = actions.count(action_name)
+    return count >= 3 and (actions[-1] == action_name or count >= len(actions) / 2)
 
 
 def _add_nested_count(
@@ -621,6 +663,8 @@ def main(argv: list[str] | None = None) -> int:
                         "speech": None,
                         "actual_object": None,
                     }
+                    for key in ORACLE_DIAGNOSTIC_FIELDS:
+                        result[key] = None
                     for key in FINAL_GRASP_ORACLE_FIELDS:
                         result[key] = None
                 append_jsonl(results_path, result)
