@@ -221,9 +221,8 @@ class GraspPlanner:
         DeliGrasp-inspired heuristic adapted for SimpleGripController (position
         gripper, not force gripper). Since we cannot command grip force directly,
         more squeeze steps = deeper position closure = greater elastic normal
-        force. Round/slippery/heavy objects also need a deeper descent margin
-        to grip below the equator (avoid "squeeze-pop" where the gripper
-        squirts a sphere upward).
+        force. For round/slippery top-down grasps, keep the first descent
+        shallow so the fingers close before pushing the object laterally.
 
         Args:
             strategy: chosen grasp strategy
@@ -252,14 +251,17 @@ class GraspPlanner:
 
         squeeze_extra = max(0, min(30, mass_steps + risk_steps))
 
-        # Depth margin: scoop_under and gentle_side keep their strategy default;
-        # top_down / tilted_grasp / handle_grasp scale with slip_risk.
+        # Depth margin: scoop_under and gentle_side keep their strategy default.
+        # High-slip top_down / tilted grasps use a shallow first close; pushing
+        # deeper below the center was moving the lemon before the gripper closed.
         if strategy in {"scoop_under", "gentle_side"}:
             depth_margin_m = float(
                 GraspPlanner._STRATEGY_PARAMS.get(strategy, {}).get(
                     "depth_margin", 0.015,
                 )
             )
+        elif strategy in {"top_down", "tilted_grasp"} and risk >= 2:
+            depth_margin_m = 0.010
         else:
             base = 0.015  # default top_down margin
             risk_bonus = risk * 0.005  # low→0, medium→5mm, high→10mm

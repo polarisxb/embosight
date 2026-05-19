@@ -114,9 +114,10 @@ class TestAdaptiveForceParams:
         )
         # mass 100g → 2 steps; slip high → 16 steps. Total 18.
         assert squeeze == 18, f"expected 18 squeeze for lemon, got {squeeze}"
-        # base 0.015 + risk*0.005 = 0.025
-        assert abs(margin - 0.025) < 1e-6, (
-            f"expected 0.025m margin for high slip, got {margin}"
+        # Round/slippery objects should be closed shallowly instead of
+        # pushed below center on the first attempt.
+        assert abs(margin - 0.010) < 1e-6, (
+            f"expected 0.010m margin for high slip, got {margin}"
         )
 
     def test_derive_force_params_bread_low_slip(self):
@@ -171,7 +172,7 @@ class TestAdaptiveForceParams:
         assert strategy.mass_g == 100.0
         assert strategy.slip_risk == "high"
         assert strategy.squeeze_extra_steps == 18  # mass 2 + risk 16
-        assert abs(strategy.depth_margin_m - 0.025) < 1e-6
+        assert abs(strategy.depth_margin_m - 0.010) < 1e-6
 
     def test_select_strategy_missing_mass_falls_back_to_default(self):
         llm = MockLLM(responses=[

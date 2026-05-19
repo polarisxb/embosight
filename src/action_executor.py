@@ -174,6 +174,10 @@ class ActionExecutor:
             )
 
         # 2. descend (策略感知的 depth margin + LLM 推理的 slip_risk 调整)
+        self._refresh_candidate_xy_from_live_object(
+            target, candidate, env, stage="pre_initial_descend",
+        )
+
         z_target = float(candidate.point_3d[2])
         squeeze_extra_steps = 0
         if hasattr(target, "grasp_strategy") and target.grasp_strategy:

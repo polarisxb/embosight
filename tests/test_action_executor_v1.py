@@ -89,6 +89,35 @@ class FakeEnv:
         return True
 
 
+class _InitialLiveRefreshEnv(FakeEnv):
+    """Live body XY differs from the stale candidate before first descend."""
+
+    def __init__(self):
+        super().__init__(descend_ok=True, lift_ok=True, obj_lifts=True)
+        self.obj_pos = np.array([0.535, 0.025, 0.9], dtype=np.float32)
+        self.approach_points: list[np.ndarray] = []
+        self._eef_pos = np.array([0.5, 0.0, 0.95], dtype=np.float32)
+
+    def approach(self, point_3d, approach_dir, target_label=None, **kwargs):
+        self.approach_points.append(
+            np.asarray(point_3d, dtype=np.float32).copy(),
+        )
+        self._eef_pos = np.array(
+            [float(point_3d[0]), float(point_3d[1]), 0.95],
+            dtype=np.float32,
+        )
+        return super().approach(
+            point_3d, approach_dir, target_label=target_label, **kwargs,
+        )
+
+    def get_eef_pos(self):
+        return self._eef_pos.copy()
+
+    def _get_body_pos(self, body_name):
+        z = 0.98 if self._lifted else self.obj_pos[2]
+        return np.array([self.obj_pos[0], self.obj_pos[1], z], dtype=np.float32)
+
+
 class TestAct:
     def test_success_path(self):
         from src.action_executor import ActionExecutor
@@ -99,6 +128,21 @@ class TestAct:
         result = exe.act(h, DecomposedTask(primary_target="apple"), env)
         assert result.success is True
         assert result.attempt.failure_mode == "success"
+
+    def test_initial_approach_refreshes_live_object_xy(self):
+        from src.action_executor import ActionExecutor
+        from src.world_belief import DecomposedTask
+        env = _InitialLiveRefreshEnv()
+        exe = ActionExecutor(scene_describer=None)
+        h, c = _hyp_with_candidate()
+
+        result = exe.act(h, DecomposedTask(primary_target="apple"), env)
+
+        assert result.success is True
+        assert env.approach_points, "expected initial approach call"
+        np.testing.assert_allclose(env.approach_points[0][:2], env.obj_pos[:2])
+        np.testing.assert_allclose(c.point_3d[:2], env.obj_pos[:2])
+        np.testing.assert_allclose(h.position_3d, env.obj_pos)
 
     def test_ik_unreachable_classified(self):
         from src.action_executor import ActionExecutor
