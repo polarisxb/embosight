@@ -90,6 +90,51 @@ def test_summarize_results_counts_failures_strategies_objects_and_slowest():
     assert summary["slowest_runs"][0]["scenario_id"] == "random_seed_103"
 
 
+def test_summarize_results_builds_diagnostic_cross_tabs():
+    module = _load_module()
+    summary = module.summarize_results([
+        {
+            "scenario_id": "random_seed_0",
+            "success": False,
+            "actual_object": "straw",
+            "grasp_failure_mode": "slipped_descend",
+            "grasp_strategy": "strategy_top_down",
+            "executed_strategy": "top_down",
+            "grasp_profile": "thin_flat",
+            "steps": 8,
+            "time_s": 10.0,
+        },
+        {
+            "scenario_id": "random_seed_1",
+            "success": False,
+            "actual_object": "jug",
+            "grasp_failure_mode": "ik_unreachable",
+            "grasp_strategy": "vlm_top_grasp",
+            "executed_strategy": "top_down",
+            "grasp_profile": "handled",
+            "steps": 9,
+            "time_s": 12.0,
+        },
+        {
+            "scenario_id": "random_seed_2",
+            "success": True,
+            "actual_object": "lemon",
+            "grasp_failure_mode": "success",
+            "grasp_strategy": "strategy_top_down",
+            "executed_strategy": "top_down",
+            "grasp_profile": "small_round_slippery",
+            "steps": 4,
+            "time_s": 8.0,
+        },
+    ])
+
+    assert summary["failure_mode_by_object"]["straw"]["slipped_descend"] == 1
+    assert summary["failure_mode_by_candidate_source"]["vlm_top_grasp"]["ik_unreachable"] == 1
+    assert summary["failure_mode_by_executed_strategy"]["top_down"]["slipped_descend"] == 1
+    assert summary["success_rate_by_object"]["lemon"]["success_rate"] == 1.0
+    assert summary["success_rate_by_profile"]["small_round_slippery"]["success_rate"] == 1.0
+
+
 def test_parse_run_fixed_output_extracts_oracle_and_episode_result():
     module = _load_module()
     stdout = '''
@@ -132,6 +177,53 @@ episode: logs/episodes/episode_1.json
         "observe", "classify_safety", "plan_grasp_candidates", "grasp",
     ]
     assert result["actual_object"] == "apple"
+
+
+def test_parse_run_fixed_output_preserves_final_grasp_oracle_fields():
+    module = _load_module()
+    stdout = '''
+========== EPISODE RESULT ==========
+scenario: random_seed_101
+success : True
+speech  : done
+steps   : 4
+time    : 12.3s
+
+========== ORACLE SUMMARY ==========
+{
+  "success": true,
+  "failure_reason": null,
+  "grasp_failure_mode": "success",
+  "grasp_candidate_source": "strategy_top_down",
+  "selected_strategy": "top_down",
+  "executed_strategy": "top_down",
+  "post_lift_obj_pos": [0.134, -2.855, 1.038],
+  "post_lift_obj_delta_z": 0.091,
+  "depth_margin_m": 0.01,
+  "squeeze_extra_steps": 18,
+  "grasp_profile": "small_round_slippery",
+  "action_sequence": ["observe", "classify_safety", "plan_grasp_candidates", "grasp"],
+  "actual_object": "lemon"
+}
+episode: logs/episodes/episode_1.json
+'''
+
+    result = module.parse_run_fixed_output(
+        scenario_id="random_seed_101",
+        seed=101,
+        returncode=0,
+        stdout=stdout,
+        stderr="",
+        elapsed=12.34,
+    )
+
+    assert result["selected_strategy"] == "top_down"
+    assert result["executed_strategy"] == "top_down"
+    assert result["post_lift_obj_pos"] == [0.134, -2.855, 1.038]
+    assert result["post_lift_obj_delta_z"] == 0.091
+    assert result["depth_margin_m"] == 0.01
+    assert result["squeeze_extra_steps"] == 18
+    assert result["grasp_profile"] == "small_round_slippery"
 
 
 def test_prepare_memory_dir_writes_empty_index_and_domains(tmp_path):
@@ -212,3 +304,38 @@ def test_format_summary_text():
     assert "33.3%" in text
     assert "timeout" in text
     assert "strategy_top_down" in text
+
+
+def test_format_summary_text_includes_diagnostic_cross_tabs():
+    module = _load_module()
+    summary = {
+        "total": 3,
+        "completed": 3,
+        "successes": 1,
+        "success_rate": 1 / 3,
+        "errors": 0,
+        "timeouts": 0,
+        "avg_steps": 7.0,
+        "avg_time_s": 10.0,
+        "failure_breakdown": {"slipped_descend": 1},
+        "strategy_usage": {"strategy_top_down": 2},
+        "object_distribution": {"lemon": 1, "straw": 1},
+        "failure_mode_by_object": {"straw": {"slipped_descend": 1}},
+        "failure_mode_by_candidate_source": {
+            "strategy_top_down": {"slipped_descend": 1},
+        },
+        "failure_mode_by_executed_strategy": {
+            "top_down": {"slipped_descend": 1},
+        },
+        "success_rate_by_profile": {
+            "small_round_slippery": {"successes": 1, "total": 1, "success_rate": 1.0},
+        },
+        "slowest_runs": [],
+        "failed_runs": [],
+    }
+
+    text = module.format_summary_text(summary)
+
+    assert "Failure Mode By Object" in text
+    assert "failure_mode_by_candidate_source" in text
+    assert "success_rate_by_profile" in text

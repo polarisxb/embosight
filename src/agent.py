@@ -853,6 +853,14 @@ class EmboSightAgent:
             "candidate_source": str(getattr(candidate, "source", "unknown")),
             "object": h.label,
         }
+        diagnostic = getattr(attempt, "diagnostic", {}) or {}
+        for key in (
+            "grasp_profile",
+            "grasp_profile_confidence",
+            "grasp_profile_reasons",
+        ):
+            if key in diagnostic:
+                context[key] = diagnostic[key]
         if approach_dir is not None:
             context["approach_dir"] = approach_dir.tolist()
         if candidate is not None:

@@ -95,3 +95,43 @@ def test_grasp_memory_payload_separates_selected_strategy_from_executed_shape():
     assert context["depth_margin_m"] == 0.01
     assert "selected gentle_side" in lesson
     assert "executed top_down" in lesson
+
+
+def test_grasp_memory_payload_preserves_grasp_profile_diagnostic():
+    from src.agent import EmboSightAgent
+    from src.world_belief import GraspAttempt, GraspCandidate, Hypothesis
+
+    candidate = GraspCandidate(
+        point_3d=np.array([0.134, -2.855, 0.947], dtype=np.float32),
+        approach_dir=np.array([0.0, 0.0, -1.0], dtype=np.float32),
+        finger_width_m=0.04,
+        score=1.0,
+        source="strategy_top_down",
+    )
+    attempt = GraspAttempt(
+        timestamp=0.0,
+        candidate=candidate,
+        failure_mode="success",
+        end_effector_pose_reached=(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        diagnostic={
+            "grasp_profile": "small_round_slippery",
+            "grasp_profile_confidence": 0.85,
+            "grasp_profile_reasons": ["round", "slippery", "small"],
+        },
+    )
+    hyp = Hypothesis(
+        object_id="distr_counter_main",
+        label="lemon",
+        label_alternatives=[("lemon", 0.95)],
+        label_entropy=0.1,
+        position_3d=np.array([0.134, -2.855, 0.947], dtype=np.float32),
+        position_std_m=0.02,
+        grasp_candidates=[candidate],
+        grasp_attempts=[attempt],
+    )
+
+    context, _ = EmboSightAgent._grasp_memory_payload(hyp, attempt)
+
+    assert context["grasp_profile"] == "small_round_slippery"
+    assert context["grasp_profile_confidence"] == 0.85
+    assert context["grasp_profile_reasons"] == ["round", "slippery", "small"]

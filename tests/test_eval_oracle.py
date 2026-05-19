@@ -4,6 +4,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
@@ -85,6 +87,85 @@ def test_summarize_episode_extracts_failure_mode_and_target(tmp_path):
     assert summary.grasp_failure_mode == "hit_z_floor"
     assert summary.grasp_candidate_source == "vlm_top_grasp"
     assert summary.to_dict()["grasp_failure_mode"] == "hit_z_floor"
+
+
+def test_oracle_summary_includes_final_grasp_evidence(tmp_path):
+    from src.eval_oracle import summarize_episode
+
+    episode = {
+        "query": "pick up the lemon",
+        "snapshots": [
+            {
+                "step": 4,
+                "most_uncertain_axis": "grasp",
+                "target_summary": {
+                    "label": "lemon",
+                    "label_entropy": 0.1,
+                    "position_3d": [0.125, -2.857, 0.947],
+                    "position_std_m": 0.02,
+                    "safety_entropy": 0.1,
+                    "grasp_uncertainty": 0.1,
+                },
+            },
+        ],
+        "actions": [
+            {"kind": "observe"},
+            {"kind": "classify_safety"},
+            {"kind": "plan_grasp_candidates"},
+            {"kind": "grasp"},
+        ],
+        "evidence": [
+            {
+                "source": "grasp_attempt",
+                "timestamp": 2.0,
+                "raw_payload": {
+                    "success": True,
+                    "attempt": {
+                        "failure_mode": "success",
+                        "candidate_source": "strategy_top_down",
+                        "diagnostic": {
+                            "post_lift_obj_pos": [0.134, -2.855, 1.038],
+                            "post_lift_eef_pos": [0.127, -2.860, 1.055],
+                            "obj_z_before": 0.947,
+                            "obj_z_after": 1.038,
+                            "selected_strategy": "top_down",
+                            "executed_strategy": "top_down",
+                            "depth_margin_m": 0.010,
+                            "squeeze_extra_steps": 18,
+                            "finger_width_m": 0.04,
+                            "grasp_profile": "small_round_slippery",
+                        },
+                    },
+                },
+            },
+        ],
+        "final_result": {
+            "success": True,
+            "failure_reason": None,
+        },
+    }
+    path = tmp_path / "episode.json"
+    path.write_text(json.dumps(episode), encoding="utf-8")
+
+    summary = summarize_episode(
+        path,
+        scenario_id="fixed_lemon_001",
+        expected_object="lemon",
+        actual_object="lemon",
+    )
+    data = summary.to_dict()
+
+    assert data["post_lift_obj_pos"] == [0.134, -2.855, 1.038]
+    assert data["post_lift_eef_pos"] == [0.127, -2.86, 1.055]
+    assert data["post_lift_obj_delta_z"] == pytest.approx(0.091)
+    assert data["selected_strategy"] == "top_down"
+    assert data["executed_strategy"] == "top_down"
+    assert data["depth_margin_m"] == 0.010
+    assert data["squeeze_extra_steps"] == 18
+    assert data["finger_width_m"] == 0.04
+    assert data["grasp_profile"] == "small_round_slippery"
+    assert data["attempts_count"] == 1
+    assert data["post_lift_verified"] is True
 
 
 def test_summarize_episode_reports_planning_blockers(tmp_path):

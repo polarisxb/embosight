@@ -27,6 +27,19 @@ class OracleSummary:
     planning_blockers: list[str]
     grasp_failure_mode: str | None
     grasp_candidate_source: str | None
+    post_lift_obj_pos: list[float] | None = None
+    post_lift_obj_delta_z: float | None = None
+    post_lift_eef_pos: list[float] | None = None
+    selected_strategy: str | None = None
+    executed_strategy: str | None = None
+    depth_margin_m: float | None = None
+    squeeze_extra_steps: int | None = None
+    finger_width_m: float | None = None
+    grasp_profile: str | None = None
+    grasp_profile_confidence: float | None = None
+    grasp_profile_reasons: list[str] | None = None
+    attempts_count: int = 0
+    post_lift_verified: bool | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -43,7 +56,16 @@ def summarize_episode(
     final_result = data.get("final_result") or {}
     target_snapshot = _latest_target_snapshot(data.get("snapshots", []))
     target = target_snapshot.get("target_summary") if target_snapshot else None
-    grasp_attempt = _latest_grasp_attempt(data.get("evidence", []))
+    grasp_attempts = _grasp_attempts(data.get("evidence", []))
+    grasp_attempt = grasp_attempts[-1] if grasp_attempts else None
+    diagnostic = _attempt_diagnostic(grasp_attempt)
+    obj_z_before = _float_or_none(diagnostic.get("obj_z_before"))
+    obj_z_after = _float_or_none(diagnostic.get("obj_z_after"))
+    obj_delta_z = (
+        obj_z_after - obj_z_before
+        if obj_z_before is not None and obj_z_after is not None
+        else None
+    )
     action_sequence = [str(a.get("kind", "")) for a in data.get("actions", [])]
     object_match = None
     if expected_object is not None and actual_object is not None:
@@ -80,6 +102,27 @@ def summarize_episode(
         planning_blockers=_planning_blockers(target, action_sequence),
         grasp_failure_mode=grasp_attempt.get("failure_mode") if grasp_attempt else None,
         grasp_candidate_source=grasp_attempt.get("candidate_source") if grasp_attempt else None,
+        post_lift_obj_pos=_float_list_or_none(diagnostic.get("post_lift_obj_pos")),
+        post_lift_obj_delta_z=obj_delta_z,
+        post_lift_eef_pos=_float_list_or_none(diagnostic.get("post_lift_eef_pos")),
+        selected_strategy=_str_or_none(diagnostic.get("selected_strategy")),
+        executed_strategy=_str_or_none(diagnostic.get("executed_strategy")),
+        depth_margin_m=_float_or_none(diagnostic.get("depth_margin_m")),
+        squeeze_extra_steps=_int_or_none(diagnostic.get("squeeze_extra_steps")),
+        finger_width_m=_float_or_none(diagnostic.get("finger_width_m")),
+        grasp_profile=_str_or_none(diagnostic.get("grasp_profile")),
+        grasp_profile_confidence=_float_or_none(
+            diagnostic.get("grasp_profile_confidence"),
+        ),
+        grasp_profile_reasons=_str_list_or_none(
+            diagnostic.get("grasp_profile_reasons"),
+        ),
+        attempts_count=len(grasp_attempts),
+        post_lift_verified=_post_lift_verified(
+            grasp_attempt,
+            diagnostic,
+            obj_delta_z,
+        ),
     )
 
 
@@ -91,14 +134,22 @@ def _latest_target_snapshot(snapshots: list[dict[str, Any]]) -> dict[str, Any] |
     return None
 
 
-def _latest_grasp_attempt(evidence: list[dict[str, Any]]) -> dict[str, Any] | None:
-    for ev in reversed(evidence):
+def _grasp_attempts(evidence: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    attempts: list[dict[str, Any]] = []
+    for ev in evidence:
         if ev.get("source") == "grasp_attempt":
             payload = ev.get("raw_payload") or {}
             attempt = payload.get("attempt") or {}
             if attempt:
-                return attempt
-    return None
+                attempts.append(attempt)
+    return attempts
+
+
+def _attempt_diagnostic(attempt: dict[str, Any] | None) -> dict[str, Any]:
+    if not attempt:
+        return {}
+    diagnostic = attempt.get("diagnostic") or {}
+    return diagnostic if isinstance(diagnostic, dict) else {}
 
 
 def _vlm_labels(evidence: list[dict[str, Any]]) -> list[str]:
@@ -149,6 +200,49 @@ def _float_or_none(value: Any) -> float | None:
     if value is None:
         return None
     return float(value)
+
+
+def _int_or_none(value: Any) -> int | None:
+    if value is None:
+        return None
+    return int(value)
+
+
+def _str_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    return str(value)
+
+
+def _float_list_or_none(value: Any) -> list[float] | None:
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)):
+        return None
+    return [float(item) for item in value]
+
+
+def _str_list_or_none(value: Any) -> list[str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)):
+        return None
+    return [str(item) for item in value]
+
+
+def _post_lift_verified(
+    attempt: dict[str, Any] | None,
+    diagnostic: dict[str, Any],
+    obj_delta_z: float | None,
+) -> bool | None:
+    explicit = diagnostic.get("post_lift_verified")
+    if explicit is not None:
+        return bool(explicit)
+    if not attempt or attempt.get("failure_mode") != "success":
+        return False if attempt else None
+    if obj_delta_z is None:
+        return None
+    return obj_delta_z >= 0.02
 
 
 def _label_key(text: str) -> str:

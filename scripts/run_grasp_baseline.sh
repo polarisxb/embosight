@@ -174,6 +174,41 @@ append_file_or_missing() {
     } >> "${REPORT_PATH}"
 }
 
+append_json_excerpt_or_missing() {
+    local title="$1"
+    local path="$2"
+    {
+        echo
+        echo "## ${title}"
+        echo
+        echo "Path: \`${path}\`"
+        echo
+        if [[ -f "${path}" ]]; then
+            echo '```json'
+            python - "${path}" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+keys = [
+    "failure_mode_by_object",
+    "failure_mode_by_candidate_source",
+    "failure_mode_by_executed_strategy",
+    "success_rate_by_object",
+    "success_rate_by_profile",
+]
+with open(path, "r", encoding="utf-8") as f:
+    data = json.load(f)
+excerpt = {key: data.get(key, {}) for key in keys}
+print(json.dumps(excerpt, ensure_ascii=False, indent=2, sort_keys=True))
+PY
+            echo '```'
+        else
+            echo "_Missing._"
+        fi
+    } >> "${REPORT_PATH}"
+}
+
 write_report() {
     local lemon_status="$1"
     local gen_status="$2"
@@ -216,6 +251,7 @@ write_report() {
 
     append_file_or_missing "Fixed Lemon Summary CSV" "${LEMON_OUT_DIR}/summary.csv"
     append_file_or_missing "Generalization Summary" "${GEN_LOG_DIR}/summary.txt"
+    append_json_excerpt_or_missing "Generalization Diagnostic Cross-tabs" "${GEN_LOG_DIR}/summary.json"
 }
 
 if [[ "${DRY_RUN}" -eq 1 ]]; then

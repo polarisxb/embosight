@@ -13,6 +13,8 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+_CANDIDATE_ATTEMPT_DIAGNOSTIC_ATTR = "_embosight_attempt_diagnostic"
+
 
 # ============================================================
 # v1 ActionResult (基于 Hypothesis)
@@ -71,6 +73,10 @@ class ActionExecutor:
             )
 
         # 记录物体初始 z（用于 lift 后验证物体是否跟随）
+        self._merge_candidate_attempt_diagnostic(
+            candidate,
+            self._classify_profile_diagnostic(target, candidate, env),
+        )
         obj_z_before = self._get_obj_z(target, env)
 
         # Parse approach_dir up front for both offset selection and
@@ -197,6 +203,17 @@ class ActionExecutor:
             )
         else:
             margin_m = 0.015  # 默认
+
+        self._merge_candidate_attempt_diagnostic(
+            candidate,
+            {
+                "depth_margin_m": margin_m,
+                "squeeze_extra_steps": squeeze_extra_steps,
+                "finger_width_m": float(
+                    getattr(candidate, "finger_width_m", 0.0) or 0.0
+                ),
+            },
+        )
 
         descend_ok, z_actual = env.approach(
             candidate.point_3d,
@@ -459,6 +476,7 @@ class ActionExecutor:
             "stage": "complete",
             "post_lift_eef_pos": eef[:3].tolist(),
         }
+        diagnostic.update(self._candidate_attempt_diagnostic(candidate))
         if obj_pos_after is not None:
             diagnostic["post_lift_obj_pos"] = obj_pos_after[:3].tolist()
         if obj_z_before is not None:
@@ -584,14 +602,56 @@ class ActionExecutor:
                 finger_width_m=0.04, score=0.0,
                 source="geometric_centroid",
             )
+        diagnostic = dict(self._candidate_attempt_diagnostic(candidate))
+        diagnostic.update(diag)
         attempt = GraspAttempt(
             timestamp=time.time(),
             candidate=candidate,
             failure_mode=mode,  # type: ignore[arg-type]
             end_effector_pose_reached=(0.0,) * 6,
-            diagnostic=diag,
+            diagnostic=diagnostic,
         )
         return GraspActionResult(success=False, attempt=attempt)
+
+    def _classify_profile_diagnostic(self, target, candidate, env) -> dict:
+        try:
+            from src.grasp_profile import classify_grasp_profile
+
+            object_size = None
+            body = self._resolve_target_body(target, env)
+            if body is not None and hasattr(env, "_get_body_aabb"):
+                aabb = env._get_body_aabb(body)
+                if aabb is not None:
+                    lo, hi = aabb
+                    object_size = (
+                        np.asarray(hi, dtype=np.float32)
+                        - np.asarray(lo, dtype=np.float32)
+                    )
+            result = classify_grasp_profile(
+                target,
+                candidate,
+                object_size_m=object_size,
+            )
+            return result.to_diagnostic()
+        except Exception as e:
+            logger.debug("[grasp_profile] diagnostic skipped: %s", e)
+            return {}
+
+    @staticmethod
+    def _merge_candidate_attempt_diagnostic(candidate, diagnostic: dict) -> None:
+        if candidate is None or not diagnostic:
+            return
+        existing = getattr(candidate, _CANDIDATE_ATTEMPT_DIAGNOSTIC_ATTR, None)
+        if not isinstance(existing, dict):
+            existing = {}
+        merged = dict(existing)
+        merged.update(diagnostic)
+        setattr(candidate, _CANDIDATE_ATTEMPT_DIAGNOSTIC_ATTR, merged)
+
+    @staticmethod
+    def _candidate_attempt_diagnostic(candidate) -> dict:
+        diagnostic = getattr(candidate, _CANDIDATE_ATTEMPT_DIAGNOSTIC_ATTR, None)
+        return dict(diagnostic) if isinstance(diagnostic, dict) else {}
 
     def _verify_grasp_via_micro_lift(
         self,

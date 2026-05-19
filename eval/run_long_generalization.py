@@ -19,6 +19,22 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+FINAL_GRASP_ORACLE_FIELDS = (
+    "selected_strategy",
+    "executed_strategy",
+    "post_lift_obj_pos",
+    "post_lift_obj_delta_z",
+    "post_lift_eef_pos",
+    "depth_margin_m",
+    "squeeze_extra_steps",
+    "finger_width_m",
+    "grasp_profile",
+    "grasp_profile_confidence",
+    "grasp_profile_reasons",
+    "attempts_count",
+    "post_lift_verified",
+)
+
 
 def generate_seed_scenarios(seed_start: int, count: int) -> list[dict[str, Any]]:
     scenarios: list[dict[str, Any]] = []
@@ -84,6 +100,8 @@ def parse_run_fixed_output(
         "speech": None,
         "actual_object": None,
     }
+    for key in FINAL_GRASP_ORACLE_FIELDS:
+        result[key] = None
 
     try:
         oracle_start = stdout.find("ORACLE SUMMARY")
@@ -101,6 +119,8 @@ def parse_run_fixed_output(
                 result["grasp_strategy"] = oracle.get("grasp_candidate_source")
                 result["action_sequence"] = oracle.get("action_sequence", [])
                 result["actual_object"] = oracle.get("actual_object")
+                for key in FINAL_GRASP_ORACLE_FIELDS:
+                    result[key] = oracle.get(key)
 
         ep_start = stdout.find("EPISODE RESULT")
         if ep_start >= 0:
@@ -225,6 +245,8 @@ def run_one_seed_subprocess(
             "speech": None,
             "actual_object": None,
         }
+        for key in FINAL_GRASP_ORACLE_FIELDS:
+            result[key] = None
     except Exception as e:
         elapsed = time.time() - t0
         result = {
@@ -241,6 +263,8 @@ def run_one_seed_subprocess(
             "speech": None,
             "actual_object": None,
         }
+        for key in FINAL_GRASP_ORACLE_FIELDS:
+            result[key] = None
 
     result["stdout_path"] = str(stdout_path)
     result["stderr_path"] = str(stderr_path)
@@ -260,22 +284,38 @@ def summarize_results(results: list[dict[str, Any]]) -> dict[str, Any]:
     strategy_usage: dict[str, int] = {}
     object_distribution: dict[str, int] = {}
     failed_runs: list[dict[str, Any]] = []
+    failure_mode_by_object: dict[str, dict[str, int]] = {}
+    failure_mode_by_candidate_source: dict[str, dict[str, int]] = {}
+    failure_mode_by_executed_strategy: dict[str, dict[str, int]] = {}
+    failure_mode_by_profile: dict[str, dict[str, int]] = {}
+    success_by_object: dict[str, dict[str, int]] = {}
+    success_by_profile: dict[str, dict[str, int]] = {}
 
     for r in results:
+        actual_object = _bucket_name(r.get("actual_object"))
+        profile = _bucket_name(r.get("grasp_profile"))
+        _add_success_bucket(success_by_object, actual_object, bool(r.get("success")))
+        _add_success_bucket(success_by_profile, profile, bool(r.get("success")))
         if not r.get("success"):
-            reason = (
-                r.get("grasp_failure_mode")
-                or r.get("failure_reason")
-                or r.get("error")
-                or "unknown"
-            )
+            reason = _failure_reason(r)
             failure_breakdown[str(reason)] = failure_breakdown.get(str(reason), 0) + 1
             failed_runs.append(r)
+            _add_nested_count(failure_mode_by_object, actual_object, str(reason))
+            _add_nested_count(
+                failure_mode_by_candidate_source,
+                _bucket_name(r.get("grasp_strategy")),
+                str(reason),
+            )
+            _add_nested_count(
+                failure_mode_by_executed_strategy,
+                _bucket_name(r.get("executed_strategy")),
+                str(reason),
+            )
+            _add_nested_count(failure_mode_by_profile, profile, str(reason))
         strategy = r.get("grasp_strategy")
         if strategy:
             strategy_usage[str(strategy)] = strategy_usage.get(str(strategy), 0) + 1
-        actual_object = r.get("actual_object")
-        if actual_object:
+        if r.get("actual_object"):
             object_distribution[str(actual_object)] = object_distribution.get(str(actual_object), 0) + 1
 
     slowest_runs = sorted(
@@ -296,9 +336,70 @@ def summarize_results(results: list[dict[str, Any]]) -> dict[str, Any]:
         "failure_breakdown": dict(sorted(failure_breakdown.items(), key=lambda x: (-x[1], x[0]))),
         "strategy_usage": dict(sorted(strategy_usage.items(), key=lambda x: (-x[1], x[0]))),
         "object_distribution": dict(sorted(object_distribution.items(), key=lambda x: (-x[1], x[0]))),
+        "failure_mode_by_object": _sorted_nested_counts(failure_mode_by_object),
+        "failure_mode_by_candidate_source": _sorted_nested_counts(failure_mode_by_candidate_source),
+        "failure_mode_by_executed_strategy": _sorted_nested_counts(failure_mode_by_executed_strategy),
+        "failure_mode_by_profile": _sorted_nested_counts(failure_mode_by_profile),
+        "success_rate_by_object": _success_rates(success_by_object),
+        "success_rate_by_profile": _success_rates(success_by_profile),
         "slowest_runs": slowest_runs,
         "failed_runs": failed_runs,
     }
+
+
+def _bucket_name(value: Any) -> str:
+    text = str(value).strip() if value is not None else ""
+    return text if text else "unknown"
+
+
+def _failure_reason(result: dict[str, Any]) -> str:
+    return _bucket_name(
+        result.get("grasp_failure_mode")
+        or result.get("failure_reason")
+        or result.get("error"),
+    )
+
+
+def _add_nested_count(
+    table: dict[str, dict[str, int]],
+    bucket: str,
+    reason: str,
+) -> None:
+    slot = table.setdefault(bucket, {})
+    slot[reason] = slot.get(reason, 0) + 1
+
+
+def _add_success_bucket(
+    table: dict[str, dict[str, int]],
+    bucket: str,
+    success: bool,
+) -> None:
+    slot = table.setdefault(bucket, {"successes": 0, "total": 0})
+    slot["total"] += 1
+    if success:
+        slot["successes"] += 1
+
+
+def _sorted_nested_counts(table: dict[str, dict[str, int]]) -> dict[str, dict[str, int]]:
+    sorted_table: dict[str, dict[str, int]] = {}
+    for bucket in sorted(table):
+        sorted_table[bucket] = dict(
+            sorted(table[bucket].items(), key=lambda item: (-item[1], item[0])),
+        )
+    return sorted_table
+
+
+def _success_rates(table: dict[str, dict[str, int]]) -> dict[str, dict[str, float | int]]:
+    rates: dict[str, dict[str, float | int]] = {}
+    for bucket in sorted(table):
+        successes = int(table[bucket]["successes"])
+        total_count = int(table[bucket]["total"])
+        rates[bucket] = {
+            "successes": successes,
+            "total": total_count,
+            "success_rate": successes / total_count if total_count else 0.0,
+        }
+    return rates
 
 
 def write_scenarios_yaml(scenarios: list[dict[str, Any]], path: Path) -> None:
@@ -334,8 +435,73 @@ def format_summary_text(summary: dict[str, Any]) -> str:
     lines.append("--- Object Distribution ---")
     for obj, count in summary.get("object_distribution", {}).items():
         lines.append(f"  {obj}: {count}")
+    _append_nested_summary(
+        lines,
+        "Failure Mode By Object",
+        "failure_mode_by_object",
+        summary.get("failure_mode_by_object", {}),
+    )
+    _append_nested_summary(
+        lines,
+        "Failure Mode By Candidate Source",
+        "failure_mode_by_candidate_source",
+        summary.get("failure_mode_by_candidate_source", {}),
+    )
+    _append_nested_summary(
+        lines,
+        "Failure Mode By Executed Strategy",
+        "failure_mode_by_executed_strategy",
+        summary.get("failure_mode_by_executed_strategy", {}),
+    )
+    _append_success_summary(
+        lines,
+        "Success Rate By Object",
+        "success_rate_by_object",
+        summary.get("success_rate_by_object", {}),
+    )
+    _append_success_summary(
+        lines,
+        "Success Rate By Profile",
+        "success_rate_by_profile",
+        summary.get("success_rate_by_profile", {}),
+    )
     lines.append("=" * 60)
     return "\n".join(lines)
+
+
+def _append_nested_summary(
+    lines: list[str],
+    title: str,
+    key: str,
+    table: dict[str, dict[str, int]],
+) -> None:
+    if not table:
+        return
+    lines.append("")
+    lines.append(f"--- {title} ---")
+    lines.append(f"{key}:")
+    for bucket, counts in table.items():
+        lines.append(f"  {bucket}:")
+        for reason, count in counts.items():
+            lines.append(f"    {reason}: {count}")
+
+
+def _append_success_summary(
+    lines: list[str],
+    title: str,
+    key: str,
+    table: dict[str, dict[str, Any]],
+) -> None:
+    if not table:
+        return
+    lines.append("")
+    lines.append(f"--- {title} ---")
+    lines.append(f"{key}:")
+    for bucket, stats in table.items():
+        rate = float(stats.get("success_rate", 0.0)) * 100.0
+        successes = int(stats.get("successes", 0))
+        total_count = int(stats.get("total", 0))
+        lines.append(f"  {bucket}: {successes}/{total_count} ({rate:.1f}%)")
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -455,6 +621,8 @@ def main(argv: list[str] | None = None) -> int:
                         "speech": None,
                         "actual_object": None,
                     }
+                    for key in FINAL_GRASP_ORACLE_FIELDS:
+                        result[key] = None
                 append_jsonl(results_path, result)
                 completed[result["scenario_id"]] = result
                 done = len(completed)

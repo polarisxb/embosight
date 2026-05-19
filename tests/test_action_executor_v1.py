@@ -381,6 +381,43 @@ class TestDiagnostic:
             [0.5, 0.0, 0.98],
         )
 
+    def test_success_diagnostic_contains_grasp_profile_without_changing_execution(self):
+        from src.action_executor import ActionExecutor
+        from src.world_belief import DecomposedTask, GraspStrategy
+        exe = ActionExecutor(scene_describer=None)
+        env = FakeEnv()
+        h, _ = _hyp_with_candidate()
+        h.label = "lemon"
+        h.visible_features = "round yellow smooth waxy fruit"
+        h.grasp_strategy = GraspStrategy(strategy="top_down", slip_risk="high")
+
+        result = exe.act(h, DecomposedTask(primary_target="lemon"), env)
+
+        assert result.success is True
+        diag = result.attempt.diagnostic
+        assert diag["grasp_profile"] == "small_round_slippery"
+        assert diag["grasp_profile_confidence"] >= 0.7
+        assert "close" in env.calls
+        assert "lift" in env.calls
+
+    def test_failure_diagnostic_contains_grasp_profile_without_changing_failure_mode(self):
+        from src.action_executor import ActionExecutor
+        from src.world_belief import DecomposedTask, GraspStrategy
+        exe = ActionExecutor(scene_describer=None)
+        env = FakeEnv(lift_ok=False, grasp_ok=False)
+        h, _ = _hyp_with_candidate()
+        h.label = "lemon"
+        h.visible_features = "round yellow smooth waxy fruit"
+        h.grasp_strategy = GraspStrategy(strategy="top_down", slip_risk="high")
+
+        result = exe.act(h, DecomposedTask(primary_target="lemon"), env)
+
+        assert result.success is False
+        assert result.attempt.failure_mode == "gripper_empty"
+        assert result.attempt.diagnostic["grasp_profile"] == "small_round_slippery"
+        assert "close" in env.calls
+        assert "lift" in env.calls
+
 
 class TestStructure:
     def test_to_dict_serializable(self):
