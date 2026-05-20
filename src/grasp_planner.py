@@ -459,6 +459,8 @@ class GraspPlanner:
         )
 
         profile = self._classify_profile_for_policy(hyp, cands, env)
+        self._attach_actionability_diagnostics(hyp, cands, env, profile)
+        cands = self._apply_actionability_preview_gate(profile, cands)
         selected_strategy = (
             hyp.grasp_strategy.strategy
             if hyp.grasp_strategy is not None
@@ -474,6 +476,122 @@ class GraspPlanner:
         for candidate in decision.candidates:
             merge_candidate_attempt_diagnostic(candidate, diagnostic)
         return decision.candidates
+
+    def _attach_actionability_diagnostics(
+        self,
+        hyp: Hypothesis,
+        cands: list[GraspCandidate],
+        env,
+        profile: str,
+    ) -> None:
+        from src.grasp_actionability import actionability_from_preview
+        from src.grasp_actionability import unknown_actionability
+        from src.grasp_policy import actionability_gate_enabled
+        from src.grasp_policy import actionability_diagnostics_enabled
+        from src.grasp_policy import merge_candidate_attempt_diagnostic
+        from src.target_resolution import resolve_target_body
+
+        if not (
+            actionability_diagnostics_enabled(self.grasp_policy_config)
+            or actionability_gate_enabled(self.grasp_policy_config, profile)
+        ):
+            return
+
+        selected_strategy = (
+            hyp.grasp_strategy.strategy
+            if hyp.grasp_strategy is not None
+            else None
+        )
+        resolution = resolve_target_body(
+            requested_label=getattr(hyp, "label", None),
+            selected_label=getattr(hyp, "label", None),
+            env=env,
+            allow_fallback=False,
+        )
+        for candidate in cands:
+            policy_name = "diagnostics_only"
+            if hasattr(env, "preview_candidate_actionability"):
+                preview = env.preview_candidate_actionability(
+                    candidate,
+                    target_body=resolution.target_body,
+                    selected_strategy=selected_strategy,
+                )
+                actionability = actionability_from_preview(
+                    candidate,
+                    preview if isinstance(preview, dict) else {},
+                    selected_strategy=selected_strategy,
+                    target_body=resolution.target_body,
+                )
+                policy_name = "profiled_preview_gate"
+            else:
+                actionability = unknown_actionability(
+                    candidate,
+                    selected_strategy=selected_strategy,
+                    target_body=resolution.target_body,
+                    reason="not_evaluated",
+                )
+            merge_candidate_attempt_diagnostic(
+                candidate,
+                {
+                    **resolution.to_diagnostic(),
+                    **actionability.to_diagnostic(),
+                    "candidate_actionability_policy": policy_name,
+                    "legacy_first_candidate_actionable": None,
+                    "final_first_candidate_actionable": None,
+                    "no_actionable_candidate": False,
+                    "actionability_gate_enabled": False,
+                    "actionability_gate_applied": False,
+                    "actionability_skip_reason": None,
+                },
+            )
+
+    def _apply_actionability_preview_gate(
+        self,
+        profile: str,
+        cands: list[GraspCandidate],
+    ) -> list[GraspCandidate]:
+        from src.grasp_policy import (
+            actionability_gate_enabled,
+            merge_candidate_attempt_diagnostic,
+        )
+
+        if not actionability_gate_enabled(self.grasp_policy_config, profile):
+            return cands
+
+        actionable = []
+        rejected = []
+        for candidate in cands:
+            diag = getattr(candidate, "_embosight_attempt_diagnostic", {}) or {}
+            if diag.get("candidate_actionability_hard_reject") is True:
+                rejected.append(candidate)
+            else:
+                actionable.append(candidate)
+
+        if not actionable:
+            for candidate in cands:
+                merge_candidate_attempt_diagnostic(candidate, {
+                    "legacy_first_candidate_actionable": False,
+                    "final_first_candidate_actionable": False,
+                    "no_actionable_candidate": True,
+                })
+            return cands
+
+        final_order = actionable + rejected
+        legacy_first_actionable = (
+            (getattr(cands[0], "_embosight_attempt_diagnostic", {}) or {})
+            .get("candidate_actionability_hard_reject") is not True
+        ) if cands else None
+        final_first_actionable = (
+            (getattr(final_order[0], "_embosight_attempt_diagnostic", {}) or {})
+            .get("candidate_actionability_hard_reject") is not True
+        ) if final_order else None
+        for candidate in final_order:
+            merge_candidate_attempt_diagnostic(candidate, {
+                "legacy_first_candidate_actionable": legacy_first_actionable,
+                "final_first_candidate_actionable": final_first_actionable,
+                "no_actionable_candidate": False,
+            })
+        return final_order
 
     def _classify_profile_for_policy(
         self,

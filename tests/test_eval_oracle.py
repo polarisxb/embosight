@@ -143,6 +143,26 @@ def test_oracle_summary_includes_final_grasp_evidence(tmp_path):
                             "candidate_source_policy_applied": True,
                             "legacy_first_candidate_source": "vlm_top_grasp",
                             "final_first_candidate_source": "strategy_top_down",
+                            "target_resolution_status": "resolved",
+                            "target_body": "obj_main",
+                            "target_body_category": "lemon",
+                            "resolved_body_name": "obj_main",
+                            "resolved_body_category": "lemon",
+                            "target_resolution_source": "normalized_category",
+                            "target_resolution_used_fallback": False,
+                            "candidate_actionability_policy": "diagnostics_only",
+                            "candidate_actionability_actionable": True,
+                            "candidate_actionability_hard_reject": False,
+                            "candidate_actionability_reason": "not_evaluated",
+                            "actionability_status": "actionable",
+                            "actionability_reason": "not_evaluated",
+                            "actionability_stage": "planner",
+                            "actionability_gate_enabled": False,
+                            "actionability_gate_applied": False,
+                            "actionability_skip_reason": None,
+                            "legacy_first_candidate_actionable": True,
+                            "final_first_candidate_actionable": True,
+                            "no_actionable_candidate": False,
                         },
                     },
                 },
@@ -182,6 +202,26 @@ def test_oracle_summary_includes_final_grasp_evidence(tmp_path):
     assert data["candidate_source_policy_applied"] is True
     assert data["legacy_first_candidate_source"] == "vlm_top_grasp"
     assert data["final_first_candidate_source"] == "strategy_top_down"
+    assert data["target_resolution_status"] == "resolved"
+    assert data["target_body"] == "obj_main"
+    assert data["target_body_category"] == "lemon"
+    assert data["resolved_body_name"] == "obj_main"
+    assert data["resolved_body_category"] == "lemon"
+    assert data["target_resolution_source"] == "normalized_category"
+    assert data["target_resolution_used_fallback"] is False
+    assert data["candidate_actionability_policy"] == "diagnostics_only"
+    assert data["candidate_actionability_actionable"] is True
+    assert data["candidate_actionability_hard_reject"] is False
+    assert data["candidate_actionability_reason"] == "not_evaluated"
+    assert data["actionability_status"] == "actionable"
+    assert data["actionability_reason"] == "not_evaluated"
+    assert data["actionability_stage"] == "planner"
+    assert data["actionability_gate_enabled"] is False
+    assert data["actionability_gate_applied"] is False
+    assert data["actionability_skip_reason"] is None
+    assert data["legacy_first_candidate_actionable"] is True
+    assert data["final_first_candidate_actionable"] is True
+    assert data["no_actionable_candidate"] is False
     assert data["attempts_count"] == 1
     assert data["post_lift_verified"] is True
 

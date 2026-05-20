@@ -201,6 +201,10 @@ keys = [
     "grasp_policy_usage",
     "candidate_source_policy_usage",
     "candidate_source_transition_usage",
+    "failure_family_breakdown",
+    "failure_mode_by_actionability_reason",
+    "candidate_actionability_usage",
+    "target_resolution_source_usage",
     "success_rate_by_object",
     "success_rate_by_profile",
 ]

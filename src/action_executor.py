@@ -59,26 +59,143 @@ class ActionExecutor:
 
     def act(self, target, decomposed, env) -> GraspActionResult:
         """v1 主接口: 抓取 target Hypothesis, 失败结构化回写。"""
+        from src.grasp_actionability import actionability_from_pre_grasp_result
+        from src.grasp_policy import (
+            actionability_diagnostics_enabled,
+            actionability_gate_enabled,
+        )
         from src.world_belief import GraspAttempt
 
         used = {self._cand_sig(a.candidate) for a in target.grasp_attempts}
-        candidate = next(
-            (c for c in target.grasp_candidates
-             if self._cand_sig(c) not in used),
-            None,
-        )
-        if candidate is None:
+        candidates_to_try = [
+            c for c in target.grasp_candidates
+            if self._cand_sig(c) not in used
+        ]
+        if not candidates_to_try:
             return self._failed_result(
                 None, "ik_unreachable",
-                {"reason": "no_candidate"}, env,
+                {"reason": "no_candidate", "no_actionable_candidate": True},
+                env,
             )
 
-        # 记录物体初始 z（用于 lift 后验证物体是否跟随）
-        self._merge_candidate_attempt_diagnostic(
-            candidate,
-            self._classify_profile_diagnostic(target, candidate, env),
+        selected_strategy = (
+            target.grasp_strategy.strategy
+            if getattr(target, "grasp_strategy", None) is not None
+            else None
         )
-        obj_z_before = self._get_obj_z(target, env)
+        skipped_sources: list[str] = []
+        last_pre_grasp_failure: tuple[Any, Any, Any] | None = None
+        candidate = candidates_to_try[0]
+        obj_z_before = None
+
+        for candidate in candidates_to_try:
+            # Capture initial object z for lift validation on this candidate.
+            self._merge_candidate_attempt_diagnostic(
+                candidate,
+                self._classify_profile_diagnostic(target, candidate, env),
+            )
+            obj_z_before = self._get_obj_z(target, env)
+            self._navigate_to_candidate(candidate, env)
+            pre_result = self._move_to_pre_grasp_with_recovery(candidate, env)
+            actionability = actionability_from_pre_grasp_result(
+                candidate,
+                pre_result,
+                selected_strategy=selected_strategy,
+                target_body=self._resolve_target_body(target, env),
+            )
+            profile = self._candidate_attempt_diagnostic(candidate).get("grasp_profile")
+            gate_enabled = actionability_gate_enabled(
+                self.grasp_policy_config,
+                profile,
+            )
+            diagnostics_enabled = actionability_diagnostics_enabled(
+                self.grasp_policy_config,
+            )
+            if gate_enabled or diagnostics_enabled:
+                self._merge_candidate_attempt_diagnostic(
+                    candidate,
+                    {
+                        **actionability.to_diagnostic(),
+                        "candidate_actionability_policy": (
+                            "pre_grasp_gate" if gate_enabled else "diagnostics_only"
+                        ),
+                        "actionability_gate_enabled": gate_enabled,
+                        "actionability_gate_applied": bool(
+                            gate_enabled and skipped_sources
+                        ),
+                        "actionability_skip_reason": (
+                            "hard_reject_pre_grasp" if skipped_sources else None
+                        ),
+                        "no_actionable_candidate": False,
+                        "skipped_candidate_sources": list(skipped_sources),
+                    },
+                )
+            if pre_result.ok or pre_result.handoff_ok:
+                break
+
+            last_pre_grasp_failure = (candidate, pre_result, actionability)
+            if gate_enabled and actionability.hard_reject:
+                skipped_sources.append(str(getattr(candidate, "source", "unknown")))
+                try:
+                    self.release_and_retreat(env)
+                except Exception:
+                    pass
+                continue
+
+            return self._failed_result(
+                candidate,
+                "ik_unreachable",
+                {
+                    "stage": "pre_grasp",
+                    "pre_grasp_reason": pre_result.reason,
+                    "original_reason": getattr(pre_result, "original_reason", None),
+                    **self._pre_grasp_details(pre_result),
+                },
+                env,
+            )
+        else:
+            if last_pre_grasp_failure is not None:
+                failed_candidate, failed_pre_result, failed_actionability = (
+                    last_pre_grasp_failure
+                )
+                return self._failed_result(
+                    failed_candidate,
+                    "ik_unreachable",
+                    {
+                        **failed_actionability.to_diagnostic(),
+                        "candidate_actionability_policy": "pre_grasp_gate",
+                        "stage": "pre_grasp",
+                        "pre_grasp_reason": failed_pre_result.reason,
+                        "original_reason": getattr(
+                            failed_pre_result,
+                            "original_reason",
+                            None,
+                        ),
+                        "actionability_gate_enabled": True,
+                        "actionability_gate_applied": bool(skipped_sources),
+                        "actionability_skip_reason": "hard_reject_pre_grasp",
+                        "no_actionable_candidate": True,
+                        "skipped_candidate_sources": list(skipped_sources),
+                        **self._pre_grasp_details(failed_pre_result),
+                    },
+                    env,
+                )
+            return self._failed_result(
+                None,
+                "ik_unreachable",
+                {"reason": "no_candidate", "no_actionable_candidate": True},
+                env,
+            )
+
+        if skipped_sources:
+            self._merge_candidate_attempt_diagnostic(
+                candidate,
+                {
+                    "actionability_gate_applied": True,
+                    "actionability_skip_reason": "hard_reject_pre_grasp",
+                    "skipped_candidate_sources": list(skipped_sources),
+                },
+            )
 
         # Parse approach_dir up front for both offset selection and
         # later descend stages.
@@ -96,89 +213,6 @@ class ActionExecutor:
             and abs(approach_dir[0]) < 0.1
             and abs(approach_dir[1]) < 0.1
         )
-
-        # Phase 4 + 9c: explicit base navigation with safe minimum offset.
-        #
-        # Post-navigation GPU probes showed offsets below 0.55m place PandaOmron
-        # in an arm-control-degenerate state: all OSC pulses collapse to tiny
-        # common drift and z motion is lost. Offset 0.55m restores meaningful
-        # x/z response while 0.65m matches the reset baseline.
-        target_z = float(candidate.point_3d[2])
-        offset_m = 0.55
-        logger.info(
-            "[act] safe navigate offset=0.55m (target_z=%.3f, top_down=%s)",
-            target_z,
-            is_top_down,
-        )
-
-        # Best-effort: if env doesn't implement navigate_base_to (legacy mock)
-        # OR if it returns False/raises, fall through to legacy move_to_pre_grasp
-        # which still has drive_base=True for base approach (Phase 3 fallback).
-        if hasattr(env, "navigate_base_to"):
-            try:
-                env.navigate_base_to(
-                    target_xy=candidate.point_3d[:2],
-                    offset_m=offset_m,
-                )
-            except Exception as e:
-                logger.debug(
-                    f"[act] navigate_base_to failed: {e}, falling through"
-                )
-
-        # 1. pre-grasp (diagnostic-aware with iterative nudge recovery)
-        if hasattr(env, "move_to_pre_grasp_diagnostic"):
-            pre_result = env.move_to_pre_grasp_diagnostic(candidate)
-            if not (pre_result.ok or pre_result.handoff_ok):
-                # Iterative nudge recovery: each nudge reduces lateral by
-                # ~60-70 %, so 3 iterations bring 64 mm → ~5 mm (< 20 mm).
-                _MAX_NUDGE_ITERS = 3
-                for _nudge_iter in range(_MAX_NUDGE_ITERS):
-                    if not pre_result.needs_recovery:
-                        break
-                    recover_ok = self._recover_pre_grasp(
-                        env, candidate, pre_result,
-                    )
-                    if not recover_ok:
-                        return self._failed_result(
-                            candidate, "ik_unreachable",
-                            {
-                                "stage": "pre_grasp",
-                                "pre_grasp_reason": "base_recovery_failed",
-                                "original_reason": pre_result.reason,
-                                **self._pre_grasp_details(pre_result),
-                            },
-                            env,
-                        )
-                    # After base nudge, evaluate from current EEF WITHOUT
-                    # re-running move_arm_to.  Re-running would activate
-                    # orientation control (ori_err ~0.9 rad after base
-                    # rotation) which drifts position from ~24 mm back to
-                    # ~62 mm — undoing the nudge (GPU run c2e4ab1).
-                    if hasattr(env, "evaluate_pre_grasp_at_current"):
-                        pre_result = env.evaluate_pre_grasp_at_current(
-                            candidate,
-                        )
-                    else:
-                        pre_result = env.move_to_pre_grasp_diagnostic(
-                            candidate,
-                        )
-                    if pre_result.ok or pre_result.handoff_ok:
-                        break
-                if not (pre_result.ok or pre_result.handoff_ok):
-                    return self._failed_result(
-                        candidate, "ik_unreachable",
-                        {
-                            "stage": "pre_grasp",
-                            "pre_grasp_reason": pre_result.reason,
-                            **self._pre_grasp_details(pre_result),
-                        },
-                        env,
-                    )
-        elif not env.move_to_pre_grasp(candidate):
-            return self._failed_result(
-                candidate, "ik_unreachable",
-                {"stage": "pre_grasp"}, env,
-            )
 
         # 2. descend (策略感知的 depth margin + LLM 推理的 slip_risk 调整)
         self._refresh_candidate_xy_from_live_object(
@@ -523,6 +557,71 @@ class ActionExecutor:
             env.move_arm_to(target, threshold_m=0.02)
         except Exception as e:
             logger.warning(f"[release_and_retreat] retreat failed: {e}")
+
+    @staticmethod
+    def _navigate_to_candidate(candidate, env) -> None:
+        # Keep existing safe pre-grasp navigation candidate-scoped so the
+        # actionability gate can try the next candidate.
+        target_z = float(candidate.point_3d[2])
+        logger.info(
+            "[act] safe navigate offset=0.55m (target_z=%.3f)",
+            target_z,
+        )
+        if hasattr(env, "navigate_base_to"):
+            try:
+                env.navigate_base_to(
+                    target_xy=candidate.point_3d[:2],
+                    offset_m=0.55,
+                )
+            except Exception as e:
+                logger.debug(
+                    f"[act] navigate_base_to failed: {e}, falling through"
+                )
+
+    def _move_to_pre_grasp_with_recovery(self, candidate, env):
+        if hasattr(env, "move_to_pre_grasp_diagnostic"):
+            pre_result = env.move_to_pre_grasp_diagnostic(candidate)
+            if not (pre_result.ok or pre_result.handoff_ok):
+                _MAX_NUDGE_ITERS = 3
+                for _nudge_iter in range(_MAX_NUDGE_ITERS):
+                    if not pre_result.needs_recovery:
+                        break
+                    original_reason = pre_result.reason
+                    recover_ok = self._recover_pre_grasp(
+                        env, candidate, pre_result,
+                    )
+                    if not recover_ok:
+                        try:
+                            pre_result.original_reason = original_reason
+                            pre_result.reason = "base_recovery_failed"
+                        except Exception:
+                            pass
+                        return pre_result
+                    if hasattr(env, "evaluate_pre_grasp_at_current"):
+                        pre_result = env.evaluate_pre_grasp_at_current(
+                            candidate,
+                        )
+                    else:
+                        pre_result = env.move_to_pre_grasp_diagnostic(
+                            candidate,
+                        )
+                    if pre_result.ok or pre_result.handoff_ok:
+                        break
+            return pre_result
+
+        class _BoolPreResult:
+            def __init__(self, ok: bool):
+                self.ok = ok
+                self.handoff_ok = ok
+                self.needs_recovery = False
+                self.reason = "strict_ok" if ok else "pre_grasp_unreachable"
+                self.total_error_m = 0.0
+                self.lateral_error_m = 0.0
+                self.axis_error_m = 0.0
+                self.approach_gap_m = 0.0
+                self.lateral_limit_m = 0.0
+
+        return _BoolPreResult(bool(env.move_to_pre_grasp(candidate)))
 
     @staticmethod
     def _pre_grasp_details(result) -> dict:

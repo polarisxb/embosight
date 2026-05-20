@@ -47,6 +47,26 @@ class OracleSummary:
     candidate_source_policy_applied: bool | None = None
     legacy_first_candidate_source: str | None = None
     final_first_candidate_source: str | None = None
+    target_resolution_status: str | None = None
+    target_body: str | None = None
+    target_body_category: str | None = None
+    resolved_body_name: str | None = None
+    resolved_body_category: str | None = None
+    target_resolution_source: str | None = None
+    target_resolution_used_fallback: bool | None = None
+    candidate_actionability_policy: str | None = None
+    candidate_actionability_actionable: bool | None = None
+    candidate_actionability_hard_reject: bool | None = None
+    candidate_actionability_reason: str | None = None
+    actionability_status: str | None = None
+    actionability_reason: str | None = None
+    actionability_stage: str | None = None
+    actionability_gate_enabled: bool | None = None
+    actionability_gate_applied: bool | None = None
+    actionability_skip_reason: str | None = None
+    legacy_first_candidate_actionable: bool | None = None
+    final_first_candidate_actionable: bool | None = None
+    no_actionable_candidate: bool | None = None
     attempts_count: int = 0
     post_lift_verified: bool | None = None
 
@@ -146,6 +166,54 @@ def summarize_episode(
         ),
         final_first_candidate_source=_str_or_none(
             diagnostic.get("final_first_candidate_source"),
+        ),
+        target_resolution_status=_str_or_none(
+            diagnostic.get("target_resolution_status"),
+        ),
+        target_body=_str_or_none(diagnostic.get("target_body")),
+        target_body_category=_str_or_none(diagnostic.get("target_body_category")),
+        resolved_body_name=_str_or_none(diagnostic.get("resolved_body_name")),
+        resolved_body_category=_str_or_none(
+            diagnostic.get("resolved_body_category"),
+        ),
+        target_resolution_source=_str_or_none(
+            diagnostic.get("target_resolution_source"),
+        ),
+        target_resolution_used_fallback=_bool_or_none(
+            diagnostic.get("target_resolution_used_fallback"),
+        ),
+        candidate_actionability_policy=_str_or_none(
+            diagnostic.get("candidate_actionability_policy"),
+        ),
+        candidate_actionability_actionable=_bool_or_none(
+            diagnostic.get("candidate_actionability_actionable"),
+        ),
+        candidate_actionability_hard_reject=_bool_or_none(
+            diagnostic.get("candidate_actionability_hard_reject"),
+        ),
+        candidate_actionability_reason=_str_or_none(
+            diagnostic.get("candidate_actionability_reason"),
+        ),
+        actionability_status=_str_or_none(diagnostic.get("actionability_status")),
+        actionability_reason=_str_or_none(diagnostic.get("actionability_reason")),
+        actionability_stage=_str_or_none(diagnostic.get("actionability_stage")),
+        actionability_gate_enabled=_bool_or_none(
+            diagnostic.get("actionability_gate_enabled"),
+        ),
+        actionability_gate_applied=_bool_or_none(
+            diagnostic.get("actionability_gate_applied"),
+        ),
+        actionability_skip_reason=_str_or_none(
+            diagnostic.get("actionability_skip_reason"),
+        ),
+        legacy_first_candidate_actionable=_bool_or_none(
+            diagnostic.get("legacy_first_candidate_actionable"),
+        ),
+        final_first_candidate_actionable=_bool_or_none(
+            diagnostic.get("final_first_candidate_actionable"),
+        ),
+        no_actionable_candidate=_bool_or_none(
+            diagnostic.get("no_actionable_candidate"),
         ),
         attempts_count=len(grasp_attempts),
         post_lift_verified=_post_lift_verified(

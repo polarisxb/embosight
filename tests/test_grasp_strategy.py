@@ -378,6 +378,106 @@ class TestStrategyDrivenPlan:
         assert diag["candidate_source_policy"] == "legacy"
 
 
+def test_profiled_actionability_diagnostics_record_target_resolution_without_reordering():
+    planner = GraspPlanner(
+        vlm=MockVLM(['{"grip_norm": [0.5, 0.5]}']),
+        env=_GeometryAwareEnv(),
+        llm=None,
+        grasp_policy_config={
+            "mode": "profiled",
+            "enabled_profiles": ["small_round_slippery"],
+            "actionability_diagnostics": True,
+            "actionability_gate": False,
+        },
+    )
+    h = _hyp("lemon", visible_features="round yellow smooth waxy fruit")
+    h.grasp_strategy = GraspStrategy(strategy="gentle_side", slip_risk="high")
+
+    cands = planner.plan(h)
+
+    assert [c.source for c in cands] == [
+        "strategy_gentle_side",
+        "vlm_top_grasp",
+        "geometric_centroid",
+    ]
+    diag = getattr(cands[0], "_embosight_attempt_diagnostic")
+    assert diag["target_body"] == "distr_counter_main"
+    assert diag["target_body_category"] == "lemon"
+    assert diag["target_resolution_status"] == "resolved"
+    assert diag["resolved_body_name"] == "distr_counter_main"
+    assert diag["resolved_body_category"] == "lemon"
+    assert diag["target_resolution_source"] == "normalized_category"
+    assert diag["candidate_actionability_reason"] == "not_evaluated"
+    assert diag["candidate_actionability_actionable"] is True
+    assert diag["candidate_actionability_hard_reject"] is False
+    assert diag["actionability_status"] == "actionable"
+
+
+def test_legacy_does_not_attach_actionability_diagnostics():
+    planner = GraspPlanner(
+        vlm=MockVLM(['{"grip_norm": [0.5, 0.5]}']),
+        env=_GeometryAwareEnv(),
+        llm=None,
+        grasp_policy_config={
+            "mode": "legacy",
+            "enabled_profiles": ["small_round_slippery"],
+            "actionability_diagnostics": True,
+        },
+    )
+    h = _hyp("lemon", visible_features="round yellow smooth waxy fruit")
+    h.grasp_strategy = GraspStrategy(strategy="gentle_side", slip_risk="high")
+
+    cands = planner.plan(h)
+
+    diag = getattr(cands[0], "_embosight_attempt_diagnostic", {})
+    assert "candidate_actionability_reason" not in diag
+
+
+class _HardRejectGentleSideEnv(_FakeEnv):
+    def preview_candidate_actionability(self, candidate, **kwargs):
+        if candidate.source == "strategy_gentle_side":
+            return {
+                "actionable": False,
+                "hard_reject": True,
+                "reason": "axis_gap_too_large",
+            }
+        return {
+            "actionable": True,
+            "hard_reject": False,
+            "reason": "preview_ok",
+        }
+
+
+def test_profiled_actionability_gate_prevents_promoting_hard_rejected_strategy():
+    planner = GraspPlanner(
+        vlm=MockVLM(['{"grip_norm": [0.5, 0.5]}']),
+        env=_HardRejectGentleSideEnv(),
+        llm=None,
+        grasp_policy_config={
+            "mode": "profiled",
+            "enabled_profiles": ["small_round_slippery"],
+            "actionability_diagnostics": True,
+            "actionability_gate": True,
+        },
+    )
+    h = _hyp("lemon", visible_features="round yellow smooth waxy fruit")
+    h.grasp_strategy = GraspStrategy(strategy="gentle_side", slip_risk="high")
+
+    cands = planner.plan(h)
+
+    assert [c.source for c in cands] == [
+        "vlm_top_grasp",
+        "geometric_centroid",
+        "strategy_gentle_side",
+    ]
+    diag = getattr(cands[0], "_embosight_attempt_diagnostic")
+    assert diag["candidate_actionability_policy"] == "profiled_preview_gate"
+    assert diag["legacy_first_candidate_actionable"] is True
+    assert diag["final_first_candidate_actionable"] is True
+    assert diag["no_actionable_candidate"] is False
+    assert diag["candidate_source_policy_applied"] is False
+
+
 class TestBannedStrategies:
     def test_parse_banned_from_memory(self):
         advice = "wooden_spoon: avoid top_down (slipped x4), avoid handle_grasp (slipped x2)"

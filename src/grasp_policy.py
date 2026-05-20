@@ -104,6 +104,26 @@ def _enabled_profiles(config: dict[str, Any] | None) -> set[str]:
     return {_profile_name(profile) for profile in profiles}
 
 
+def actionability_diagnostics_enabled(config: dict[str, Any] | None) -> bool:
+    if not isinstance(config, dict):
+        return False
+    return _mode(config) == "profiled" and bool(config.get("actionability_diagnostics"))
+
+
+def actionability_gate_enabled(
+    config: dict[str, Any] | None,
+    grasp_profile: str | None,
+) -> bool:
+    profile = _profile_name(grasp_profile)
+    return (
+        isinstance(config, dict)
+        and _mode(config) == "profiled"
+        and bool(config.get("actionability_gate"))
+        and profile == "small_round_slippery"
+        and profile in _enabled_profiles(config)
+    )
+
+
 def _profile_name(profile: Any) -> str:
     text = str(profile).strip() if profile is not None else ""
     return text if text else "unknown"
@@ -132,7 +152,16 @@ def apply_candidate_source_policy(
         if strategy_source:
             strategy_idx = _first_source_index(final_order, strategy_source)
             vlm_idx = _first_source_index(final_order, "vlm_top_grasp")
-            if strategy_idx is not None and vlm_idx is not None and vlm_idx < strategy_idx:
+            strategy_is_rejected = (
+                strategy_idx is not None
+                and _candidate_hard_reject(final_order[strategy_idx])
+            )
+            if (
+                strategy_idx is not None
+                and vlm_idx is not None
+                and vlm_idx < strategy_idx
+                and not strategy_is_rejected
+            ):
                 selected = final_order.pop(strategy_idx)
                 final_order.insert(vlm_idx, selected)
                 applied = True
@@ -160,6 +189,13 @@ def merge_candidate_attempt_diagnostic(candidate: Any, diagnostic: dict[str, Any
 
 def _candidate_source(candidate: Any) -> str:
     return str(getattr(candidate, "source", "unknown"))
+
+
+def _candidate_hard_reject(candidate: Any) -> bool:
+    diagnostic = getattr(candidate, _CANDIDATE_ATTEMPT_DIAGNOSTIC_ATTR, None)
+    if not isinstance(diagnostic, dict):
+        return False
+    return diagnostic.get("candidate_actionability_hard_reject") is True
 
 
 def _first_source_index(candidates: list[Any], source: str) -> int | None:

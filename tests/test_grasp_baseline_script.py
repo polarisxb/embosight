@@ -29,6 +29,10 @@ def test_grasp_baseline_script_records_reproducible_baseline_outputs() -> None:
     assert "grasp_policy_usage" in text
     assert "candidate_source_policy_usage" in text
     assert "candidate_source_transition_usage" in text
+    assert "failure_family_breakdown" in text
+    assert "failure_mode_by_actionability_reason" in text
+    assert "candidate_actionability_usage" in text
+    assert "target_resolution_source_usage" in text
 
 
 def test_lemon_multi_script_exports_final_grasp_columns() -> None:
@@ -51,3 +55,10 @@ def test_lemon_multi_script_exports_final_grasp_columns() -> None:
     assert "candidate_source_policy_applied" in text
     assert "legacy_first_candidate_source" in text
     assert "final_first_candidate_source" in text
+    assert "target_resolution_source" in text
+    assert "target_body" in text
+    assert "candidate_actionability_policy" in text
+    assert "candidate_actionability_reason" in text
+    assert "candidate_actionability_actionable" in text
+    assert "candidate_actionability_hard_reject" in text
+    assert "no_actionable_candidate" in text

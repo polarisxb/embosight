@@ -527,6 +527,44 @@ class TestDiagnostic:
         assert diag["legacy_first_candidate_source"] == "vlm_top_grasp"
         assert diag["final_first_candidate_source"] == "strategy_gentle_side"
 
+    def test_attempt_preserves_actionability_diagnostics(self):
+        from src.action_executor import ActionExecutor
+        from src.grasp_policy import merge_candidate_attempt_diagnostic
+        from src.world_belief import DecomposedTask
+
+        h, c = _hyp_with_candidate()
+        merge_candidate_attempt_diagnostic(c, {
+            "target_resolution_status": "resolved",
+            "target_body": "obj_main",
+            "target_body_category": "apple",
+            "resolved_body_name": "obj_main",
+            "resolved_body_category": "apple",
+            "target_resolution_source": "normalized_category",
+            "candidate_actionability_policy": "diagnostics_only",
+            "candidate_actionability_actionable": True,
+            "candidate_actionability_hard_reject": False,
+            "candidate_actionability_reason": "not_evaluated",
+            "actionability_status": "actionable",
+            "actionability_reason": "not_evaluated",
+            "actionability_stage": "planner",
+            "actionability_gate_enabled": False,
+            "actionability_gate_applied": False,
+            "actionability_skip_reason": None,
+            "legacy_first_candidate_actionable": None,
+            "final_first_candidate_actionable": None,
+            "no_actionable_candidate": False,
+        })
+        env = FakeEnv(descend_ok=True, lift_ok=True, obj_lifts=True)
+
+        result = ActionExecutor().act(h, DecomposedTask(primary_target="apple"), env)
+
+        diag = result.attempt.diagnostic
+        assert diag["target_body"] == "obj_main"
+        assert diag["resolved_body_name"] == "obj_main"
+        assert diag["candidate_actionability_policy"] == "diagnostics_only"
+        assert diag["candidate_actionability_reason"] == "not_evaluated"
+        assert diag["actionability_status"] == "actionable"
+
 
 class TestStructure:
     def test_to_dict_serializable(self):
@@ -904,6 +942,119 @@ class TestDiagnosticPreGrasp:
 
         assert result.success is True
         assert "move_to_pre_grasp" in env.calls
+
+
+class _PreGraspGateEnv(FakeEnv):
+    def __init__(self):
+        super().__init__(descend_ok=True, lift_ok=True, obj_lifts=True)
+        self.pre_results = ["axis_gap_too_large", "strict_ok"]
+        self.pre_grasp_candidates: list[str] = []
+
+    def move_to_pre_grasp_diagnostic(self, candidate, height_m=0.05):
+        from src.grasp_execution import evaluate_pre_grasp_handoff
+
+        self.calls.append("pre_grasp_diag")
+        self.pre_grasp_candidates.append(candidate.source)
+        reason = self.pre_results.pop(0)
+        if reason == "strict_ok":
+            return evaluate_pre_grasp_handoff(
+                move_ok=True,
+                final_eef=np.array([0.5, 0.0, 0.95], dtype=np.float32),
+                pre_pos=np.array([0.5, 0.0, 0.95], dtype=np.float32),
+                grasp_point=np.array([0.5, 0.0, 0.9], dtype=np.float32),
+                approach_dir=np.array([0.0, 0.0, -1.0], dtype=np.float32),
+                finger_width_m=0.04,
+                height_m=height_m,
+            )
+        return evaluate_pre_grasp_handoff(
+            move_ok=False,
+            final_eef=np.array([0.34, 0.0, 0.9], dtype=np.float32),
+            pre_pos=np.array([0.45, 0.0, 0.9], dtype=np.float32),
+            grasp_point=np.array([0.5, 0.0, 0.9], dtype=np.float32),
+            approach_dir=np.array([1.0, 0.0, 0.0], dtype=np.float32),
+            finger_width_m=0.06,
+            height_m=height_m,
+        )
+
+
+def test_profiled_actionability_gate_skips_hard_rejected_pre_grasp_candidate():
+    from src.action_executor import ActionExecutor
+    from src.world_belief import DecomposedTask, GraspCandidate, GraspStrategy, Hypothesis
+
+    rejected = GraspCandidate(
+        point_3d=np.array([0.5, 0.0, 0.9], dtype=np.float32),
+        approach_dir=np.array([1.0, 0.0, 0.0], dtype=np.float32),
+        finger_width_m=0.06,
+        score=0.70,
+        source="strategy_gentle_side",
+    )
+    fallback = GraspCandidate(
+        point_3d=np.array([0.5, 0.0, 0.9], dtype=np.float32),
+        approach_dir=np.array([0.0, 0.0, -1.0], dtype=np.float32),
+        finger_width_m=0.04,
+        score=0.75,
+        source="vlm_top_grasp",
+    )
+    h = Hypothesis(
+        object_id="o0",
+        label="lemon",
+        label_alternatives=[("lemon", 0.9)],
+        label_entropy=0.1,
+        position_3d=np.array([0.5, 0.0, 0.9], dtype=np.float32),
+        position_std_m=0.02,
+        visible_features="round yellow smooth waxy fruit",
+        grasp_strategy=GraspStrategy(strategy="gentle_side", slip_risk="high"),
+        grasp_candidates=[rejected, fallback],
+    )
+    env = _PreGraspGateEnv()
+    exe = ActionExecutor(grasp_policy_config={
+        "mode": "profiled",
+        "enabled_profiles": ["small_round_slippery"],
+        "actionability_gate": True,
+    })
+
+    result = exe.act(h, DecomposedTask(primary_target="lemon"), env)
+
+    assert result.success is True
+    assert result.attempt.candidate.source == "vlm_top_grasp"
+    assert env.pre_grasp_candidates == ["strategy_gentle_side", "vlm_top_grasp"]
+    diag = result.attempt.diagnostic
+    assert diag["candidate_actionability_policy"] == "pre_grasp_gate"
+    assert diag["candidate_actionability_reason"] == "strict_ok"
+    assert diag["candidate_actionability_actionable"] is True
+    assert diag["actionability_gate_enabled"] is True
+    assert diag["actionability_gate_applied"] is True
+    assert diag["no_actionable_candidate"] is False
+    assert diag["skipped_candidate_sources"] == ["strategy_gentle_side"]
+
+
+def test_actionability_gate_returns_no_actionable_candidate_when_all_hard_reject():
+    from src.action_executor import ActionExecutor
+    from src.world_belief import DecomposedTask, GraspStrategy
+
+    h, c = _hyp_with_candidate()
+    h.label = "lemon"
+    h.visible_features = "round yellow smooth waxy fruit"
+    h.grasp_strategy = GraspStrategy(strategy="gentle_side", slip_risk="high")
+    c.source = "strategy_gentle_side"
+    c.approach_dir = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+    c.finger_width_m = 0.06
+    env = _PreGraspGateEnv()
+    env.pre_results = ["axis_gap_too_large"]
+    exe = ActionExecutor(grasp_policy_config={
+        "mode": "profiled",
+        "enabled_profiles": ["small_round_slippery"],
+        "actionability_gate": True,
+    })
+
+    result = exe.act(h, DecomposedTask(primary_target="lemon"), env)
+
+    assert result.success is False
+    assert result.attempt.failure_mode == "ik_unreachable"
+    assert result.attempt.diagnostic["no_actionable_candidate"] is True
+    assert result.attempt.diagnostic["candidate_actionability_reason"] == (
+        "axis_gap_too_large"
+    )
 
 
 class _BaseNudgeRecoveryEnv(FakeEnv):

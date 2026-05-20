@@ -11,6 +11,8 @@ def test_agent_config_defaults_to_legacy_policy():
     assert data["grasp_policy"] == {
         "mode": "legacy",
         "enabled_profiles": [],
+        "actionability_diagnostics": False,
+        "actionability_gate": False,
     }
 
 
@@ -90,3 +92,52 @@ def test_small_round_slippery_policy_preserves_stronger_legacy_squeeze():
     assert decision.depth_margin_m == 0.010
     assert decision.squeeze_extra_steps == 18
     assert decision.applied is True
+
+
+def test_actionability_flags_default_to_disabled():
+    from src.grasp_policy import (
+        actionability_diagnostics_enabled,
+        actionability_gate_enabled,
+    )
+
+    assert actionability_diagnostics_enabled(None) is False
+    assert actionability_gate_enabled(None, "small_round_slippery") is False
+
+
+def test_actionability_diagnostics_can_be_enabled_in_profiled_mode():
+    from src.grasp_policy import actionability_diagnostics_enabled
+
+    assert actionability_diagnostics_enabled({
+        "mode": "profiled",
+        "enabled_profiles": ["small_round_slippery"],
+        "actionability_diagnostics": True,
+    }) is True
+
+
+def test_actionability_gate_requires_profiled_enabled_profile():
+    from src.grasp_policy import actionability_gate_enabled
+
+    config = {
+        "mode": "profiled",
+        "enabled_profiles": ["small_round_slippery"],
+        "actionability_gate": True,
+    }
+
+    assert actionability_gate_enabled(config, "small_round_slippery") is True
+    assert actionability_gate_enabled(config, "thin_flat") is False
+    assert actionability_gate_enabled(
+        {"mode": "legacy", "actionability_gate": True},
+        "small_round_slippery",
+    ) is False
+
+
+def test_actionability_gate_is_limited_to_small_round_slippery():
+    from src.grasp_policy import actionability_gate_enabled
+
+    config = {
+        "mode": "profiled",
+        "enabled_profiles": ["small_round_slippery", "thin_flat"],
+        "actionability_gate": True,
+    }
+
+    assert actionability_gate_enabled(config, "thin_flat") is False

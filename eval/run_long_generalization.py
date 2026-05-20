@@ -40,6 +40,26 @@ FINAL_GRASP_ORACLE_FIELDS = (
     "candidate_source_policy_applied",
     "legacy_first_candidate_source",
     "final_first_candidate_source",
+    "target_resolution_status",
+    "target_body",
+    "target_body_category",
+    "resolved_body_name",
+    "resolved_body_category",
+    "target_resolution_source",
+    "target_resolution_used_fallback",
+    "candidate_actionability_policy",
+    "candidate_actionability_actionable",
+    "candidate_actionability_hard_reject",
+    "candidate_actionability_reason",
+    "actionability_status",
+    "actionability_reason",
+    "actionability_stage",
+    "actionability_gate_enabled",
+    "actionability_gate_applied",
+    "actionability_skip_reason",
+    "legacy_first_candidate_actionable",
+    "final_first_candidate_actionable",
+    "no_actionable_candidate",
     "attempts_count",
     "post_lift_verified",
 )
@@ -314,6 +334,11 @@ def summarize_results(results: list[dict[str, Any]]) -> dict[str, Any]:
     failure_mode_by_profile: dict[str, dict[str, int]] = {}
     success_by_object: dict[str, dict[str, int]] = {}
     success_by_profile: dict[str, dict[str, int]] = {}
+    failure_family_breakdown: dict[str, int] = {}
+    failure_mode_by_actionability_reason: dict[str, dict[str, int]] = {}
+    candidate_actionability_usage: dict[str, int] = {}
+    target_resolution_source_usage: dict[str, int] = {}
+    no_actionable_candidate_count = 0
 
     for r in results:
         object_name = _summary_object_name(r)
@@ -323,6 +348,11 @@ def summarize_results(results: list[dict[str, Any]]) -> dict[str, Any]:
         if not r.get("success"):
             reason = _failure_reason(r)
             failure_breakdown[str(reason)] = failure_breakdown.get(str(reason), 0) + 1
+            family = _failure_family(r)
+            if family:
+                failure_family_breakdown[family] = (
+                    failure_family_breakdown.get(family, 0) + 1
+                )
             failed_runs.append(r)
             _add_nested_count(failure_mode_by_object, object_name, str(reason))
             _add_nested_count(
@@ -336,9 +366,31 @@ def summarize_results(results: list[dict[str, Any]]) -> dict[str, Any]:
                 str(reason),
             )
             _add_nested_count(failure_mode_by_profile, profile, str(reason))
+            actionability_reason = _bucket_name(
+                r.get("candidate_actionability_reason")
+                or r.get("actionability_reason"),
+            )
+            if actionability_reason != "unknown":
+                _add_nested_count(
+                    failure_mode_by_actionability_reason,
+                    actionability_reason,
+                    str(reason),
+                )
         strategy = r.get("grasp_strategy")
         if strategy:
             strategy_usage[str(strategy)] = strategy_usage.get(str(strategy), 0) + 1
+        actionability_key = _candidate_actionability_usage_key(r)
+        if actionability_key:
+            candidate_actionability_usage[actionability_key] = (
+                candidate_actionability_usage.get(actionability_key, 0) + 1
+            )
+        target_source = _bucket_name(r.get("target_resolution_source"))
+        if target_source != "unknown":
+            target_resolution_source_usage[target_source] = (
+                target_resolution_source_usage.get(target_source, 0) + 1
+            )
+        if bool(r.get("no_actionable_candidate")):
+            no_actionable_candidate_count += 1
         policy_key = _grasp_policy_usage_key(r)
         if policy_key:
             grasp_policy_usage[policy_key] = grasp_policy_usage.get(policy_key, 0) + 1
@@ -389,6 +441,19 @@ def summarize_results(results: list[dict[str, Any]]) -> dict[str, Any]:
         "failure_mode_by_profile": _sorted_nested_counts(failure_mode_by_profile),
         "success_rate_by_object": _success_rates(success_by_object),
         "success_rate_by_profile": _success_rates(success_by_profile),
+        "failure_family_breakdown": dict(
+            sorted(failure_family_breakdown.items(), key=lambda x: (-x[1], x[0])),
+        ),
+        "failure_mode_by_actionability_reason": _sorted_nested_counts(
+            failure_mode_by_actionability_reason,
+        ),
+        "candidate_actionability_usage": dict(
+            sorted(candidate_actionability_usage.items(), key=lambda x: (-x[1], x[0])),
+        ),
+        "target_resolution_source_usage": dict(
+            sorted(target_resolution_source_usage.items(), key=lambda x: (-x[1], x[0])),
+        ),
+        "no_actionable_candidate_count": no_actionable_candidate_count,
         "slowest_runs": slowest_runs,
         "failed_runs": failed_runs,
     }
@@ -436,6 +501,23 @@ def _candidate_source_transition_key(result: dict[str, Any]) -> str | None:
     return f"{legacy}->{final}"
 
 
+def _candidate_actionability_usage_key(result: dict[str, Any]) -> str | None:
+    policy = _bucket_name(result.get("candidate_actionability_policy"))
+    reason = _bucket_name(
+        result.get("candidate_actionability_reason")
+        or result.get("actionability_reason"),
+    )
+    if policy == "unknown" and reason == "unknown":
+        return None
+    if bool(result.get("candidate_actionability_hard_reject")):
+        state = "hard_reject"
+    elif bool(result.get("candidate_actionability_actionable")):
+        state = "actionable"
+    else:
+        state = "not_actionable"
+    return f"{policy}:{reason}:{state}"
+
+
 def _failure_reason(result: dict[str, Any]) -> str:
     reason = _bucket_name(
         result.get("grasp_failure_mode")
@@ -445,6 +527,33 @@ def _failure_reason(result: dict[str, Any]) -> str:
     if reason == "MAX_STEPS reached" and result.get("action_sequence"):
         return _max_steps_loop_reason(result.get("action_sequence"))
     return reason
+
+
+def _failure_family(result: dict[str, Any]) -> str | None:
+    if result.get("success"):
+        return None
+    reason = _failure_reason(result)
+    if reason == "clarification_loop":
+        return "target_selection_failure"
+    if reason == "safety_loop":
+        return "safety_decision_failure"
+    actionability_reason = _bucket_name(
+        result.get("candidate_actionability_reason")
+        or result.get("actionability_reason"),
+    )
+    if actionability_reason in {
+        "axis_gap_too_small",
+        "axis_gap_too_large",
+        "below_grasp_point",
+        "target_body_unresolved",
+        "no_actionable_candidate",
+    }:
+        return "planning_actionability_failure"
+    if reason in {"ik_unreachable", "hit_z_floor"}:
+        return "planning_actionability_failure"
+    if reason in {"slipped_descend", "slipped_lift", "gripper_empty"}:
+        return "execution_failure"
+    return "planning_loop"
 
 
 def _max_steps_loop_reason(action_sequence: Any) -> str:

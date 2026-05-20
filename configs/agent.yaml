@@ -49,6 +49,8 @@ verify:
 grasp_policy:
   mode: legacy
   enabled_profiles: []
+  actionability_diagnostics: false
+  actionability_gate: false
 
 logger:
   log_dir: logs/episodes

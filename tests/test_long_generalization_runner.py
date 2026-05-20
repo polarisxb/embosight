@@ -281,6 +281,53 @@ def test_summarize_results_counts_grasp_policy_usage():
     }
 
 
+def test_summarize_results_counts_actionability_usage_and_failure_family():
+    module = _load_module()
+
+    summary = module.summarize_results([
+        {
+            "scenario_id": "random_seed_4",
+            "success": False,
+            "actual_object": "lemon_wedge",
+            "grasp_failure_mode": "ik_unreachable",
+            "candidate_actionability_policy": "pre_grasp_gate",
+            "candidate_actionability_actionable": False,
+            "candidate_actionability_hard_reject": True,
+            "candidate_actionability_reason": "axis_gap_too_large",
+            "target_resolution_source": "normalized_category",
+            "no_actionable_candidate": False,
+            "steps": 4,
+            "time_s": 100.0,
+        },
+        {
+            "scenario_id": "random_seed_7",
+            "success": False,
+            "actual_object": "juice",
+            "failure_reason": "MAX_STEPS reached",
+            "action_sequence": ["observe", "ask_user", "ask_user", "ask_user"],
+            "steps": 12,
+            "time_s": 60.0,
+        },
+    ])
+
+    assert summary["failure_family_breakdown"] == {
+        "planning_actionability_failure": 1,
+        "target_selection_failure": 1,
+    }
+    assert (
+        summary["failure_mode_by_actionability_reason"]["axis_gap_too_large"]
+        ["ik_unreachable"]
+        == 1
+    )
+    assert summary["candidate_actionability_usage"] == {
+        "pre_grasp_gate:axis_gap_too_large:hard_reject": 1,
+    }
+    assert summary["target_resolution_source_usage"] == {
+        "normalized_category": 1,
+    }
+    assert summary["no_actionable_candidate_count"] == 0
+
+
 def test_parse_run_fixed_output_extracts_oracle_and_episode_result():
     module = _load_module()
     stdout = '''
@@ -359,6 +406,26 @@ time    : 12.3s
   "candidate_source_policy_applied": true,
   "legacy_first_candidate_source": "vlm_top_grasp",
   "final_first_candidate_source": "strategy_top_down",
+  "target_resolution_status": "resolved",
+  "target_body": "obj_main",
+  "target_body_category": "lemon",
+  "resolved_body_name": "obj_main",
+  "resolved_body_category": "lemon",
+  "target_resolution_source": "normalized_category",
+  "target_resolution_used_fallback": false,
+  "candidate_actionability_policy": "diagnostics_only",
+  "candidate_actionability_actionable": true,
+  "candidate_actionability_hard_reject": false,
+  "candidate_actionability_reason": "not_evaluated",
+  "actionability_status": "actionable",
+  "actionability_reason": "not_evaluated",
+  "actionability_stage": "planner",
+  "actionability_gate_enabled": false,
+  "actionability_gate_applied": false,
+  "actionability_skip_reason": null,
+  "legacy_first_candidate_actionable": true,
+  "final_first_candidate_actionable": true,
+  "no_actionable_candidate": false,
   "action_sequence": ["observe", "classify_safety", "plan_grasp_candidates", "grasp"],
   "selected_target_label": "lemon",
   "actual_object": "lemon"
@@ -391,6 +458,26 @@ episode: logs/episodes/episode_1.json
     assert result["candidate_source_policy_applied"] is True
     assert result["legacy_first_candidate_source"] == "vlm_top_grasp"
     assert result["final_first_candidate_source"] == "strategy_top_down"
+    assert result["target_resolution_status"] == "resolved"
+    assert result["target_body"] == "obj_main"
+    assert result["target_body_category"] == "lemon"
+    assert result["resolved_body_name"] == "obj_main"
+    assert result["resolved_body_category"] == "lemon"
+    assert result["target_resolution_source"] == "normalized_category"
+    assert result["target_resolution_used_fallback"] is False
+    assert result["candidate_actionability_policy"] == "diagnostics_only"
+    assert result["candidate_actionability_actionable"] is True
+    assert result["candidate_actionability_hard_reject"] is False
+    assert result["candidate_actionability_reason"] == "not_evaluated"
+    assert result["actionability_status"] == "actionable"
+    assert result["actionability_reason"] == "not_evaluated"
+    assert result["actionability_stage"] == "planner"
+    assert result["actionability_gate_enabled"] is False
+    assert result["actionability_gate_applied"] is False
+    assert result["actionability_skip_reason"] is None
+    assert result["legacy_first_candidate_actionable"] is True
+    assert result["final_first_candidate_actionable"] is True
+    assert result["no_actionable_candidate"] is False
 
 
 def test_prepare_memory_dir_writes_empty_index_and_domains(tmp_path):
