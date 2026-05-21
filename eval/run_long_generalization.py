@@ -68,6 +68,10 @@ FINAL_GRASP_ORACLE_FIELDS = (
     "execution_recovery_enabled",
     "execution_recovery_applied",
     "execution_recovery_reason",
+    "execution_recovery_trigger_stage",
+    "execution_recovery_trigger_reason",
+    "execution_recovery_trigger_failure_mode",
+    "execution_recovery_trigger_candidate_source",
     "execution_recovery_skip_count",
     "execution_recovery_skipped_sources",
     "executed_candidate_source",
@@ -248,10 +252,11 @@ def run_one_seed_subprocess(
 
     env_vars = os.environ.copy()
     env_vars["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+    env_vars["PYTHONUNBUFFERED"] = "1"
 
     run_script = os.environ.get("EMBOSIGHT_RUN_FIXED_SCRIPT", "eval/run_fixed.py")
     cmd = [
-        sys.executable, run_script,
+        sys.executable, "-u", run_script,
         "--scenario", scenario_id,
         "--scenarios-config", str(scenarios_config),
         "--config", config,
@@ -263,19 +268,22 @@ def run_one_seed_subprocess(
 
     t0 = time.time()
     try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            cwd=str(REPO_ROOT),
-            env=env_vars,
-            timeout=timeout_s,
-        )
+        with (
+            stdout_path.open("w", encoding="utf-8") as stdout_file,
+            stderr_path.open("w", encoding="utf-8") as stderr_file,
+        ):
+            proc = subprocess.Popen(
+                cmd,
+                stdout=stdout_file,
+                stderr=stderr_file,
+                text=True,
+                cwd=str(REPO_ROOT),
+                env=env_vars,
+            )
+            proc.wait(timeout=timeout_s)
         elapsed = time.time() - t0
-        stdout = proc.stdout or ""
-        stderr = proc.stderr or ""
-        stdout_path.write_text(stdout, encoding="utf-8")
-        stderr_path.write_text(stderr, encoding="utf-8")
+        stdout = stdout_path.read_text(encoding="utf-8")
+        stderr = stderr_path.read_text(encoding="utf-8")
         result = parse_run_fixed_output(
             scenario_id=scenario_id,
             seed=seed,
@@ -284,11 +292,11 @@ def run_one_seed_subprocess(
             stderr=stderr,
             elapsed=elapsed,
         )
-    except subprocess.TimeoutExpired as e:
-        stdout = e.stdout if isinstance(e.stdout, str) else ""
-        stderr = e.stderr if isinstance(e.stderr, str) else ""
-        stdout_path.write_text(stdout, encoding="utf-8")
-        stderr_path.write_text(stderr, encoding="utf-8")
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        stdout = stdout_path.read_text(encoding="utf-8") if stdout_path.exists() else ""
+        stderr = stderr_path.read_text(encoding="utf-8") if stderr_path.exists() else ""
         result = {
             "scenario_id": scenario_id,
             "seed": seed,
@@ -364,6 +372,8 @@ def summarize_results(results: list[dict[str, Any]]) -> dict[str, Any]:
     failure_mode_by_execution_stage: dict[str, dict[str, int]] = {}
     failure_mode_by_execution_reason: dict[str, dict[str, int]] = {}
     execution_recovery_usage: dict[str, int] = {}
+    execution_recovery_outcome_usage: dict[str, int] = {}
+    execution_recovery_trigger_stage_usage: dict[str, int] = {}
 
     for r in results:
         object_name = _summary_object_name(r)
@@ -434,13 +444,20 @@ def summarize_results(results: list[dict[str, Any]]) -> dict[str, Any]:
             execution_failure_stage_usage[stage] = (
                 execution_failure_stage_usage.get(stage, 0) + 1
             )
-            recovery_key = (
-                f"applied:{_bucket_name(r.get('execution_recovery_reason'))}"
-                if bool(r.get("execution_recovery_applied"))
-                else "not_applied"
-            )
+        recovery_key = _execution_recovery_usage_key(r)
+        if recovery_key:
             execution_recovery_usage[recovery_key] = (
                 execution_recovery_usage.get(recovery_key, 0) + 1
+            )
+        recovery_outcome_key = _execution_recovery_outcome_key(r)
+        if recovery_outcome_key:
+            execution_recovery_outcome_usage[recovery_outcome_key] = (
+                execution_recovery_outcome_usage.get(recovery_outcome_key, 0) + 1
+            )
+        trigger_stage = _bucket_name(r.get("execution_recovery_trigger_stage"))
+        if bool(r.get("execution_recovery_applied")) and trigger_stage != "unknown":
+            execution_recovery_trigger_stage_usage[trigger_stage] = (
+                execution_recovery_trigger_stage_usage.get(trigger_stage, 0) + 1
             )
         policy_key = _grasp_policy_usage_key(r)
         if policy_key:
@@ -517,6 +534,18 @@ def summarize_results(results: list[dict[str, Any]]) -> dict[str, Any]:
         "execution_recovery_usage": dict(
             sorted(execution_recovery_usage.items(), key=lambda x: (-x[1], x[0])),
         ),
+        "execution_recovery_outcome_usage": dict(
+            sorted(
+                execution_recovery_outcome_usage.items(),
+                key=lambda x: (-x[1], x[0]),
+            ),
+        ),
+        "execution_recovery_trigger_stage_usage": dict(
+            sorted(
+                execution_recovery_trigger_stage_usage.items(),
+                key=lambda x: (-x[1], x[0]),
+            ),
+        ),
         "slowest_runs": slowest_runs,
         "failed_runs": failed_runs,
     }
@@ -562,6 +591,22 @@ def _candidate_source_transition_key(result: dict[str, Any]) -> str | None:
     if legacy == "unknown" and final == "unknown":
         return None
     return f"{legacy}->{final}"
+
+
+def _execution_recovery_usage_key(result: dict[str, Any]) -> str | None:
+    if bool(result.get("execution_recovery_applied")):
+        return f"applied:{_bucket_name(result.get('execution_recovery_reason'))}"
+    if _bucket_name(result.get("execution_failure_stage")) != "unknown":
+        return "not_applied"
+    return None
+
+
+def _execution_recovery_outcome_key(result: dict[str, Any]) -> str | None:
+    if not bool(result.get("execution_recovery_applied")):
+        return None
+    if bool(result.get("success")):
+        return "applied:success"
+    return f"applied:failed:{_failure_reason(result)}"
 
 
 def _candidate_actionability_usage_key(result: dict[str, Any]) -> str | None:
@@ -762,6 +807,17 @@ def format_summary_text(summary: dict[str, Any]) -> str:
     lines.append("")
     lines.append("--- Execution Recovery Usage ---")
     for key, count in summary.get("execution_recovery_usage", {}).items():
+        lines.append(f"  {key}: {count}")
+    lines.append("")
+    lines.append("--- Execution Recovery Outcome Usage ---")
+    for key, count in summary.get("execution_recovery_outcome_usage", {}).items():
+        lines.append(f"  {key}: {count}")
+    lines.append("")
+    lines.append("--- Execution Recovery Trigger Stage Usage ---")
+    for key, count in summary.get(
+        "execution_recovery_trigger_stage_usage",
+        {},
+    ).items():
         lines.append(f"  {key}: {count}")
     _append_nested_summary(
         lines,

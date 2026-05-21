@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+import textwrap
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -346,6 +347,22 @@ def test_summarize_results_counts_execution_failure_recovery_fields():
             "time_s": 1.0,
             "steps": 4,
         },
+        {
+            "success": False,
+            "grasp_failure_mode": "ik_unreachable",
+            "execution_failure_stage": None,
+            "execution_failure_reason": None,
+            "execution_recovery_applied": True,
+            "execution_recovery_reason": "retry_next_candidate",
+            "execution_recovery_trigger_stage": "micro_lift_verify",
+            "execution_recovery_trigger_reason": "object_not_following",
+            "selected_target_label": "whisk",
+            "grasp_strategy": "strategy_gentle_side",
+            "executed_strategy": "gentle_side",
+            "grasp_profile": "thin_flat",
+            "time_s": 2.0,
+            "steps": 5,
+        },
     ])
 
     assert summary["execution_failure_stage_usage"] == {
@@ -358,8 +375,48 @@ def test_summarize_results_counts_execution_failure_recovery_fields():
         "object_displaced_before_close": {"slipped_descend": 1},
     }
     assert summary["execution_recovery_usage"] == {
-        "applied:retry_next_candidate": 1,
+        "applied:retry_next_candidate": 2,
     }
+    assert summary["execution_recovery_outcome_usage"] == {
+        "applied:failed:ik_unreachable": 1,
+        "applied:failed:slipped_descend": 1,
+    }
+    assert summary["execution_recovery_trigger_stage_usage"] == {
+        "micro_lift_verify": 1,
+    }
+
+
+def test_run_one_seed_subprocess_keeps_timeout_stdout(tmp_path, monkeypatch):
+    module = _load_module()
+    script = tmp_path / "slow_run_fixed.py"
+    script.write_text(
+        textwrap.dedent(
+            """
+            import time
+
+            print("started random seed run")
+            time.sleep(5)
+            """
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EMBOSIGHT_RUN_FIXED_SCRIPT", str(script))
+
+    result = module.run_one_seed_subprocess(
+        scenario={"id": "random_seed_999", "seed": 999},
+        run_dir=tmp_path / "run",
+        scenarios_config=tmp_path / "scenarios.yaml",
+        gpu_id=0,
+        config="configs/default.yaml",
+        agent_config="configs/agent.yaml",
+        log_level="INFO",
+        timeout_s=1,
+    )
+
+    assert result["failure_reason"] == "timeout"
+    assert "started random seed run" in Path(result["stdout_path"]).read_text(
+        encoding="utf-8",
+    )
 
 
 def test_parse_run_fixed_output_extracts_oracle_and_episode_result():

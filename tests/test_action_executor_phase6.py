@@ -304,6 +304,22 @@ def test_execution_recovery_skips_micro_lift_failure_candidate():
     assert result.success is True
     assert result.attempt.candidate.source == "strategy_top_down"
     assert result.attempt.diagnostic["execution_recovery_applied"] is True
+    assert (
+        result.attempt.diagnostic["execution_recovery_trigger_stage"]
+        == "micro_lift_verify"
+    )
+    assert (
+        result.attempt.diagnostic["execution_recovery_trigger_reason"]
+        == "object_not_following"
+    )
+    assert (
+        result.attempt.diagnostic["execution_recovery_trigger_failure_mode"]
+        == "slipped_lift"
+    )
+    assert (
+        result.attempt.diagnostic["execution_recovery_trigger_candidate_source"]
+        == "vlm_top_grasp"
+    )
     assert result.attempt.diagnostic["execution_recovery_skip_count"] == 1
     assert result.attempt.diagnostic["execution_recovery_skipped_sources"] == [
         "vlm_top_grasp",

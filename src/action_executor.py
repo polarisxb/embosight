@@ -933,6 +933,7 @@ class ActionExecutor:
         ):
             return None
 
+        trigger_diagnostic = self._execution_recovery_trigger_diagnostic(failure)
         skipped = list(skipped_sources)
         skipped.append(str(getattr(candidate, "source", "unknown")))
         original_candidates = list(getattr(target, "grasp_candidates", []) or [])
@@ -949,6 +950,7 @@ class ActionExecutor:
 
         if not remaining_candidates:
             diagnostic = {
+                **trigger_diagnostic,
                 "execution_recovery_applied": bool(skipped),
                 "execution_recovery_reason": "no_recoverable_candidate",
                 "execution_recovery_skip_count": len(skipped),
@@ -974,6 +976,7 @@ class ActionExecutor:
             target.grasp_candidates = original_candidates
 
         diagnostic = {
+            **trigger_diagnostic,
             "execution_recovery_applied": bool(skipped),
             "execution_recovery_reason": "retry_next_candidate",
             "execution_recovery_skip_count": len(skipped),
@@ -985,6 +988,15 @@ class ActionExecutor:
             diagnostic,
         )
         return recovered
+
+    @staticmethod
+    def _execution_recovery_trigger_diagnostic(failure) -> dict:
+        return {
+            "execution_recovery_trigger_failure_mode": failure.failure_mode,
+            "execution_recovery_trigger_stage": failure.stage,
+            "execution_recovery_trigger_reason": failure.reason,
+            "execution_recovery_trigger_candidate_source": failure.candidate_source,
+        }
 
     def _verify_grasp_via_micro_lift(
         self,

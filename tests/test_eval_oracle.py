@@ -169,6 +169,10 @@ def test_oracle_summary_includes_final_grasp_evidence(tmp_path):
                             "execution_recovery_enabled": True,
                             "execution_recovery_applied": False,
                             "execution_recovery_reason": None,
+                            "execution_recovery_trigger_stage": "pre_close_alignment",
+                            "execution_recovery_trigger_reason": "object_displaced_before_close",
+                            "execution_recovery_trigger_failure_mode": "slipped_descend",
+                            "execution_recovery_trigger_candidate_source": "vlm_top_grasp",
                             "execution_recovery_skip_count": 0,
                             "pre_close_lateral_error_m": 0.089,
                             "pre_close_lateral_limit_m": 0.020,
@@ -236,6 +240,10 @@ def test_oracle_summary_includes_final_grasp_evidence(tmp_path):
     assert data["execution_failure_recoverable"] is True
     assert data["execution_recovery_enabled"] is True
     assert data["execution_recovery_applied"] is False
+    assert data["execution_recovery_trigger_stage"] == "pre_close_alignment"
+    assert data["execution_recovery_trigger_reason"] == "object_displaced_before_close"
+    assert data["execution_recovery_trigger_failure_mode"] == "slipped_descend"
+    assert data["execution_recovery_trigger_candidate_source"] == "vlm_top_grasp"
     assert data["execution_recovery_skip_count"] == 0
     assert data["pre_close_lateral_error_m"] == pytest.approx(0.089)
     assert data["attempts_count"] == 1

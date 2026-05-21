@@ -75,6 +75,10 @@ class OracleSummary:
     execution_recovery_enabled: bool | None = None
     execution_recovery_applied: bool | None = None
     execution_recovery_reason: str | None = None
+    execution_recovery_trigger_stage: str | None = None
+    execution_recovery_trigger_reason: str | None = None
+    execution_recovery_trigger_failure_mode: str | None = None
+    execution_recovery_trigger_candidate_source: str | None = None
     execution_recovery_skip_count: int | None = None
     execution_recovery_skipped_sources: list[str] | None = None
     executed_candidate_source: str | None = None
@@ -257,6 +261,18 @@ def summarize_episode(
         ),
         execution_recovery_reason=_str_or_none(
             diagnostic.get("execution_recovery_reason"),
+        ),
+        execution_recovery_trigger_stage=_str_or_none(
+            diagnostic.get("execution_recovery_trigger_stage"),
+        ),
+        execution_recovery_trigger_reason=_str_or_none(
+            diagnostic.get("execution_recovery_trigger_reason"),
+        ),
+        execution_recovery_trigger_failure_mode=_str_or_none(
+            diagnostic.get("execution_recovery_trigger_failure_mode"),
+        ),
+        execution_recovery_trigger_candidate_source=_str_or_none(
+            diagnostic.get("execution_recovery_trigger_candidate_source"),
         ),
         execution_recovery_skip_count=_int_or_none(
             diagnostic.get("execution_recovery_skip_count"),

@@ -1793,6 +1793,10 @@ def test_execution_recovery_skips_pre_close_displaced_candidate():
     assert result.attempt.candidate.source == "strategy_top_down"
     assert diag["execution_recovery_applied"] is True
     assert diag["execution_recovery_reason"] == "retry_next_candidate"
+    assert diag["execution_recovery_trigger_stage"] == "pre_close_alignment"
+    assert diag["execution_recovery_trigger_reason"] == "object_displaced_before_close"
+    assert diag["execution_recovery_trigger_failure_mode"] == "slipped_descend"
+    assert diag["execution_recovery_trigger_candidate_source"] == "vlm_top_grasp"
     assert diag["execution_recovery_skip_count"] == 1
     assert diag["execution_recovery_skipped_sources"] == ["vlm_top_grasp"]
     assert env.retreat_opens >= 1
