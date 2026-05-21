@@ -392,7 +392,16 @@ class ActionExecutor:
                         stage="lift_after_reposition",
                     )
                     if failed is not None:
-                        return failed
+                        recovered = self._recover_execution_failure_or_none(
+                            failed,
+                            target,
+                            decomposed,
+                            env,
+                            candidate,
+                            _execution_recovery_attempts_used,
+                            execution_recovery_skipped_sources,
+                        )
+                        return recovered if recovered is not None else failed
                     lift_ok, final_z = env.lift(approach_dir=_vert)
                     if not lift_ok:
                         return self._failed_result(
@@ -434,7 +443,16 @@ class ActionExecutor:
                         stage="descend_reposition_failed",
                     )
                     if failed is not None:
-                        return failed
+                        recovered = self._recover_execution_failure_or_none(
+                            failed,
+                            target,
+                            decomposed,
+                            env,
+                            candidate,
+                            _execution_recovery_attempts_used,
+                            execution_recovery_skipped_sources,
+                        )
+                        return recovered if recovered is not None else failed
                     lift_ok, final_z = env.lift(approach_dir=_vert)
                     if not lift_ok:
                         return self._failed_result(
@@ -480,7 +498,16 @@ class ActionExecutor:
                     stage="approach_incomplete",
                 )
                 if failed is not None:
-                    return failed
+                    recovered = self._recover_execution_failure_or_none(
+                        failed,
+                        target,
+                        decomposed,
+                        env,
+                        candidate,
+                        _execution_recovery_attempts_used,
+                        execution_recovery_skipped_sources,
+                    )
+                    return recovered if recovered is not None else failed
                 lift_ok, final_z = env.lift(approach_dir=approach_dir)
                 if not lift_ok:
                     if not grasp_ok:
@@ -523,7 +550,16 @@ class ActionExecutor:
                 env, target, candidate, grasp_ok, stage="lift",
             )
             if failed is not None:
-                return failed
+                recovered = self._recover_execution_failure_or_none(
+                    failed,
+                    target,
+                    decomposed,
+                    env,
+                    candidate,
+                    _execution_recovery_attempts_used,
+                    execution_recovery_skipped_sources,
+                )
+                return recovered if recovered is not None else failed
 
             # 4. lift
             lift_ok, final_z = env.lift(approach_dir=approach_dir)

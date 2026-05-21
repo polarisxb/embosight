@@ -224,7 +224,8 @@ def test_micro_lift_failure_records_execution_failure_diagnostics():
             "execution_recovery_diagnostics": True,
         },
     )
-    h, _ = _hyp_with_candidate()
+    h, first = _hyp_with_candidate()
+    first.source = "vlm_top_grasp"
 
     result = exe.act(h, DecomposedTask(primary_target="apple"), env)
 
@@ -235,3 +236,96 @@ def test_micro_lift_failure_records_execution_failure_diagnostics():
     assert diag["execution_branch"] == "lift"
     assert diag["execution_failure_recoverable"] is True
     assert diag["execution_recovery_applied"] is False
+
+
+class _MicroLiftRecoveryEnv(_MicroLiftEnv):
+    def __init__(self):
+        super().__init__(micro_lift_result=False)
+        self._candidate_source = "vlm_top_grasp"
+        self.retreat_opens = 0
+
+    def move_to_pre_grasp_diagnostic(self, candidate, height_m=0.05):
+        from types import SimpleNamespace
+
+        self._candidate_source = str(candidate.source)
+        return SimpleNamespace(
+            ok=True,
+            reason="strict_ok",
+            total_error_m=0.0,
+            lateral_error_m=0.0,
+            axis_error_m=0.0,
+            approach_gap_m=0.0,
+            lateral_limit_m=0.02,
+            handoff_ok=False,
+            needs_recovery=False,
+        )
+
+    def verify_grasp_by_micro_lift(self, target_body, lift_m=0.02, threshold=0.5):
+        self.micro_lift_calls.append({
+            "target_body": target_body,
+            "lift_m": float(lift_m),
+            "threshold": float(threshold),
+            "source": self._candidate_source,
+        })
+        self.calls.append("micro_lift")
+        return self._candidate_source != "vlm_top_grasp"
+
+    def open_gripper(self) -> bool:
+        self.retreat_opens += 1
+        return super().open_gripper()
+
+
+def test_execution_recovery_skips_micro_lift_failure_candidate():
+    from src.world_belief import GraspCandidate
+
+    env = _MicroLiftRecoveryEnv()
+    exe = ActionExecutor(
+        scene_describer=None,
+        grasp_policy_config={
+            "mode": "profiled",
+            "execution_recovery_diagnostics": True,
+            "execution_recovery_gate": True,
+            "execution_recovery_max_attempts": 1,
+        },
+    )
+    h, first = _hyp_with_candidate()
+    first.source = "vlm_top_grasp"
+    second = GraspCandidate(
+        point_3d=np.array([0.5, 0.0, 0.9], dtype=np.float32),
+        approach_dir=np.array([0.0, 0.0, -1.0], dtype=np.float32),
+        finger_width_m=0.04,
+        score=0.7,
+        source="strategy_top_down",
+    )
+    h.grasp_candidates = [first, second]
+
+    result = exe.act(h, DecomposedTask(primary_target="apple"), env)
+
+    assert result.success is True
+    assert result.attempt.candidate.source == "strategy_top_down"
+    assert result.attempt.diagnostic["execution_recovery_applied"] is True
+    assert result.attempt.diagnostic["execution_recovery_skip_count"] == 1
+    assert result.attempt.diagnostic["execution_recovery_skipped_sources"] == [
+        "vlm_top_grasp",
+    ]
+    assert env.retreat_opens >= 1
+
+
+def test_micro_lift_failure_remains_terminal_when_recovery_disabled():
+    env = _MicroLiftRecoveryEnv()
+    exe = ActionExecutor(
+        scene_describer=None,
+        grasp_policy_config={
+            "mode": "profiled",
+            "execution_recovery_diagnostics": True,
+            "execution_recovery_gate": False,
+        },
+    )
+    h, first = _hyp_with_candidate()
+    first.source = "vlm_top_grasp"
+
+    result = exe.act(h, DecomposedTask(primary_target="apple"), env)
+
+    assert result.success is False
+    assert result.attempt.failure_mode == "slipped_lift"
+    assert result.attempt.diagnostic["execution_recovery_applied"] is False
