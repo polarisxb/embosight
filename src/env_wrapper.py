@@ -1064,7 +1064,15 @@ class EnvWrapper:
                     f"[move] converged step={step} dist={dist:.4f}m "
                     f"ori_err={ori_err:.4f}rad"
                 )
-                return True
+                return {
+                    "ok": True,
+                    "follows": True,
+                    "reason": "target_body_unreadable",
+                    "target_body": target_body,
+                    "eef_delta_m": None,
+                    "obj_delta_m": None,
+                    "required_m": None,
+                }
 
             # Phase 7 step 3: track best dist for IK-unreachable detection
             if dist < best_dist:
@@ -2856,6 +2864,22 @@ class EnvWrapper:
             True 若 object 跟随成功 (or 无法读 obj 时保守 True 让上游兜底).
             False 若 slipped (object Δz < lift_m * threshold).
         """
+        result = self.verify_grasp_by_micro_lift_diagnostic(
+            target_body,
+            lift_m=lift_m,
+            threshold=threshold,
+            max_steps=max_steps,
+        )
+        return bool(result.get("follows", True))
+
+    def verify_grasp_by_micro_lift_diagnostic(
+        self,
+        target_body: str,
+        lift_m: float = 0.02,
+        threshold: float = 0.5,
+        max_steps: int = 80,
+    ) -> dict:
+        """Return micro-lift motion details with conservative pass semantics."""
         try:
             obj_pos_before = self._get_body_pos(target_body)
             if obj_pos_before is None:
@@ -2863,7 +2887,15 @@ class EnvWrapper:
                     f"[micro_lift] cannot read obj z for {target_body}, "
                     "skip (defer to post-lift Δz)"
                 )
-                return True
+                return {
+                    "ok": True,
+                    "follows": True,
+                    "reason": "target_body_unreadable",
+                    "target_body": target_body,
+                    "eef_delta_m": None,
+                    "obj_delta_m": None,
+                    "required_m": None,
+                }
             obj_z_before = float(obj_pos_before[2])
             eef_before = self.get_eef_pos().copy()
 
@@ -2883,7 +2915,15 @@ class EnvWrapper:
 
             obj_pos_after = self._get_body_pos(target_body)
             if obj_pos_after is None:
-                return True
+                return {
+                    "ok": True,
+                    "follows": True,
+                    "reason": "target_body_unreadable_after",
+                    "target_body": target_body,
+                    "eef_delta_m": None,
+                    "obj_delta_m": None,
+                    "required_m": None,
+                }
             obj_z_after = float(obj_pos_after[2])
             obj_delta = obj_z_after - obj_z_before
             eef_after = self.get_eef_pos()
@@ -2902,12 +2942,28 @@ class EnvWrapper:
                 f"max({min_required:.4f}, eef_Δz*{threshold:.2f}), "
                 f"target={target_body})"
             )
-            return follows
+            return {
+                "ok": True,
+                "follows": bool(follows),
+                "reason": "object_following" if follows else "object_not_following",
+                "target_body": target_body,
+                "eef_delta_m": round(float(eef_delta), 6),
+                "obj_delta_m": round(float(obj_delta), 6),
+                "required_m": round(float(required), 6),
+            }
         except Exception as e:
             logger.warning(
                 f"[micro_lift] failed: {e}, conservative pass (defer to post-lift)"
             )
-            return True
+            return {
+                "ok": False,
+                "follows": True,
+                "reason": "micro_lift_exception",
+                "target_body": target_body,
+                "eef_delta_m": None,
+                "obj_delta_m": None,
+                "required_m": None,
+            }
 
     def lift(
         self,

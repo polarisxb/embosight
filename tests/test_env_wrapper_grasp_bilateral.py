@@ -431,6 +431,37 @@ def test_micro_lift_returns_true_on_exception():
     ) is True
 
 
+def test_micro_lift_diagnostic_returns_motion_details():
+    w = _MicroLiftStubWrapper(
+        obj_z_delta_after_lift=0.004,
+        eef_z_delta_after_lift=0.020,
+    )
+
+    result = w.verify_grasp_by_micro_lift_diagnostic(
+        "obj_main",
+        lift_m=0.02,
+        threshold=0.5,
+    )
+
+    assert result["ok"] is True
+    assert result["follows"] is False
+    assert result["reason"] == "object_not_following"
+    assert result["eef_delta_m"] == 0.020
+    assert result["obj_delta_m"] == pytest.approx(0.004)
+    assert result["required_m"] == 0.010
+
+
+def test_micro_lift_bool_method_preserves_existing_return_value():
+    w = _MicroLiftStubWrapper(
+        obj_z_delta_after_lift=0.0,
+        eef_z_delta_after_lift=0.020,
+    )
+
+    assert w.verify_grasp_by_micro_lift(
+        "obj_main", lift_m=0.02, threshold=0.5,
+    ) is False
+
+
 # ======================================================================
 # Phase 6.3: _gripper_closed_on_empty unit tests
 # ======================================================================
