@@ -328,6 +328,40 @@ def test_summarize_results_counts_actionability_usage_and_failure_family():
     assert summary["no_actionable_candidate_count"] == 0
 
 
+def test_summarize_results_counts_execution_failure_recovery_fields():
+    module = _load_module()
+
+    summary = module.summarize_results([
+        {
+            "success": False,
+            "grasp_failure_mode": "slipped_descend",
+            "execution_failure_stage": "pre_close_alignment",
+            "execution_failure_reason": "object_displaced_before_close",
+            "execution_recovery_applied": True,
+            "execution_recovery_reason": "retry_next_candidate",
+            "selected_target_label": "boxed_food",
+            "grasp_strategy": "vlm_top_grasp",
+            "executed_strategy": "top_down",
+            "grasp_profile": "wide_ungraspable",
+            "time_s": 1.0,
+            "steps": 4,
+        },
+    ])
+
+    assert summary["execution_failure_stage_usage"] == {
+        "pre_close_alignment": 1,
+    }
+    assert summary["failure_mode_by_execution_stage"] == {
+        "pre_close_alignment": {"slipped_descend": 1},
+    }
+    assert summary["failure_mode_by_execution_reason"] == {
+        "object_displaced_before_close": {"slipped_descend": 1},
+    }
+    assert summary["execution_recovery_usage"] == {
+        "applied:retry_next_candidate": 1,
+    }
+
+
 def test_parse_run_fixed_output_extracts_oracle_and_episode_result():
     module = _load_module()
     stdout = '''

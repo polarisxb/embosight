@@ -213,3 +213,25 @@ class TestResolveTargetBody:
             position_3d=np.zeros(3), position_std_m=0.0,
         )
         assert ActionExecutor._resolve_target_body(target, _BrokenEnv()) is None
+
+
+def test_micro_lift_failure_records_execution_failure_diagnostics():
+    env = _MicroLiftEnv(micro_lift_result=False)
+    exe = ActionExecutor(
+        scene_describer=None,
+        grasp_policy_config={
+            "mode": "profiled",
+            "execution_recovery_diagnostics": True,
+        },
+    )
+    h, _ = _hyp_with_candidate()
+
+    result = exe.act(h, DecomposedTask(primary_target="apple"), env)
+
+    diag = result.attempt.diagnostic
+    assert result.attempt.failure_mode == "slipped_lift"
+    assert diag["execution_failure_stage"] == "micro_lift_verify"
+    assert diag["execution_failure_reason"] == "object_not_following"
+    assert diag["execution_branch"] == "lift"
+    assert diag["execution_failure_recoverable"] is True
+    assert diag["execution_recovery_applied"] is False

@@ -1686,3 +1686,29 @@ class TestZStallRecoveryUsesBaseNudge:
         assert nudge[0] < 0, (
             f"nudge should be toward object (negative x), got {nudge}"
         )
+
+
+def test_pre_close_alignment_failure_records_execution_failure_diagnostics():
+    from src.action_executor import ActionExecutor
+    from src.world_belief import DecomposedTask
+
+    env = _ZStallObjectDisplacedEnv()
+    exe = ActionExecutor(
+        scene_describer=None,
+        grasp_policy_config={
+            "mode": "profiled",
+            "execution_recovery_diagnostics": True,
+        },
+    )
+    h, _ = _hyp_with_candidate()
+
+    result = exe.act(h, DecomposedTask(primary_target="apple"), env)
+
+    diag = result.attempt.diagnostic
+    assert result.attempt.failure_mode == "slipped_descend"
+    assert diag["execution_failure_stage"] == "pre_close_alignment"
+    assert diag["execution_failure_reason"] == "object_displaced_before_close"
+    assert diag["execution_failure_recoverable"] is True
+    assert diag["execution_recovery_enabled"] is False
+    assert diag["execution_recovery_applied"] is False
+    assert diag["pre_close_lateral_error_m"] > diag["pre_close_lateral_limit_m"]

@@ -60,6 +60,27 @@ FINAL_GRASP_ORACLE_FIELDS = (
     "legacy_first_candidate_actionable",
     "final_first_candidate_actionable",
     "no_actionable_candidate",
+    "execution_failure_mode",
+    "execution_failure_stage",
+    "execution_failure_reason",
+    "execution_failure_recoverable",
+    "execution_branch",
+    "execution_recovery_enabled",
+    "execution_recovery_applied",
+    "execution_recovery_reason",
+    "execution_recovery_skip_count",
+    "execution_recovery_skipped_sources",
+    "executed_candidate_source",
+    "pre_close_lateral_error_m",
+    "pre_close_lateral_limit_m",
+    "pre_close_z_diff_m",
+    "pre_close_eef_pos",
+    "pre_close_obj_pos",
+    "pre_close_candidate_xy",
+    "micro_lift_eef_delta_m",
+    "micro_lift_obj_delta_m",
+    "micro_lift_required_m",
+    "micro_lift_follows",
     "attempts_count",
     "post_lift_verified",
 )
@@ -339,10 +360,16 @@ def summarize_results(results: list[dict[str, Any]]) -> dict[str, Any]:
     candidate_actionability_usage: dict[str, int] = {}
     target_resolution_source_usage: dict[str, int] = {}
     no_actionable_candidate_count = 0
+    execution_failure_stage_usage: dict[str, int] = {}
+    failure_mode_by_execution_stage: dict[str, dict[str, int]] = {}
+    failure_mode_by_execution_reason: dict[str, dict[str, int]] = {}
+    execution_recovery_usage: dict[str, int] = {}
 
     for r in results:
         object_name = _summary_object_name(r)
         profile = _bucket_name(r.get("grasp_profile"))
+        stage = _bucket_name(r.get("execution_failure_stage"))
+        execution_reason = _bucket_name(r.get("execution_failure_reason"))
         _add_success_bucket(success_by_object, object_name, bool(r.get("success")))
         _add_success_bucket(success_by_profile, profile, bool(r.get("success")))
         if not r.get("success"):
@@ -366,6 +393,18 @@ def summarize_results(results: list[dict[str, Any]]) -> dict[str, Any]:
                 str(reason),
             )
             _add_nested_count(failure_mode_by_profile, profile, str(reason))
+            if stage != "unknown":
+                _add_nested_count(
+                    failure_mode_by_execution_stage,
+                    stage,
+                    str(reason),
+                )
+            if execution_reason != "unknown":
+                _add_nested_count(
+                    failure_mode_by_execution_reason,
+                    execution_reason,
+                    str(reason),
+                )
             actionability_reason = _bucket_name(
                 r.get("candidate_actionability_reason")
                 or r.get("actionability_reason"),
@@ -391,6 +430,18 @@ def summarize_results(results: list[dict[str, Any]]) -> dict[str, Any]:
             )
         if bool(r.get("no_actionable_candidate")):
             no_actionable_candidate_count += 1
+        if stage != "unknown":
+            execution_failure_stage_usage[stage] = (
+                execution_failure_stage_usage.get(stage, 0) + 1
+            )
+            recovery_key = (
+                f"applied:{_bucket_name(r.get('execution_recovery_reason'))}"
+                if bool(r.get("execution_recovery_applied"))
+                else "not_applied"
+            )
+            execution_recovery_usage[recovery_key] = (
+                execution_recovery_usage.get(recovery_key, 0) + 1
+            )
         policy_key = _grasp_policy_usage_key(r)
         if policy_key:
             grasp_policy_usage[policy_key] = grasp_policy_usage.get(policy_key, 0) + 1
@@ -454,6 +505,18 @@ def summarize_results(results: list[dict[str, Any]]) -> dict[str, Any]:
             sorted(target_resolution_source_usage.items(), key=lambda x: (-x[1], x[0])),
         ),
         "no_actionable_candidate_count": no_actionable_candidate_count,
+        "execution_failure_stage_usage": dict(
+            sorted(execution_failure_stage_usage.items(), key=lambda x: (-x[1], x[0])),
+        ),
+        "failure_mode_by_execution_stage": _sorted_nested_counts(
+            failure_mode_by_execution_stage,
+        ),
+        "failure_mode_by_execution_reason": _sorted_nested_counts(
+            failure_mode_by_execution_reason,
+        ),
+        "execution_recovery_usage": dict(
+            sorted(execution_recovery_usage.items(), key=lambda x: (-x[1], x[0])),
+        ),
         "slowest_runs": slowest_runs,
         "failed_runs": failed_runs,
     }
@@ -691,6 +754,26 @@ def format_summary_text(summary: dict[str, Any]) -> str:
         "Success Rate By Profile",
         "success_rate_by_profile",
         summary.get("success_rate_by_profile", {}),
+    )
+    lines.append("")
+    lines.append("--- Execution Failure Stage Usage ---")
+    for stage, count in summary.get("execution_failure_stage_usage", {}).items():
+        lines.append(f"  {stage}: {count}")
+    lines.append("")
+    lines.append("--- Execution Recovery Usage ---")
+    for key, count in summary.get("execution_recovery_usage", {}).items():
+        lines.append(f"  {key}: {count}")
+    _append_nested_summary(
+        lines,
+        "Failure Mode By Execution Stage",
+        "failure_mode_by_execution_stage",
+        summary.get("failure_mode_by_execution_stage", {}),
+    )
+    _append_nested_summary(
+        lines,
+        "Failure Mode By Execution Reason",
+        "failure_mode_by_execution_reason",
+        summary.get("failure_mode_by_execution_reason", {}),
     )
     lines.append("=" * 60)
     return "\n".join(lines)

@@ -67,6 +67,27 @@ class OracleSummary:
     legacy_first_candidate_actionable: bool | None = None
     final_first_candidate_actionable: bool | None = None
     no_actionable_candidate: bool | None = None
+    execution_failure_mode: str | None = None
+    execution_failure_stage: str | None = None
+    execution_failure_reason: str | None = None
+    execution_failure_recoverable: bool | None = None
+    execution_branch: str | None = None
+    execution_recovery_enabled: bool | None = None
+    execution_recovery_applied: bool | None = None
+    execution_recovery_reason: str | None = None
+    execution_recovery_skip_count: int | None = None
+    execution_recovery_skipped_sources: list[str] | None = None
+    executed_candidate_source: str | None = None
+    pre_close_lateral_error_m: float | None = None
+    pre_close_lateral_limit_m: float | None = None
+    pre_close_z_diff_m: float | None = None
+    pre_close_eef_pos: list[float] | None = None
+    pre_close_obj_pos: list[float] | None = None
+    pre_close_candidate_xy: list[float] | None = None
+    micro_lift_eef_delta_m: float | None = None
+    micro_lift_obj_delta_m: float | None = None
+    micro_lift_required_m: float | None = None
+    micro_lift_follows: bool | None = None
     attempts_count: int = 0
     post_lift_verified: bool | None = None
 
@@ -215,6 +236,63 @@ def summarize_episode(
         no_actionable_candidate=_bool_or_none(
             diagnostic.get("no_actionable_candidate"),
         ),
+        execution_failure_mode=_str_or_none(
+            diagnostic.get("execution_failure_mode"),
+        ),
+        execution_failure_stage=_str_or_none(
+            diagnostic.get("execution_failure_stage"),
+        ),
+        execution_failure_reason=_str_or_none(
+            diagnostic.get("execution_failure_reason"),
+        ),
+        execution_failure_recoverable=_bool_or_none(
+            diagnostic.get("execution_failure_recoverable"),
+        ),
+        execution_branch=_str_or_none(diagnostic.get("execution_branch")),
+        execution_recovery_enabled=_bool_or_none(
+            diagnostic.get("execution_recovery_enabled"),
+        ),
+        execution_recovery_applied=_bool_or_none(
+            diagnostic.get("execution_recovery_applied"),
+        ),
+        execution_recovery_reason=_str_or_none(
+            diagnostic.get("execution_recovery_reason"),
+        ),
+        execution_recovery_skip_count=_int_or_none(
+            diagnostic.get("execution_recovery_skip_count"),
+        ),
+        execution_recovery_skipped_sources=_str_list_or_none(
+            diagnostic.get("execution_recovery_skipped_sources"),
+        ),
+        executed_candidate_source=_str_or_none(
+            diagnostic.get("executed_candidate_source"),
+        ),
+        pre_close_lateral_error_m=_float_or_none(
+            diagnostic.get("pre_close_lateral_error_m"),
+        ),
+        pre_close_lateral_limit_m=_float_or_none(
+            diagnostic.get("pre_close_lateral_limit_m"),
+        ),
+        pre_close_z_diff_m=_float_or_none(diagnostic.get("pre_close_z_diff_m")),
+        pre_close_eef_pos=_float_list_or_none(
+            diagnostic.get("pre_close_eef_pos"),
+        ),
+        pre_close_obj_pos=_float_list_or_none(
+            diagnostic.get("pre_close_obj_pos"),
+        ),
+        pre_close_candidate_xy=_float_list_or_none(
+            diagnostic.get("pre_close_candidate_xy"),
+        ),
+        micro_lift_eef_delta_m=_float_or_none(
+            diagnostic.get("micro_lift_eef_delta_m"),
+        ),
+        micro_lift_obj_delta_m=_float_or_none(
+            diagnostic.get("micro_lift_obj_delta_m"),
+        ),
+        micro_lift_required_m=_float_or_none(
+            diagnostic.get("micro_lift_required_m"),
+        ),
+        micro_lift_follows=_bool_or_none(diagnostic.get("micro_lift_follows")),
         attempts_count=len(grasp_attempts),
         post_lift_verified=_post_lift_verified(
             grasp_attempt,

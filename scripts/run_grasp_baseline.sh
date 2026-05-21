@@ -205,6 +205,10 @@ keys = [
     "failure_mode_by_actionability_reason",
     "candidate_actionability_usage",
     "target_resolution_source_usage",
+    "execution_failure_stage_usage",
+    "failure_mode_by_execution_stage",
+    "failure_mode_by_execution_reason",
+    "execution_recovery_usage",
     "success_rate_by_object",
     "success_rate_by_profile",
 ]

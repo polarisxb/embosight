@@ -504,13 +504,38 @@ class ActionExecutor:
                     "[act] object NOT lifted: z_before=%.3f z_after=%.3f Δ=%.3f",
                     obj_z_before, obj_z_after, obj_dz,
                 )
+                diagnostic = {
+                    "z_target": z_target,
+                    "z_actual": float(z_actual),
+                    "final_z": float(final_z),
+                    "obj_z_before": obj_z_before,
+                    "obj_z_after": obj_z_after,
+                    "stage": "post_lift_verify",
+                }
+                if self._execution_recovery_observability_enabled():
+                    from src.grasp_execution_recovery import (
+                        ExecutionFailureDiagnostic,
+                    )
+
+                    failure = ExecutionFailureDiagnostic(
+                        failure_mode="slipped_lift",
+                        stage="post_lift_verify",
+                        reason="object_not_lifted",
+                        recoverable=False,
+                        candidate_source=str(
+                            getattr(candidate, "source", "unknown"),
+                        ),
+                        executed_strategy=self._candidate_attempt_diagnostic(
+                            candidate,
+                        ).get("executed_strategy"),
+                        obj_z_before=obj_z_before,
+                        obj_z_after=obj_z_after,
+                        obj_z_delta_m=obj_dz,
+                    )
+                    diagnostic.update(failure.to_diagnostic())
+                    diagnostic.update(self._execution_recovery_status_diagnostic())
                 return self._failed_result(
-                    candidate, "slipped_lift",
-                    {"z_target": z_target, "z_actual": float(z_actual),
-                     "final_z": float(final_z),
-                     "obj_z_before": obj_z_before, "obj_z_after": obj_z_after,
-                     "stage": "post_lift_verify"},
-                    env,
+                    candidate, "slipped_lift", diagnostic, env,
                 )
             logger.info(
                 "[act] post-lift verified: obj Δz=%.3f (%.3f→%.3f)",
@@ -767,6 +792,30 @@ class ActionExecutor:
         diagnostic = getattr(candidate, _CANDIDATE_ATTEMPT_DIAGNOSTIC_ATTR, None)
         return dict(diagnostic) if isinstance(diagnostic, dict) else {}
 
+    def _execution_recovery_observability_enabled(self) -> bool:
+        from src.grasp_policy import (
+            execution_recovery_diagnostics_enabled,
+            execution_recovery_gate_enabled,
+        )
+
+        return (
+            execution_recovery_diagnostics_enabled(self.grasp_policy_config)
+            or execution_recovery_gate_enabled(self.grasp_policy_config)
+        )
+
+    def _execution_recovery_status_diagnostic(self) -> dict:
+        from src.grasp_policy import execution_recovery_gate_enabled
+
+        return {
+            "execution_recovery_enabled": execution_recovery_gate_enabled(
+                self.grasp_policy_config,
+            ),
+            "execution_recovery_applied": False,
+            "execution_recovery_reason": None,
+            "execution_recovery_skip_count": 0,
+            "execution_recovery_skipped_sources": [],
+        }
+
     def _verify_grasp_via_micro_lift(
         self,
         env,
@@ -796,25 +845,59 @@ class ActionExecutor:
         """
         if not grasp_ok:
             return None
-        if not hasattr(env, "verify_grasp_by_micro_lift"):
+        if not (
+            hasattr(env, "verify_grasp_by_micro_lift_diagnostic")
+            or hasattr(env, "verify_grasp_by_micro_lift")
+        ):
             return None
         try:
             target_body = self._resolve_target_body(target, env)
             if not target_body:
                 return None
-            follows = env.verify_grasp_by_micro_lift(
-                target_body, lift_m=0.02, threshold=0.5,
-            )
+            if hasattr(env, "verify_grasp_by_micro_lift_diagnostic"):
+                micro = env.verify_grasp_by_micro_lift_diagnostic(
+                    target_body, lift_m=0.02, threshold=0.5,
+                )
+                follows = bool(micro.get("follows", True))
+            else:
+                follows = bool(env.verify_grasp_by_micro_lift(
+                    target_body, lift_m=0.02, threshold=0.5,
+                ))
+                micro = {
+                    "eef_delta_m": None,
+                    "obj_delta_m": None,
+                    "required_m": None,
+                }
             if not follows:
+                diagnostic = {
+                    "stage": "micro_lift_verify",
+                    "branch": stage,
+                    "reason": "object_not_following",
+                    "threshold": 0.5,
+                    "lift_m": 0.02,
+                }
+                if self._execution_recovery_observability_enabled():
+                    from src.grasp_execution_recovery import (
+                        execution_failure_from_micro_lift,
+                    )
+
+                    failure = execution_failure_from_micro_lift(
+                        candidate_source=str(
+                            getattr(candidate, "source", "unknown"),
+                        ),
+                        executed_strategy=self._candidate_attempt_diagnostic(
+                            candidate,
+                        ).get("executed_strategy"),
+                        branch=stage,
+                        follows=False,
+                        eef_delta_m=micro.get("eef_delta_m"),
+                        obj_delta_m=micro.get("obj_delta_m"),
+                        required_m=micro.get("required_m"),
+                    )
+                    diagnostic.update(failure.to_diagnostic())
+                    diagnostic.update(self._execution_recovery_status_diagnostic())
                 return self._failed_result(
-                    candidate, "slipped_lift",
-                    {
-                        "stage": "micro_lift_verify",
-                        "branch": stage,
-                        "reason": "object_not_following",
-                        "threshold": 0.5,
-                        "lift_m": 0.02,
-                    },
+                    candidate, "slipped_lift", diagnostic,
                     env,
                 )
             return None
@@ -909,20 +992,40 @@ class ActionExecutor:
                 candidate_xy[0], candidate_xy[1],
                 lateral, lateral_limit,
             )
+            diagnostic = {
+                "stage": stage,
+                "reason": "object_displaced_before_close",
+                "target_body": body,
+                "lateral_error_m": lateral,
+                "lateral_limit_m": lateral_limit,
+                "z_diff_m": z_diff,
+                "eef_pos": eef[:3].tolist(),
+                "obj_pos": obj_pos.tolist(),
+                "candidate_xy": candidate_xy.tolist(),
+            }
+            if self._execution_recovery_observability_enabled():
+                from src.grasp_execution_recovery import (
+                    execution_failure_from_pre_close_alignment,
+                )
+
+                failure = execution_failure_from_pre_close_alignment(
+                    candidate_source=str(getattr(candidate, "source", "unknown")),
+                    executed_strategy=self._candidate_attempt_diagnostic(
+                        candidate,
+                    ).get("executed_strategy"),
+                    lateral_error_m=lateral,
+                    lateral_limit_m=lateral_limit,
+                    z_diff_m=z_diff,
+                    eef_pos=eef[:3].tolist(),
+                    obj_pos=obj_pos.tolist(),
+                    candidate_xy=candidate_xy.tolist(),
+                )
+                diagnostic.update(failure.to_diagnostic())
+                diagnostic.update(self._execution_recovery_status_diagnostic())
             return self._failed_result(
                 candidate,
                 "slipped_descend",
-                {
-                    "stage": stage,
-                    "reason": "object_displaced_before_close",
-                    "target_body": body,
-                    "lateral_error_m": lateral,
-                    "lateral_limit_m": lateral_limit,
-                    "z_diff_m": z_diff,
-                    "eef_pos": eef[:3].tolist(),
-                    "obj_pos": obj_pos.tolist(),
-                    "candidate_xy": candidate_xy.tolist(),
-                },
+                diagnostic,
                 env,
             )
         except Exception as e:

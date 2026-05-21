@@ -111,7 +111,7 @@ echo "Agent config: ${AGENT_CONFIG}"
 echo "Output dir: ${OUT_DIR}"
 echo
 
-echo "run,exit_code,success,pre_close_abort,grasp_confirmed,micro_lift_ok,post_lift_verified,no_grasp,object_not_lifted,steps,time,grasp_failure_mode,post_lift_obj_pos,post_lift_obj_delta_z,selected_strategy,executed_strategy,depth_margin_m,squeeze_extra_steps,grasp_profile,grasp_policy_mode,grasp_policy_applied,candidate_source_policy,candidate_source_policy_applied,legacy_first_candidate_source,final_first_candidate_source,target_resolution_source,target_body,candidate_actionability_policy,candidate_actionability_reason,candidate_actionability_actionable,candidate_actionability_hard_reject,no_actionable_candidate,log" \
+echo "run,exit_code,success,pre_close_abort,grasp_confirmed,micro_lift_ok,post_lift_verified,no_grasp,object_not_lifted,steps,time,grasp_failure_mode,post_lift_obj_pos,post_lift_obj_delta_z,selected_strategy,executed_strategy,depth_margin_m,squeeze_extra_steps,grasp_profile,grasp_policy_mode,grasp_policy_applied,candidate_source_policy,candidate_source_policy_applied,legacy_first_candidate_source,final_first_candidate_source,target_resolution_source,target_body,candidate_actionability_policy,candidate_actionability_reason,candidate_actionability_actionable,candidate_actionability_hard_reject,no_actionable_candidate,execution_failure_stage,execution_failure_reason,execution_recovery_applied,execution_recovery_skip_count,log" \
     > "${SUMMARY_CSV}"
 
 successes=0
@@ -183,8 +183,12 @@ for run_idx in $(seq 1 "${RUNS}"); do
     candidate_actionability_actionable="$(extract_json_scalar 'candidate_actionability_actionable' "${log_path}")"
     candidate_actionability_hard_reject="$(extract_json_scalar 'candidate_actionability_hard_reject' "${log_path}")"
     no_actionable_candidate="$(extract_json_scalar 'no_actionable_candidate' "${log_path}")"
+    execution_failure_stage="$(extract_json_scalar 'execution_failure_stage' "${log_path}")"
+    execution_failure_reason="$(extract_json_scalar 'execution_failure_reason' "${log_path}")"
+    execution_recovery_applied="$(extract_json_scalar 'execution_recovery_applied' "${log_path}")"
+    execution_recovery_skip_count="$(extract_json_scalar 'execution_recovery_skip_count' "${log_path}")"
 
-    echo "${run_idx},${exit_code},${success},${pre_close_abort},${grasp_confirmed},${micro_lift_ok},${post_lift_verified},${no_grasp},${object_not_lifted},${steps},${time_s},${failure_mode},${post_lift_obj_pos},${post_lift_obj_delta_z},${selected_strategy},${executed_strategy},${depth_margin_m},${squeeze_extra_steps},${grasp_profile},${grasp_policy_mode},${grasp_policy_applied},${candidate_source_policy},${candidate_source_policy_applied},${legacy_first_candidate_source},${final_first_candidate_source},${target_resolution_source},${target_body},${candidate_actionability_policy},${candidate_actionability_reason},${candidate_actionability_actionable},${candidate_actionability_hard_reject},${no_actionable_candidate},${log_path}" \
+    echo "${run_idx},${exit_code},${success},${pre_close_abort},${grasp_confirmed},${micro_lift_ok},${post_lift_verified},${no_grasp},${object_not_lifted},${steps},${time_s},${failure_mode},${post_lift_obj_pos},${post_lift_obj_delta_z},${selected_strategy},${executed_strategy},${depth_margin_m},${squeeze_extra_steps},${grasp_profile},${grasp_policy_mode},${grasp_policy_applied},${candidate_source_policy},${candidate_source_policy_applied},${legacy_first_candidate_source},${final_first_candidate_source},${target_resolution_source},${target_body},${candidate_actionability_policy},${candidate_actionability_reason},${candidate_actionability_actionable},${candidate_actionability_hard_reject},${no_actionable_candidate},${execution_failure_stage},${execution_failure_reason},${execution_recovery_applied},${execution_recovery_skip_count},${log_path}" \
         >> "${SUMMARY_CSV}"
 
     echo
@@ -211,6 +215,10 @@ for run_idx in $(seq 1 "${RUNS}"); do
     echo "  candidate_actionability_policy: ${candidate_actionability_policy:-unknown}"
     echo "  candidate_actionability_reason: ${candidate_actionability_reason:-unknown}"
     echo "  no_actionable_candidate: ${no_actionable_candidate:-unknown}"
+    echo "  execution_failure_stage: ${execution_failure_stage:-unknown}"
+    echo "  execution_failure_reason: ${execution_failure_reason:-unknown}"
+    echo "  execution_recovery_applied: ${execution_recovery_applied:-unknown}"
+    echo "  execution_recovery_skip_count: ${execution_recovery_skip_count:-unknown}"
 
     if [[ "${run_idx}" -lt "${RUNS}" && "${SLEEP_BETWEEN}" != "0" ]]; then
         sleep "${SLEEP_BETWEEN}"
