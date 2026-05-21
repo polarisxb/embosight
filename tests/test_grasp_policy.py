@@ -13,6 +13,9 @@ def test_agent_config_defaults_to_legacy_policy():
         "enabled_profiles": [],
         "actionability_diagnostics": False,
         "actionability_gate": False,
+        "execution_recovery_diagnostics": False,
+        "execution_recovery_gate": False,
+        "execution_recovery_max_attempts": 1,
     }
 
 
@@ -141,3 +144,50 @@ def test_actionability_gate_is_limited_to_small_round_slippery():
     }
 
     assert actionability_gate_enabled(config, "thin_flat") is False
+
+
+def test_execution_recovery_policy_requires_profiled_mode():
+    from src.grasp_policy import (
+        execution_recovery_diagnostics_enabled,
+        execution_recovery_gate_enabled,
+        execution_recovery_max_attempts,
+    )
+
+    legacy = {
+        "mode": "legacy",
+        "execution_recovery_diagnostics": True,
+        "execution_recovery_gate": True,
+        "execution_recovery_max_attempts": 2,
+    }
+    profiled = {
+        "mode": "profiled",
+        "execution_recovery_diagnostics": True,
+        "execution_recovery_gate": True,
+        "execution_recovery_max_attempts": 2,
+    }
+
+    assert execution_recovery_diagnostics_enabled(legacy) is False
+    assert execution_recovery_gate_enabled(legacy) is False
+    assert execution_recovery_diagnostics_enabled(profiled) is True
+    assert execution_recovery_gate_enabled(profiled) is True
+    assert execution_recovery_max_attempts(profiled) == 2
+
+
+def test_execution_recovery_gate_is_not_limited_by_enabled_profiles():
+    from src.grasp_policy import execution_recovery_gate_enabled
+
+    config = {
+        "mode": "profiled",
+        "enabled_profiles": [],
+        "execution_recovery_gate": True,
+    }
+
+    assert execution_recovery_gate_enabled(config) is True
+
+
+def test_execution_recovery_max_attempts_is_clamped():
+    from src.grasp_policy import execution_recovery_max_attempts
+
+    assert execution_recovery_max_attempts(None) == 1
+    assert execution_recovery_max_attempts({"execution_recovery_max_attempts": -1}) == 0
+    assert execution_recovery_max_attempts({"execution_recovery_max_attempts": 9}) == 3

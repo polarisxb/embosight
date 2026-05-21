@@ -51,6 +51,9 @@ grasp_policy:
   enabled_profiles: []
   actionability_diagnostics: false
   actionability_gate: false
+  execution_recovery_diagnostics: false
+  execution_recovery_gate: false
+  execution_recovery_max_attempts: 1
 
 logger:
   log_dir: logs/episodes

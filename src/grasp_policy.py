@@ -124,6 +124,30 @@ def actionability_gate_enabled(
     )
 
 
+def execution_recovery_diagnostics_enabled(config: dict[str, Any] | None) -> bool:
+    if not isinstance(config, dict):
+        return False
+    return _mode(config) == "profiled" and bool(
+        config.get("execution_recovery_diagnostics")
+    )
+
+
+def execution_recovery_gate_enabled(config: dict[str, Any] | None) -> bool:
+    if not isinstance(config, dict):
+        return False
+    return _mode(config) == "profiled" and bool(config.get("execution_recovery_gate"))
+
+
+def execution_recovery_max_attempts(config: dict[str, Any] | None) -> int:
+    if not isinstance(config, dict):
+        return 1
+    try:
+        value = int(config.get("execution_recovery_max_attempts", 1))
+    except (TypeError, ValueError):
+        value = 1
+    return min(max(value, 0), 3)
+
+
 def _profile_name(profile: Any) -> str:
     text = str(profile).strip() if profile is not None else ""
     return text if text else "unknown"
