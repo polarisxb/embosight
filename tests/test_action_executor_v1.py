@@ -1712,3 +1712,121 @@ def test_pre_close_alignment_failure_records_execution_failure_diagnostics():
     assert diag["execution_recovery_enabled"] is False
     assert diag["execution_recovery_applied"] is False
     assert diag["pre_close_lateral_error_m"] > diag["pre_close_lateral_limit_m"]
+
+
+class _PreCloseRecoveryEnv(FakeEnv):
+    def __init__(self):
+        super().__init__(descend_ok=True, lift_ok=True, obj_lifts=True)
+        self.obj_pos = np.array([0.59, 0.04, 0.90], dtype=np.float32)
+        self._candidate_index = 0
+        self.closed_sources: list[str] = []
+        self.retreat_opens = 0
+
+    def _get_body_pos(self, body_name):
+        z = 0.98 if self._lifted else self.obj_pos[2]
+        return np.array([self.obj_pos[0], self.obj_pos[1], z], dtype=np.float32)
+
+    def get_eef_pos(self):
+        if self._candidate_index == 0:
+            return np.array([0.50, 0.00, 0.94], dtype=np.float32)
+        return np.array([0.59, 0.04, 0.94], dtype=np.float32)
+
+    def navigate_base_to(self, target_xy, offset_m=0.55):
+        return True
+
+    def move_to_pre_grasp_diagnostic(self, candidate, height_m=0.05):
+        from types import SimpleNamespace
+
+        self._candidate_index = 0 if candidate.source == "vlm_top_grasp" else 1
+        return SimpleNamespace(
+            ok=True,
+            reason="strict_ok",
+            total_error_m=0.0,
+            lateral_error_m=0.0,
+            axis_error_m=0.0,
+            approach_gap_m=0.0,
+            lateral_limit_m=0.02,
+            handoff_ok=False,
+            needs_recovery=False,
+        )
+
+    def close_gripper(self, target_label=None, squeeze_extra_steps: int = 0) -> bool:
+        self.closed_sources.append(str(self._candidate_index))
+        self.calls.append("close")
+        self._gripper_open = False
+        return True
+
+    def open_gripper(self) -> bool:
+        self.retreat_opens += 1
+        return super().open_gripper()
+
+
+def test_execution_recovery_skips_pre_close_displaced_candidate():
+    from src.action_executor import ActionExecutor
+    from src.world_belief import DecomposedTask, GraspCandidate
+
+    env = _PreCloseRecoveryEnv()
+    exe = ActionExecutor(
+        scene_describer=None,
+        grasp_policy_config={
+            "mode": "profiled",
+            "execution_recovery_diagnostics": True,
+            "execution_recovery_gate": True,
+            "execution_recovery_max_attempts": 1,
+        },
+    )
+    h, first = _hyp_with_candidate()
+    first.source = "vlm_top_grasp"
+    second = GraspCandidate(
+        point_3d=np.array([0.59, 0.04, 0.90], dtype=np.float32),
+        approach_dir=np.array([0.0, 0.0, -1.0], dtype=np.float32),
+        finger_width_m=0.04,
+        score=0.7,
+        source="strategy_top_down",
+    )
+    h.grasp_candidates = [first, second]
+
+    result = exe.act(h, DecomposedTask(primary_target="apple"), env)
+
+    assert result.success is True
+    diag = result.attempt.diagnostic
+    assert result.attempt.candidate.source == "strategy_top_down"
+    assert diag["execution_recovery_applied"] is True
+    assert diag["execution_recovery_reason"] == "retry_next_candidate"
+    assert diag["execution_recovery_skip_count"] == 1
+    assert diag["execution_recovery_skipped_sources"] == ["vlm_top_grasp"]
+    assert env.retreat_opens >= 1
+    assert env.closed_sources == ["1"]
+
+
+def test_execution_recovery_disabled_preserves_pre_close_failure():
+    from src.action_executor import ActionExecutor
+    from src.world_belief import DecomposedTask, GraspCandidate
+
+    env = _PreCloseRecoveryEnv()
+    exe = ActionExecutor(
+        scene_describer=None,
+        grasp_policy_config={
+            "mode": "profiled",
+            "execution_recovery_diagnostics": True,
+            "execution_recovery_gate": False,
+        },
+    )
+    h, first = _hyp_with_candidate()
+    first.source = "vlm_top_grasp"
+    second = GraspCandidate(
+        point_3d=np.array([0.59, 0.04, 0.90], dtype=np.float32),
+        approach_dir=np.array([0.0, 0.0, -1.0], dtype=np.float32),
+        finger_width_m=0.04,
+        score=0.7,
+        source="strategy_top_down",
+    )
+    h.grasp_candidates = [first, second]
+
+    result = exe.act(h, DecomposedTask(primary_target="apple"), env)
+
+    assert result.success is False
+    assert result.attempt.failure_mode == "slipped_descend"
+    assert result.attempt.candidate.source == "vlm_top_grasp"
+    assert result.attempt.diagnostic["execution_recovery_applied"] is False
+    assert env.closed_sources == []

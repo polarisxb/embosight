@@ -57,7 +57,15 @@ class ActionExecutor:
         self.describer = scene_describer
         self.grasp_policy_config = dict(grasp_policy_config or {})
 
-    def act(self, target, decomposed, env) -> GraspActionResult:
+    def act(
+        self,
+        target,
+        decomposed,
+        env,
+        *,
+        _execution_recovery_attempts_used: int = 0,
+        _execution_recovery_skipped_sources: list[str] | None = None,
+    ) -> GraspActionResult:
         """v1 主接口: 抓取 target Hypothesis, 失败结构化回写。"""
         from src.grasp_actionability import actionability_from_pre_grasp_result
         from src.grasp_policy import (
@@ -66,6 +74,9 @@ class ActionExecutor:
         )
         from src.world_belief import GraspAttempt
 
+        execution_recovery_skipped_sources = list(
+            _execution_recovery_skipped_sources or [],
+        )
         used = {self._cand_sig(a.candidate) for a in target.grasp_attempts}
         candidates_to_try = [
             c for c in target.grasp_candidates
@@ -361,7 +372,16 @@ class ActionExecutor:
                         target, candidate, env, stage="pre_close_alignment",
                     )
                     if alignment_failed is not None:
-                        return alignment_failed
+                        recovered = self._recover_execution_failure_or_none(
+                            alignment_failed,
+                            target,
+                            decomposed,
+                            env,
+                            candidate,
+                            _execution_recovery_attempts_used,
+                            execution_recovery_skipped_sources,
+                        )
+                        return recovered if recovered is not None else alignment_failed
                     grasp_ok = env.close_gripper(
                         target_label=getattr(target, "label", None),
                         squeeze_extra_steps=squeeze_extra_steps,
@@ -394,7 +414,16 @@ class ActionExecutor:
                         target, candidate, env, stage="pre_close_alignment",
                     )
                     if alignment_failed is not None:
-                        return alignment_failed
+                        recovered = self._recover_execution_failure_or_none(
+                            alignment_failed,
+                            target,
+                            decomposed,
+                            env,
+                            candidate,
+                            _execution_recovery_attempts_used,
+                            execution_recovery_skipped_sources,
+                        )
+                        return recovered if recovered is not None else alignment_failed
                     grasp_ok = env.close_gripper(
                         target_label=getattr(target, "label", None),
                         squeeze_extra_steps=squeeze_extra_steps,
@@ -431,7 +460,16 @@ class ActionExecutor:
                     target, candidate, env, stage="pre_close_alignment",
                 )
                 if alignment_failed is not None:
-                    return alignment_failed
+                    recovered = self._recover_execution_failure_or_none(
+                        alignment_failed,
+                        target,
+                        decomposed,
+                        env,
+                        candidate,
+                        _execution_recovery_attempts_used,
+                        execution_recovery_skipped_sources,
+                    )
+                    return recovered if recovered is not None else alignment_failed
                 grasp_ok = env.close_gripper(
                     target_label=getattr(target, "label", None),
                     squeeze_extra_steps=squeeze_extra_steps,
@@ -465,7 +503,16 @@ class ActionExecutor:
                 target, candidate, env, stage="pre_close_alignment",
             )
             if alignment_failed is not None:
-                return alignment_failed
+                recovered = self._recover_execution_failure_or_none(
+                    alignment_failed,
+                    target,
+                    decomposed,
+                    env,
+                    candidate,
+                    _execution_recovery_attempts_used,
+                    execution_recovery_skipped_sources,
+                )
+                return recovered if recovered is not None else alignment_failed
             grasp_ok = env.close_gripper(
                 target_label=getattr(target, "label", None),
                 squeeze_extra_steps=squeeze_extra_steps,
@@ -815,6 +862,93 @@ class ActionExecutor:
             "execution_recovery_skip_count": 0,
             "execution_recovery_skipped_sources": [],
         }
+
+    def _recover_execution_failure_or_none(
+        self,
+        failure_result: GraspActionResult,
+        target,
+        decomposed,
+        env,
+        candidate,
+        attempts_used: int,
+        skipped_sources: list[str],
+    ) -> GraspActionResult | None:
+        from src.grasp_execution_recovery import (
+            execution_failure_from_attempt_diagnostic,
+            should_recover_execution_failure,
+        )
+        from src.grasp_policy import (
+            execution_recovery_gate_enabled,
+            execution_recovery_max_attempts,
+        )
+
+        failure = execution_failure_from_attempt_diagnostic(
+            failure_result.attempt.diagnostic,
+        )
+        if not should_recover_execution_failure(
+            failure,
+            gate_enabled=execution_recovery_gate_enabled(
+                self.grasp_policy_config,
+            ),
+            attempts_used=attempts_used,
+            max_attempts=execution_recovery_max_attempts(
+                self.grasp_policy_config,
+            ),
+        ):
+            return None
+
+        skipped = list(skipped_sources)
+        skipped.append(str(getattr(candidate, "source", "unknown")))
+        original_candidates = list(getattr(target, "grasp_candidates", []) or [])
+        current_index = None
+        for idx, original in enumerate(original_candidates):
+            if original is candidate:
+                current_index = idx
+                break
+        remaining_candidates = (
+            original_candidates[current_index + 1:]
+            if current_index is not None
+            else [c for c in original_candidates if c is not candidate]
+        )
+
+        if not remaining_candidates:
+            diagnostic = {
+                "execution_recovery_applied": bool(skipped),
+                "execution_recovery_reason": "no_recoverable_candidate",
+                "execution_recovery_skip_count": len(skipped),
+                "execution_recovery_skipped_sources": list(skipped),
+            }
+            failure_result.attempt.diagnostic.update(diagnostic)
+            self._merge_candidate_attempt_diagnostic(
+                failure_result.attempt.candidate,
+                diagnostic,
+            )
+            return failure_result
+
+        try:
+            target.grasp_candidates = remaining_candidates
+            recovered = self.act(
+                target,
+                decomposed,
+                env,
+                _execution_recovery_attempts_used=attempts_used + 1,
+                _execution_recovery_skipped_sources=skipped,
+            )
+        finally:
+            target.grasp_candidates = original_candidates
+
+        diagnostic = {
+            "execution_recovery_applied": bool(skipped),
+            "execution_recovery_reason": "retry_next_candidate",
+            "execution_recovery_skip_count": len(skipped),
+            "execution_recovery_skipped_sources": list(skipped),
+        }
+        recovered.attempt.diagnostic.update(diagnostic)
+        self._merge_candidate_attempt_diagnostic(
+            recovered.attempt.candidate,
+            diagnostic,
+        )
+        return recovered
 
     def _verify_grasp_via_micro_lift(
         self,
