@@ -31,7 +31,7 @@ def _build_contact_stub(
     finger_geom_names: list[str],
     active_contacts: list[tuple[str, str]],
     obj_body_name: str = "obj_main",
-) -> "_StubEnv":
+) -> object:
     """Build a fake env whose sim reports contact pairs.
 
     active_contacts is a list of (geom_a_name, geom_b_name) tuples
@@ -55,10 +55,6 @@ def _build_contact_stub(
             if name == obj_body_name:
                 return 0
             raise ValueError(name)
-
-        @staticmethod
-        def geom_bodyid(gid):  # not used but defensive
-            return 0
 
         # geom_bodyid array surrogate (some env_wrapper methods may use)
         geom_bodyid = np.zeros(len(all_geoms), dtype=np.int32)

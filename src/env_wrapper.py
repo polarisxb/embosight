@@ -16,7 +16,6 @@ from typing import Any, Optional
 import numpy as np
 
 from src.grasp_execution import (
-    PRE_GRASP_UNREACHABLE,
     PreGraspResult,
     evaluate_pre_grasp_handoff,
     normalize_approach_dir,
@@ -1064,15 +1063,7 @@ class EnvWrapper:
                     f"[move] converged step={step} dist={dist:.4f}m "
                     f"ori_err={ori_err:.4f}rad"
                 )
-                return {
-                    "ok": True,
-                    "follows": True,
-                    "reason": "target_body_unreadable",
-                    "target_body": target_body,
-                    "eef_delta_m": None,
-                    "obj_delta_m": None,
-                    "required_m": None,
-                }
+                return True
 
             # Phase 7 step 3: track best dist for IK-unreachable detection
             if dist < best_dist:

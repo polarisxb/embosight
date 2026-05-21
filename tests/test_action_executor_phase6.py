@@ -160,7 +160,7 @@ class TestMicroLiftIntegration:
         )
         exe = ActionExecutor(scene_describer=None)
         h, _ = _hyp_with_candidate()
-        result = exe.act(h, DecomposedTask(primary_target="apple"), env)
+        exe.act(h, DecomposedTask(primary_target="apple"), env)
         # micro_lift 不应该被调用 (grasp 没成功)
         assert len(env.micro_lift_calls) == 0
         # 走老逻辑: grasp_ok=False + lift_ok=True (default) -> still success on FakeEnv
