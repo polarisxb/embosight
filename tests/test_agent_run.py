@@ -206,6 +206,55 @@ class TestRun:
         assert result.failure_reason is not None
         assert len(result.action_history) <= agent.MAX_STEPS + 2
 
+    def test_failed_execution_recovery_stops_without_replanning(self, tmp_image):
+        """Recovery budget exhausted -> fail episode instead of replanning forever."""
+        from src.action_executor import GraspActionResult
+        from src.world_belief import GraspAttempt
+
+        decomp = json.dumps({"primary_target": "apple", "constraints": []})
+        vlm_resp = json.dumps({"objects": [
+            {"bbox_2d": [50, 50, 100, 100], "label": "apple",
+             "alternatives": [["apple", 0.95], ["other", 0.05]],
+             "confidence": 0.9, "visible_features": "red round"},
+        ]})
+        safety = json.dumps({"dist": {"safe": 0.98, "fragile": 0.02},
+                             "reasoning": "fruit"})
+        agent, env = _make_full_agent(decomp, [vlm_resp] * 10, safety,
+                                      image_path=tmp_image)
+        candidate = GraspCandidate(
+            point_3d=np.array([0.5, 0.0, 0.9], dtype=np.float32),
+            approach_dir=np.array([0.0, 0.0, -1.0], dtype=np.float32),
+            finger_width_m=0.04,
+            score=1.0,
+            source="strategy_top_down",
+        )
+        calls = {"act": 0}
+
+        def fail_after_recovery(target, decomposed, env):
+            calls["act"] += 1
+            attempt = GraspAttempt(
+                timestamp=0.0,
+                candidate=candidate,
+                failure_mode="slipped_lift",
+                end_effector_pose_reached=(0.5, 0.0, 0.9, 0.0, 0.0, 0.0),
+                diagnostic={
+                    "execution_recovery_applied": True,
+                    "execution_recovery_reason": "retry_next_candidate",
+                    "execution_recovery_trigger_stage": "micro_lift_verify",
+                    "execution_recovery_trigger_reason": "object_not_following",
+                },
+            )
+            return GraspActionResult(success=False, attempt=attempt)
+
+        agent.executor.act = fail_after_recovery
+
+        result = agent.run("拿苹果", env)
+
+        assert result.success is False
+        assert result.failure_reason == "execution_recovery_exhausted"
+        assert calls["act"] == 1
+        assert sum(a.kind == "plan_grasp_candidates" for a in result.action_history) == 1
+
 
 class TestAskUserFallback:
     """ask_user 超过 MAX_ASK_USER 次后降级抓最高置信物体。"""

@@ -506,6 +506,13 @@ class EmboSightAgent:
                 if self._latest_grasp_succeeded(belief):
                     self._consolidate_memory(belief, success=True)
                     return self._success_result(belief, start)
+                if self._latest_grasp_exhausted_execution_recovery(belief):
+                    self._consolidate_memory(belief, success=False)
+                    return self._giveup_result(
+                        belief,
+                        start,
+                        reason="execution_recovery_exhausted",
+                    )
                 # Grasp failed → clear candidates so decide_next re-plans
                 # with memory advice (avoids repeating same bad strategy)
                 h = belief.target()
@@ -527,6 +534,16 @@ class EmboSightAgent:
             if action.kind == "grasp" and self._latest_grasp_succeeded(belief):
                 self._consolidate_memory(belief, success=True)
                 return self._success_result(belief, start)
+            if (
+                action.kind == "grasp"
+                and self._latest_grasp_exhausted_execution_recovery(belief)
+            ):
+                self._consolidate_memory(belief, success=False)
+                return self._giveup_result(
+                    belief,
+                    start,
+                    reason="execution_recovery_exhausted",
+                )
 
         self._consolidate_memory(belief, success=False)
         return self._giveup_result(belief, start, reason="MAX_STEPS reached")
@@ -933,6 +950,16 @@ class EmboSightAgent:
         if h is None or not h.grasp_attempts:
             return False
         return h.grasp_attempts[-1].failure_mode == "success"
+
+    def _latest_grasp_exhausted_execution_recovery(self, belief: WorldBelief) -> bool:
+        h = belief.target()
+        if h is None or not h.grasp_attempts:
+            return False
+        attempt = h.grasp_attempts[-1]
+        if attempt.failure_mode == "success":
+            return False
+        diagnostic = getattr(attempt, "diagnostic", {}) or {}
+        return diagnostic.get("execution_recovery_applied") is True
 
     def _success_result(
         self, belief: WorldBelief, start: float,
