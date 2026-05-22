@@ -1,8 +1,0 @@
-看这张 eye-in-hand 图。物体: {label} (姿态: {pose})。
-
-请用 1 个 [x_norm, y_norm] 标记你认为最稳的"顶抓点"位置 (像素坐标归一化到 0-1, 图像左上 0,0)。
-- x_norm, y_norm: 抓点中心
-- finger_align: "x" 表示夹爪沿 x 轴, "y" 沿 y 轴 (基于物体长轴)
-
-Reply ONLY raw JSON:
-{"grip_norm": [x, y], "finger_align": "x"}

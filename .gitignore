@@ -63,6 +63,7 @@ checkpoints/
 logs/
 outputs/
 runs/
+submission/
 *.pkl
 *.npy
 *.npz
@@ -117,3 +118,4 @@ memory/*.yaml
 # ============================================================
 CRAIC2026.pdf
 CRAIC2026.txt
+docs/CRAIC2026_*

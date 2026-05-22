@@ -1,7 +1,0 @@
-这是从 {viewpoint_name} 拍的同一物体。已有视角中, 物体的 3D 位置估计是
-({pos_x}, {pos_y}, {pos_z}) ± {pos_std}m。
-
-在这个视角的图像里, 物体看起来在 bbox: 请输出 [x1, y1, x2, y2] 像素坐标。
-图像尺寸 {img_w}x{img_h}。
-
-JSON: {"bbox_2d": [...], "confidence": 0-1}
