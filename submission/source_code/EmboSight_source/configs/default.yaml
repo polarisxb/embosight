@@ -1,0 +1,56 @@
+# ============================================================
+# EmboSight 默认配置
+# ============================================================
+
+project:
+  name: EmboSight
+  version: "0.1.0"
+  description: "零样本视障具身辅助智能体"
+
+# LLM 后端 (DeepSeek API)
+llm:
+  base_url: "https://api.deepseek.com/v1"
+  model: "deepseek-chat"
+  max_tokens: 2048
+  temperature: 0.1
+  timeout: 60.0
+
+# VLM 后端 (Qwen3-VL-8B)
+vlm:
+  model_id: "./checkpoints/Qwen3-VL-8B-Instruct"
+  device: "cuda"
+  torch_dtype: "bfloat16"
+  max_new_tokens: 1024
+
+# 视角库
+viewpoints_path: "configs/viewpoints.yaml"
+
+# v1 agent 主配置见 configs/agent.yaml
+# (老的 active_planner / action_executor / prompts 段已在 Phase 15 清理)
+
+# 仿真环境
+simulator:
+  type: "robocasa"
+  env_name: "PickPlaceCounterToCabinet"
+  robots: "PandaMobile"
+  image_width: 256
+  image_height: 256
+  camera_names:
+    - robot0_agentview_center
+    - robot0_agentview_left
+    - robot0_agentview_right
+    - robot0_frontview
+    - robot0_robotview
+    - robot0_eye_in_hand
+
+# 输出目录
+output:
+  results_dir: "./results"
+  video_dir: "./results/videos"
+  observation_dir: "./results/observations"
+  log_dir: "./logs"
+
+# 日志
+logging:
+  level: "INFO"
+  log_file: "logs/embosight.log"

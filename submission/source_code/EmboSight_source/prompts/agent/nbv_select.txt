@@ -1,0 +1,19 @@
+你是机器人的视角规划器。当前 belief 摘要:
+
+primary_target: {primary_target}
+hypotheses ({n_hyp} 个):
+{hyp_list}
+
+已用过的视角: {used_views}
+可用视角:
+{vp_list}
+
+需求: {preference}
+- "search_target": 最大化看到 primary_target 的概率
+- "disambiguate_label": 看清当前 target 的 label
+- "parallax_position": 给当前 target 提供视差以降 position_std
+- "grasp_pose": 看清当前 target 的姿态 (横/竖)
+
+请输出 1 个未用视角的索引 (整数, 0-based) 或 -1 表示无可选。
+
+只回复一个数字, 不带任何解释。

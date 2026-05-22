@@ -1,0 +1,7 @@
+这是从侧面 ({viewpoint_name}) 看到的物体 ({label})。
+
+请判断:
+- upright: 物体是竖立 (true) 还是横放 (false)?
+- main_axis_dir: 长轴方向, 选 "x" / "y" / "z" 之一
+
+JSON: {"upright": true/false, "main_axis_dir": "z"}

@@ -1,0 +1,68 @@
+# ============================================================
+# EmboSight Agent v1 主配置
+# ============================================================
+# 与 configs/default.yaml 互补:
+#   - default.yaml: 顶层 LLM/VLM/sim/viewpoints (硬件 + 模型)
+#   - agent.yaml:   v1 阈值 / belief / perception / cache / verify / logger / impl 选择
+# 详见设计稿 §8.1
+# ============================================================
+
+agent:
+  max_steps: 12
+  max_re_observe: 3
+
+# 4 轴 confidence 门 (动态阈值: high_risk 物体严格)
+thresholds:
+  default:
+    label_entropy: 0.30
+    position_std_m: 0.05
+    safety_entropy: 0.30
+    grasp_uncertainty: 0.30
+  high_risk:
+    label_entropy: 0.15
+    position_std_m: 0.03
+    safety_entropy: 0.15
+    grasp_uncertainty: 0.20
+
+belief:
+  merge_distance_m: 0.15            # TODO(v1.1): 实测调
+  merge_label_intersection_min: 0.30
+  prune_phantom_min_steps: 3
+
+perception:
+  label_temperature: 1.5            # TODO(v1.1): 跑 demo 后调
+  ground_prompt: prompts/perception/query_aware_ground.txt
+  zoom_prompt: prompts/perception/zoom_disambiguate.txt
+  parallax_prompt: prompts/perception/parallax_localize.txt
+  pose_prompt: prompts/perception/pose_estimation.txt
+  verify_prompt: prompts/perception/verify_grasp.txt
+
+cache:
+  enabled: true
+  max_size: 100
+  ttl: episode
+
+verify:
+  enabled: true
+  min_confidence: 0.6
+
+grasp_policy:
+  mode: legacy
+  enabled_profiles: []
+  actionability_diagnostics: false
+  actionability_gate: false
+  execution_recovery_diagnostics: false
+  execution_recovery_gate: false
+  execution_recovery_max_attempts: 1
+
+logger:
+  log_dir: logs/episodes
+  save_json: true
+  save_belief_trace: true
+
+# 实现选择 (Phase 13 默认; 可在 v1.1 通过 CLI / yaml 切换)
+implementations:
+  user_channel: fake_from_robocasa  # fake_from_robocasa | fake_from_query | cli
+  perception: query_aware
+  safety: llm_classify
+  task_decomposer: constraint_aware
